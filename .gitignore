@@ -1,0 +1,29 @@
+# Business/strategy docs — not for the public repo
+POSITIONING.md
+
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+node_modules/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor state
+.vscode/
+.idea/
+*.swp
+*~
+
+# Runtime / generated state
+screenshots/
+.ddf-snapshots/
+.ddf-versions/
+*.html.bak
+
+# Local-only helpers
+convert.py

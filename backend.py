@@ -1,0 +1,342 @@
+"""v2 backend: aiohttp WS server wrapping Claude Agent SDK.
+
+Differences from v1:
+- No on-disk compile step. The browser renders markdown live.
+- doc_changed events carry the file path the agent modified; the viewer
+  fetches and DOM-patches in place.
+- Single skill: adaptive-markdown.
+
+Routes:
+  GET  /                       -> index.html
+  GET  /<file path>            -> static files (examples/*.md, *.html)
+  WS   /ws                     -> chat protocol
+
+WS protocol:
+  server -> client:
+    {type:"ready", doc:"examples/intro.md", docs:["examples/intro.md",...]}
+    {type:"doc_changed", file:"examples/intro.md"}
+    {role:"user", type:"text", text:"..."}
+    {role:"assistant", type:"text"|"thinking", text:"..."}
+    {role:"assistant", type:"tool_use", name:"...", input:{...}}
+    {type:"turn_done", session_id:"...", cost_usd:0.01}
+    {type:"chat_reset"}
+    {type:"error", text:"..."}
+
+  client -> server:
+    {type:"chat", text:"...", context:{doc, selections:[...]}}
+    {type:"new_chat"}
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+
+from aiohttp import web, WSMsgType
+from claude_agent_sdk import (
+    ClaudeSDKClient, ClaudeAgentOptions, HookMatcher,
+    AssistantMessage, ResultMessage,
+    TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock,
+)
+
+
+ROOT = Path(__file__).resolve().parent
+EXAMPLES_DIR = ROOT / "examples"
+DEFAULT_DOC = "examples/intro.md"
+
+# Model selection. Defaults to Haiku for low cost; the viewer can override
+# per-turn via the chat context. Env-var sets the initial value.
+DEFAULT_MODEL = os.environ.get("MODEL", "claude-haiku-4-5-20251001")
+MAX_BUDGET_USD = float(os.environ.get("MAX_BUDGET_USD", "1.0"))
+
+# Friendly model names → SDK model strings.
+MODEL_ALIASES = {
+    "haiku":  "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-4-6",
+    "opus":   "claude-opus-4-7",
+}
+
+
+class State:
+    def __init__(self):
+        self.clients: set[web.WebSocketResponse] = set()
+        self.client_lock = asyncio.Lock()
+        self.sdk: ClaudeSDKClient | None = None
+        self.busy = asyncio.Lock()
+        self.current_model: str = DEFAULT_MODEL
+
+    async def broadcast(self, msg: dict) -> None:
+        text = json.dumps(msg)
+        dead = []
+        async with self.client_lock:
+            for ws in self.clients:
+                try:
+                    await ws.send_str(text)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                self.clients.discard(ws)
+
+
+state = State()
+
+
+async def post_tool_use_hook(input_data, tool_use_id, context):
+    """After an Edit/Write to a .md file, broadcast doc_changed.
+
+    No on-disk compile — the browser renders markdown live, so we just
+    notify the viewer that the source changed.
+    """
+    tool_input = input_data.get("tool_input", {}) or {}
+    file_path = tool_input.get("file_path", "")
+    if not file_path or not file_path.endswith(".md"):
+        return {}
+    p = Path(file_path)
+    try:
+        rel = p.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        rel = file_path
+    await state.broadcast({"type": "doc_changed", "file": rel})
+    return {}
+
+
+def resolve_model(name: str | None) -> str:
+    """Map a friendly name (haiku/sonnet/opus) or pass-through SDK model id."""
+    if not name:
+        return DEFAULT_MODEL
+    return MODEL_ALIASES.get(name.lower(), name)
+
+
+async def init_sdk(model: str | None = None):
+    chosen = resolve_model(model)
+    options = ClaudeAgentOptions(
+        cwd=str(ROOT),
+        setting_sources=["project"],
+        skills="all",
+        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        permission_mode="acceptEdits",
+        model=chosen,
+        max_budget_usd=MAX_BUDGET_USD,
+        hooks={
+            "PostToolUse": [HookMatcher(matcher="Edit|Write", hooks=[post_tool_use_hook])],
+        },
+    )
+    state.sdk = ClaudeSDKClient(options=options)
+    await state.sdk.__aenter__()
+    state.current_model = chosen
+    print(f"Claude Agent SDK ready (model={chosen}, budget=${MAX_BUDGET_USD}/turn)",
+          flush=True)
+    await state.broadcast({"type": "model_changed", "model": chosen})
+
+
+async def shutdown_sdk():
+    if state.sdk:
+        try:
+            await state.sdk.__aexit__(None, None, None)
+        finally:
+            state.sdk = None
+
+
+async def reset_sdk_session(model: str | None = None):
+    await shutdown_sdk()
+    await init_sdk(model)
+    await state.broadcast({"type": "chat_reset"})
+
+
+def block_to_dict(block):
+    if isinstance(block, TextBlock):
+        return {"type": "text", "text": block.text}
+    if isinstance(block, ThinkingBlock):
+        return {"type": "thinking", "text": block.thinking}
+    if isinstance(block, ToolUseBlock):
+        return {"type": "tool_use", "name": block.name, "input": block.input}
+    if isinstance(block, ToolResultBlock):
+        content = block.content
+        if isinstance(content, list):
+            content = " ".join(
+                c.get("text", "") for c in content if isinstance(c, dict)
+            )
+        return {
+            "type": "tool_result",
+            "ok": not bool(block.is_error),
+            "text": str(content) if content else "",
+        }
+    return None
+
+
+async def run_turn(text: str):
+    async with state.busy:
+        if not state.sdk:
+            await state.broadcast({"type": "error", "text": "SDK not initialized"})
+            return
+        try:
+            await state.sdk.query(text)
+            async for message in state.sdk.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        d = block_to_dict(block)
+                        if d:
+                            await state.broadcast({"role": "assistant", **d})
+                elif isinstance(message, ResultMessage):
+                    await state.broadcast({
+                        "type": "turn_done",
+                        "session_id": message.session_id,
+                        "cost_usd": message.total_cost_usd,
+                    })
+        except Exception as e:
+            await state.broadcast({"type": "error", "text": f"agent error: {e!r}"})
+
+
+async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+    ws = web.WebSocketResponse(heartbeat=30)
+    await ws.prepare(request)
+
+    async with state.client_lock:
+        state.clients.add(ws)
+
+    docs = sorted(
+        p.relative_to(ROOT).as_posix()
+        for p in EXAMPLES_DIR.glob("*.md")
+    )
+    await ws.send_json({
+        "type": "ready",
+        "doc": DEFAULT_DOC,
+        "docs": docs,
+        "model": state.current_model,
+        "models": list(MODEL_ALIASES.keys()),
+    })
+
+    try:
+        async for msg in ws:
+            if msg.type != WSMsgType.TEXT:
+                continue
+            try:
+                data = json.loads(msg.data)
+            except Exception:
+                continue
+
+            if data.get("type") == "chat":
+                text = (data.get("text") or "").strip()
+                ctx = data.get("context") or {}
+                if not text:
+                    continue
+
+                # Optional per-turn model switch. Resets the SDK session
+                # (model is set at client init, not per-query).
+                requested_model = data.get("model") or ctx.get("model")
+                if requested_model:
+                    target = resolve_model(requested_model)
+                    if target != state.current_model:
+                        await state.broadcast({
+                            "role": "assistant",
+                            "type": "text",
+                            "text": f"_Switching model → {target} (new conversation)_\n",
+                        })
+                        await reset_sdk_session(target)
+
+                doc = (ctx.get("doc") or "").strip() or None
+                selections = ctx.get("selections") or []
+                if not isinstance(selections, list):
+                    selections = []
+
+                # Echo user's text verbatim.
+                await state.broadcast({"role": "user", "type": "text", "text": text})
+
+                # Augment prompt with doc path + focused blocks.
+                preamble = []
+                if doc:
+                    preamble.append(
+                        f'The reader is viewing the document at "{doc}". When you '
+                        "need to edit, this is the file."
+                    )
+                if len(selections) == 1:
+                    s = selections[0]
+                    info = []
+                    if s.get("id"):    info.append(f'id="{s["id"]}"')
+                    if s.get("label"): info.append(f'label="{s["label"]}"')
+                    info_str = ", ".join(info)
+                    excerpt = s.get("excerpt", "")
+                    excerpt_block = (
+                        f"\n\nFocused block content (excerpt up to 2000 chars):\n"
+                        f"```\n{excerpt}\n```"
+                        if excerpt else ""
+                    )
+                    preamble.append(
+                        f"The reader has clicked on a specific block, giving it "
+                        f"focus ({info_str}).{excerpt_block}\n\n"
+                        "When they say 'this', 'here', 'it', 'this section', "
+                        "'under it', 'above it' — they mean this focused block. "
+                        "If you need surrounding context, Read the source file."
+                    )
+                elif len(selections) > 1:
+                    blocks_str = "\n\n".join(
+                        f"Block {i+1}: id={s.get('id') or '(none)'!r}, "
+                        f"label={s.get('label') or ''!r}\n"
+                        f"```\n{s.get('excerpt', '')}\n```"
+                        for i, s in enumerate(selections)
+                    )
+                    preamble.append(
+                        f"The reader has selected {len(selections)} blocks. When "
+                        "they say 'these', 'them', 'this group', 'all of these' — "
+                        "they mean these blocks. If the operation applies "
+                        "independently to each block, consider parallel subagents.\n\n"
+                        f"{blocks_str}"
+                    )
+
+                prompt = ("[" + "\n\n".join(preamble) + "]\n\n" + text
+                          if preamble else text)
+                print(f"[ws] chat doc={doc!r} selections={len(selections)}",
+                      flush=True)
+                asyncio.create_task(run_turn(prompt))
+
+            elif data.get("type") == "new_chat":
+                model = data.get("model")
+                asyncio.create_task(reset_sdk_session(model))
+
+    finally:
+        async with state.client_lock:
+            state.clients.discard(ws)
+    return ws
+
+
+async def serve_index(request: web.Request) -> web.Response:
+    return web.FileResponse(ROOT / "index.html")
+
+
+async def serve_static(request: web.Request) -> web.Response:
+    rel = request.match_info["path"]
+    # Disallow `..` traversal.
+    target = (ROOT / rel).resolve()
+    try:
+        target.relative_to(ROOT)
+    except ValueError:
+        raise web.HTTPForbidden()
+    if not target.exists() or not target.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(target)
+
+
+async def on_startup(app: web.Application):
+    await init_sdk()
+
+
+async def on_cleanup(app: web.Application):
+    await shutdown_sdk()
+
+
+def make_app() -> web.Application:
+    app = web.Application()
+    app.router.add_get("/", serve_index)
+    app.router.add_get("/ws", ws_handler)
+    app.router.add_get("/{path:.+}", serve_static)
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+    return app
+
+
+if __name__ == "__main__":
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
+    print(f"v2 backend on http://127.0.0.1:{port}", flush=True)
+    web.run_app(make_app(), host="127.0.0.1", port=port, print=None)

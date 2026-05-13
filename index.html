@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v2 — adaptive markdown</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/markdown-it@13.0.2/dist/markdown-it.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/markdown-it-container@4.0.0/dist/markdown-it-container.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/markdown-it-attrs@4.1.6/markdown-it-attrs.browser.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+
+<style>
+:root {
+  --bg: #fafaf7;
+  --side-bg: #ffffff;
+  --text: #1a1a1a;
+  --muted: #666;
+  --accent: #2a4d7a;
+  --accent-soft: #eef2f7;
+  --border: #d8d8d0;
+  --theorem-bd: #2a4d7a;
+  --theorem-bg: #eef2f7;
+  --def-bd: #c39548;
+  --def-bg: #f4f0e8;
+  --example-bd: #6a9255;
+  --example-bg: #f0f6ef;
+  --remark-bd: #999;
+  --remark-bg: #f3f3ee;
+  --error: #b34141;
+  --tool-bg: #f0efe9;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  font-family: 'Charter', 'Iowan Old Style', Georgia, serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+}
+
+/* Split-pane layout */
+.app {
+  display: flex;
+  height: 100vh;
+}
+.resizer {
+  width: 6px;
+  background: transparent;
+  cursor: col-resize;
+  flex-shrink: 0;
+  position: relative;
+}
+.resizer::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  transition: background 0.15s, width 0.15s;
+}
+.resizer:hover::after, .resizer.dragging::after {
+  width: 2px;
+  background: var(--accent);
+}
+.doc-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  min-width: 200px;
+  min-height: 0;
+  flex: 1 1 0;
+}
+.doc-pane .scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+.doc-pane main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+.view-tabs {
+  display: flex;
+  background: #ececea;
+  border-bottom: 1px solid var(--border);
+  padding: 0 0.5rem;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.view-tab {
+  padding: 0.4rem 0.95rem;
+  background: transparent; border: 0;
+  cursor: pointer; font: inherit; font-size: 0.82rem;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.view-tab:hover { color: var(--accent); }
+.view-tab.active {
+  background: var(--bg); color: var(--accent);
+  border-bottom-color: var(--accent); font-weight: 600;
+}
+.view-source {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  background: white;
+  border: 1px solid var(--border);
+  padding: 1rem;
+  border-radius: 4px;
+}
+.view-graph { width: 100%; height: calc(100vh - 110px); display: block; cursor: grab; }
+.view-graph:active { cursor: grabbing; }
+.view-stub {
+  padding: 2rem; color: var(--muted); font-style: italic;
+  text-align: center;
+}
+
+@media print {
+  .chat-pane, .view-tabs { display: none !important; }
+  .doc-pane { border: 0; }
+  body { background: white; color: black; }
+  .kind-theorem, .kind-lemma, .kind-proposition, .kind-corollary,
+  .kind-definition, .kind-example, .kind-proof, .kind-solution {
+    page-break-inside: avoid;
+    background: transparent !important;
+    border-left: 2px solid #000 !important;
+  }
+  h1, h2, h3, h4 { page-break-after: avoid; }
+}
+
+/* Frontmatter header */
+.frontmatter {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1.25rem;
+  margin-bottom: 2rem;
+}
+.frontmatter h1 { margin: 0 0 .25rem; font-size: 1.8rem; font-weight: 700; }
+.frontmatter .meta { color: var(--muted); font-size: .85rem; font-style: italic; }
+
+/* Article body */
+article h1, article h2, article h3, article h4 {
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: .5rem;
+}
+article h2 { font-size: 1.35rem; }
+article h3 { font-size: 1.15rem; }
+article h4 { font-size: 1rem;    }
+
+/* Heading-based block styling */
+.kind-theorem, .kind-lemma, .kind-proposition, .kind-corollary {
+  background: var(--theorem-bg);
+  border-left: 3px solid var(--theorem-bd);
+  padding: .5rem .75rem;
+  margin-top: 1.75rem !important;
+}
+.kind-definition {
+  background: var(--def-bg);
+  border-left: 3px solid var(--def-bd);
+  padding: .5rem .75rem;
+}
+.kind-example {
+  background: var(--example-bg);
+  border-left: 3px solid var(--example-bd);
+  padding: .5rem .75rem;
+}
+.kind-remark, .kind-note, .kind-aside { font-style: italic; color: var(--muted); }
+.kind-proof, .kind-solution { color: #444; margin-top: 1rem !important; }
+.kind-abstract {
+  background: var(--remark-bg);
+  border-left: 3px solid var(--remark-bd);
+  padding: .65rem .9rem;
+  font-size: 0.95rem;
+}
+
+a[href^="#"] { color: var(--accent); text-decoration: none; }
+a[href^="#"]:hover { text-decoration: underline; }
+
+/* Directive blocks */
+.directive { margin: 1.5rem 0; padding: 1rem 1.25rem; border-radius: 4px; }
+.directive.figure {
+  background: white;
+  border: 2px dashed var(--border);
+  text-align: center;
+}
+.directive.figure .figure-label {
+  font-size: .72rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .08em;
+  margin-bottom: .5rem;
+}
+.directive.figure .figure-intent { font-style: italic; color: #333; }
+.directive.pinned { background: #fffaf3; border-left: 3px solid #c39548; }
+.directive.pinned::before {
+  content: "🔒 pinned";
+  display: block;
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); margin-bottom: .35rem;
+}
+
+ol, ul { padding-left: 1.5rem; }
+li { margin: .25rem 0; }
+code { background: #ececec; padding: 1px 4px; border-radius: 3px; font-size: .9em; }
+pre code { display: block; padding: .75rem; overflow-x: auto; }
+.katex-display { margin: 1rem 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Selection */
+.hover-block {
+  outline: 1px dashed #999;
+  outline-offset: 3px;
+  cursor: pointer;
+}
+.selected-block {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+/* Chat pane */
+.chat-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--side-bg);
+  width: 420px;
+  min-width: 280px;
+  max-width: 60vw;
+  flex-shrink: 0;
+  min-height: 0;
+  height: 100vh;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.chat-header {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 0.35rem;
+}
+.chat-header #status {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-header .doc-label { font-family: ui-monospace, monospace; }
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.btn-tiny {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--muted); font: inherit; font-size: 0.78rem;
+  padding: 0.15rem 0.55rem; border-radius: 4px; cursor: pointer;
+}
+.btn-tiny:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+
+.doc-select {
+  background: white; border: 1px solid var(--border);
+  padding: 0.18rem 0.4rem; border-radius: 4px;
+  font: inherit; font-size: 0.78rem; font-family: ui-monospace, monospace;
+  color: var(--muted); cursor: pointer;
+  max-width: 220px;
+  min-width: 0;
+  flex-shrink: 1;
+  text-overflow: ellipsis;
+}
+
+.chat-log {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1rem;
+  font-size: 0.93rem;
+  line-height: 1.5;
+}
+.msg { margin-bottom: 1rem; }
+.msg-role {
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); margin-bottom: 0.2rem;
+}
+.msg.user .msg-role { color: var(--accent); }
+.msg.user .msg-text {
+  background: var(--accent-soft);
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+}
+.msg-text { white-space: pre-wrap; word-wrap: break-word; }
+.msg.error .msg-role, .msg.error .msg-text { color: var(--error); }
+
+.activity {
+  display: flex; align-items: center; gap: 0.5rem;
+  font-size: 0.88rem; color: var(--muted); font-style: italic;
+  padding: 0.4rem 0;
+}
+.activity .activity-text {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.activity::before {
+  content: "";
+  display: inline-block;
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--accent);
+  animation: ddf-pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes ddf-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50%      { opacity: 1;   transform: scale(1.1); }
+}
+
+.selection-bar {
+  display: none;
+  padding: 0.4rem 0.75rem;
+  background: var(--accent-soft);
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem; color: var(--accent);
+  align-items: center; gap: 0.4rem;
+  flex-shrink: 0;
+}
+.selection-bar.visible { display: flex; }
+.selection-bar .selection-label {
+  flex: 1; font-family: ui-monospace, monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.selection-bar .selection-clear {
+  background: transparent; border: 0; color: var(--accent);
+  cursor: pointer; font-size: 1rem; padding: 0 0.25rem; line-height: 1;
+}
+.selection-bar .selection-clear:hover { color: var(--error); }
+
+.input-row {
+  display: flex; padding: 0.75rem; border-top: 1px solid var(--border);
+  gap: 0.5rem; flex-shrink: 0;
+}
+.input-row textarea {
+  flex: 1; resize: none; font: inherit;
+  padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px;
+  background: white;
+}
+.input-row button {
+  padding: 0 1rem; background: var(--accent); color: white;
+  border: 0; border-radius: 4px; cursor: pointer; font: inherit;
+}
+.input-row button:disabled { background: var(--muted); cursor: default; }
+
+.error-banner {
+  background: #fdecec; border: 1px solid #d4a4a4; border-radius: 4px;
+  padding: .75rem 1rem; color: #8a2a2a;
+  font-family: ui-monospace, monospace; font-size: .85rem;
+  white-space: pre-wrap;
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="doc-pane" id="doc-pane">
+    <div class="view-tabs" id="view-tabs"></div>
+    <div class="scroll" id="doc-scroll">
+      <main>
+        <header class="frontmatter" id="frontmatter"></header>
+        <article id="body"></article>
+      </main>
+    </div>
+  </div>
+  <div class="resizer" id="resizer" title="Drag to resize"></div>
+  <aside class="chat-pane" id="chat-pane">
+    <div class="chat-header">
+      <span id="status">connecting...</span>
+      <div class="header-right">
+        <select id="doc-select" class="doc-select" title="Switch document"></select>
+        <select id="model-select" class="doc-select" title="Model (switching resets conversation)"></select>
+        <button id="new-chat-btn" class="btn-tiny" title="Fresh conversation">＋ New</button>
+      </div>
+    </div>
+    <div class="chat-log" id="log"></div>
+    <div class="selection-bar" id="selection-bar">
+      <span>📍</span>
+      <span class="selection-label" id="selection-label"></span>
+      <button class="selection-clear" id="selection-clear" title="Clear focus">×</button>
+    </div>
+    <div class="input-row">
+      <textarea id="input" rows="3" placeholder="Ask the document anything..."></textarea>
+      <button id="send" disabled>Send</button>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---- Reserved heading words ---------------------------------------------
+  const KIND_WORDS = new Set([
+    'theorem', 'lemma', 'proposition', 'corollary',
+    'definition', 'example', 'remark', 'note', 'aside',
+    'proof', 'solution', 'abstract',
+  ]);
+
+  // ---- DOM refs -----------------------------------------------------------
+  const body = document.getElementById('body');
+  const frontmatterEl = document.getElementById('frontmatter');
+  const docPane = document.getElementById('doc-pane');
+  const log = document.getElementById('log');
+  const statusEl = document.getElementById('status');
+  const docSelect = document.getElementById('doc-select');
+  const modelSelect = document.getElementById('model-select');
+  const newChatBtn = document.getElementById('new-chat-btn');
+  const sendBtn = document.getElementById('send');
+  const input = document.getElementById('input');
+  const selectionBar = document.getElementById('selection-bar');
+  const selectionLabel = document.getElementById('selection-label');
+  const selectionClear = document.getElementById('selection-clear');
+
+  // ---- State --------------------------------------------------------------
+  let ws = null;
+  let currentDoc = null;
+  let currentText = '';            // raw .md source for current doc
+  let currentFm = {};              // parsed frontmatter
+  let currentBody = '';            // raw body after frontmatter strip
+  let currentView = 'doc';
+  let currentModel = 'haiku';      // friendly alias; backend resolves to SDK id
+  let currentAssistantMsg = null;
+  let currentSelections = [];      // array of {id, label, excerpt, element}
+  let selectedEls = new Set();     // DOM nodes currently selected
+
+  // ---- View tabs ----------------------------------------------------------
+  const VIEW_TYPES = [
+    { id: 'doc',    label: 'Doc'    },
+    { id: 'graph',  label: 'Graph'  },
+    { id: 'source', label: 'Source' },
+    { id: 'latex',  label: 'LaTeX'  },
+    { id: 'print',  label: 'Print', action: 'print' },
+  ];
+  const viewTabs = document.getElementById('view-tabs');
+  function renderViewTabs() {
+    viewTabs.innerHTML = '';
+    for (const v of VIEW_TYPES) {
+      const btn = document.createElement('button');
+      btn.className = 'view-tab' + (v.id === currentView && !v.action ? ' active' : '');
+      btn.textContent = v.label;
+      btn.addEventListener('click', () => {
+        if (v.action === 'print') { window.print(); return; }
+        if (v.id === currentView) return;
+        currentView = v.id;
+        renderViewTabs();
+        renderCurrentView();
+      });
+      viewTabs.appendChild(btn);
+    }
+  }
+
+  // ---- Frontmatter / markdown ---------------------------------------------
+  function splitFrontmatter(text) {
+    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
+    if (!m) return { frontmatter: {}, body: text };
+    let fm = {};
+    try { fm = window.jsyaml.load(m[1]) || {}; } catch (e) { /* ignore */ }
+    return { frontmatter: fm, body: text.slice(m[0].length) };
+  }
+
+  function parseDirectiveInfo(info) {
+    const m = info.trim().match(/^(\w[\w-]*)\s*(?:\{([^}]*)\})?$/);
+    if (!m) return { name: null, attrs: {} };
+    const name = m[1].toLowerCase();
+    const attrStr = (m[2] || '').trim();
+    const attrs = {};
+    const re = /(\w[\w-]*)\s*=\s*("([^"]*)"|([^\s"]+))/g;
+    let am;
+    while ((am = re.exec(attrStr)) !== null) {
+      attrs[am[1]] = am[3] !== undefined ? am[3] : am[4];
+    }
+    return { name, attrs };
+  }
+
+  function escapeAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function escapeHtml(s) { return escapeAttr(s); }
+
+  function registerContainer(md, name, render) {
+    md.use(window.markdownitContainer, name, {
+      validate(params) {
+        const p = parseDirectiveInfo(params);
+        return p.name === name;
+      },
+      render(tokens, idx) {
+        const t = tokens[idx];
+        if (t.nesting === 1) {
+          const { attrs } = parseDirectiveInfo(t.info);
+          return render(attrs, true);
+        }
+        return render(null, false);
+      },
+    });
+  }
+
+  function buildMd() {
+    const md = window.markdownit({
+      // typographer OFF — it converts straight apostrophes to curly,
+      // which breaks KaTeX's prime notation (f' becomes f' which KaTeX
+      // doesn't recognize as a derivative).
+      html: true, linkify: true, breaks: false, typographer: false,
+    }).use(window.markdownItAttrs);
+
+    for (const kind of ['theorem', 'lemma', 'proposition', 'corollary',
+                        'definition', 'example', 'remark', 'note', 'aside',
+                        'proof', 'solution', 'abstract']) {
+      registerContainer(md, kind, (attrs, open) => {
+        if (open) {
+          const id = attrs && attrs.id ? ` id="${escapeAttr(attrs.id)}"` : '';
+          const name = attrs && attrs.name ? ` data-name="${escapeAttr(attrs.name)}"` : '';
+          return `<section class="kind-${kind} kind-block"${id}${name}>\n`;
+        }
+        return `</section>\n`;
+      });
+    }
+
+    registerContainer(md, 'figure', (attrs, open) => {
+      if (open) {
+        const renderer = attrs && attrs.renderer ? attrs.renderer : 'svg';
+        const intent = attrs && attrs.intent ? attrs.intent : '';
+        return (
+          `<div class="directive figure" data-renderer="${escapeAttr(renderer)}">` +
+          `<div class="figure-label">Figure (intent / ${escapeAttr(renderer)})</div>` +
+          (intent ? `<div class="figure-intent">${escapeHtml(intent)}</div>` : '') +
+          `<div class="figure-body">`
+        );
+      }
+      return `</div></div>\n`;
+    });
+
+    registerContainer(md, 'pinned', (attrs, open) => {
+      return open ? `<div class="directive pinned">\n` : `</div>\n`;
+    });
+
+    return md;
+  }
+  const md = buildMd();
+
+  function annotateHeadings(article) {
+    article.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
+      const text = h.textContent.trim();
+      const firstWord = (text.match(/^(\w+)/) || [])[1];
+      if (firstWord) {
+        const kind = firstWord.toLowerCase();
+        if (KIND_WORDS.has(kind)) {
+          h.classList.add('kind-' + kind);
+          h.dataset.kind = kind;
+        }
+      }
+    });
+  }
+
+  function renderFrontmatter(fm) {
+    frontmatterEl.innerHTML = '';
+    if (fm.title) {
+      const h = document.createElement('h1');
+      h.textContent = fm.title;
+      frontmatterEl.appendChild(h);
+    }
+    const metaBits = [];
+    const a = fm.authors || fm.author;
+    if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
+    if (fm.audience) metaBits.push('audience: ' + fm.audience);
+    if (fm.language) metaBits.push('language: ' + fm.language);
+    if (metaBits.length) {
+      const d = document.createElement('div');
+      d.className = 'meta';
+      d.textContent = metaBits.join(' · ');
+      frontmatterEl.appendChild(d);
+    }
+    document.title = (fm.title || 'v2') + ' — v2';
+  }
+
+  function renderMath() {
+    if (window.renderMathInElement) {
+      window.renderMathInElement(body, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '$',  right: '$',  display: false },
+        ],
+        throwOnError: false,
+        ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+      });
+    } else {
+      setTimeout(renderMath, 60);
+    }
+  }
+
+  async function loadDoc(path) {
+    try {
+      const resp = await fetch(path, { cache: 'no-store' });
+      if (!resp.ok) throw new Error(`fetch ${path} -> ${resp.status}`);
+      currentText = await resp.text();
+      const { frontmatter, body: bodyText } = splitFrontmatter(currentText);
+      currentFm = frontmatter;
+      currentBody = bodyText;
+      renderFrontmatter(frontmatter);
+      renderCurrentView();
+      setSelections([]);
+    } catch (e) {
+      body.innerHTML =
+        `<div class="error-banner">load failed: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+  }
+
+  // Math protection — replace $$...$$ and $...$ with sentinels before
+  // markdown-it sees them, restore after. Without this, multi-line block
+  // math gets split by paragraph breaks and KaTeX can't match delimiters.
+  function protectMath(text) {
+    const ph = {};
+    let i = 0;
+    text = text.replace(/\$\$[\s\S]+?\$\$/g, m => {
+      const k = '@@MATHB' + (i++) + '@@'; ph[k] = m; return k;
+    });
+    text = text.replace(/\$[^$\n]+?\$/g, m => {
+      const k = '@@MATHI' + (i++) + '@@'; ph[k] = m; return k;
+    });
+    return { text, ph };
+  }
+  function restoreMath(html, ph) {
+    for (const k in ph) html = html.split(k).join(ph[k]);
+    return html;
+  }
+
+  function renderCurrentView() {
+    body.innerHTML = '';
+    body.className = '';
+    if (currentView === 'doc') {
+      const { text: protectedText, ph } = protectMath(currentBody);
+      let html = md.render(protectedText);
+      html = restoreMath(html, ph);
+      body.innerHTML = html;
+      annotateHeadings(body);
+      activateScripts(body);
+      renderMath();
+    } else if (currentView === 'source') {
+      body.className = 'view-source';
+      body.textContent = currentText;
+    } else if (currentView === 'graph') {
+      renderGraphView();
+    } else if (currentView === 'latex') {
+      renderLatexView();
+    }
+  }
+
+  // Re-create <script> elements parsed via innerHTML so they actually execute.
+  function activateScripts(container) {
+    const scripts = Array.from(container.querySelectorAll('script'));
+    for (const oldScript of scripts) {
+      const newScript = document.createElement('script');
+      for (const attr of Array.from(oldScript.attributes)) {
+        newScript.setAttribute(attr.name, attr.value);
+      }
+      newScript.textContent = oldScript.textContent;
+      oldScript.parentNode.replaceChild(newScript, oldScript);
+    }
+  }
+
+  function renderLatexView() {
+    body.className = 'view-source';
+    body.textContent = ddfToLatex(currentFm, currentBody);
+  }
+
+  // ---- LaTeX export (best-effort, AST-light) ------------------------------
+  function ddfToLatex(fm, bodyText) {
+    let out = '';
+    out += '\\documentclass[11pt]{article}\n';
+    out += '\\usepackage[utf8]{inputenc}\\usepackage{amsmath,amssymb,amsthm,hyperref}\n';
+    out += '\\newtheorem{theorem}{Theorem}\n\\newtheorem{lemma}[theorem]{Lemma}\n';
+    out += '\\newtheorem{proposition}[theorem]{Proposition}\n\\newtheorem{corollary}[theorem]{Corollary}\n';
+    out += '\\theoremstyle{definition}\n\\newtheorem{definition}[theorem]{Definition}\n';
+    out += '\\newtheorem{example}[theorem]{Example}\n';
+    out += '\\theoremstyle{remark}\n\\newtheorem{remark}[theorem]{Remark}\n\n';
+    if (fm.title) out += '\\title{' + (fm.title || '') + '}\n';
+    const a = fm.authors || fm.author;
+    if (a) out += '\\author{' + (Array.isArray(a) ? a.join(' \\and ') : a) + '}\n';
+    out += '\\date{}\n\n\\begin{document}\n\\maketitle\n\n';
+
+    // Best-effort body translation. Headings -> environments; **Proof.** -> proof env;
+    // math passes through.
+    const lines = bodyText.split('\n');
+    let openEnv = null;
+    let inProof = false;
+    let inList = null; // 'itemize' | 'enumerate' | null
+
+    function closeList() { if (inList) { out += '\\end{' + inList + '}\n'; inList = null; } }
+    function closeProof() { if (inProof) { out += '\\end{proof}\n'; inProof = false; } }
+    function closeEnv()   { if (openEnv) { out += '\\end{' + openEnv + '}\n'; openEnv = null; } }
+
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, '');
+      const trimmed = line.trim();
+
+      // Heading
+      const hm = line.match(/^(#{1,6})\s+(.+?)(?:\s*\{([^}]+)\})?\s*$/);
+      if (hm) {
+        closeList(); closeProof(); closeEnv();
+        const text = hm[2].trim();
+        const attrs = hm[3] || '';
+        const id = (attrs.match(/#([\w-]+)/) || [])[1];
+        const first = (text.match(/^(\w+)/) || [])[1] || '';
+        const kind = first.toLowerCase();
+        const envMap = { theorem:'theorem', lemma:'lemma', proposition:'proposition',
+                         corollary:'corollary', definition:'definition',
+                         example:'example', remark:'remark', note:'remark', aside:'remark' };
+        if (envMap[kind]) {
+          const nameMatch = text.match(/\(([^)]+)\)/);
+          const nameOpt = nameMatch ? '[' + nameMatch[1] + ']' : '';
+          const label = id ? '\\label{' + id + '}' : '';
+          out += '\\begin{' + envMap[kind] + '}' + nameOpt + label + '\n';
+          openEnv = envMap[kind];
+        } else if (kind === 'abstract') {
+          out += '\\begin{abstract}\n'; openEnv = 'abstract';
+        } else if (hm[1].length === 1) {
+          // # H1 — skip (in \title)
+        } else {
+          const lvl = hm[1].length;
+          const cmd = ['section','subsection','subsubsection','paragraph'][Math.min(lvl-2,3)];
+          out += '\\' + cmd + '{' + text + '}\n';
+          if (id) out += '\\label{' + id + '}\n';
+        }
+        continue;
+      }
+      // Proof / Solution
+      const pm = trimmed.match(/^\*\*(Proof|Solution)\.\*\*\s*(.*)$/);
+      if (pm) {
+        closeList();
+        if (pm[1] === 'Proof') { out += '\\begin{proof}\n'; inProof = true; }
+        else { out += '\\textbf{Solution.}\n'; }
+        if (pm[2]) out += inlineMd2Tex(pm[2]) + '\n';
+        continue;
+      }
+      // **Statement.** — drop the label
+      const sm = trimmed.match(/^\*\*Statement\.\*\*\s*(.*)$/);
+      if (sm) { closeList(); if (sm[1]) out += inlineMd2Tex(sm[1]) + '\n'; continue; }
+      // End-of-proof
+      if (trimmed.includes('$\\square$')) {
+        const cleaned = line.replace('$\\square$','').replace(/\s+$/, '');
+        if (cleaned.trim()) out += inlineMd2Tex(cleaned) + '\n';
+        closeProof();
+        continue;
+      }
+      // Bullet
+      const bm = trimmed.match(/^[-*+]\s+(.*)$/);
+      if (bm) {
+        if (inList === 'enumerate') closeList();
+        if (!inList) { out += '\\begin{itemize}\n'; inList = 'itemize'; }
+        out += '\\item ' + inlineMd2Tex(bm[1]) + '\n';
+        continue;
+      }
+      // Numbered
+      const nm = trimmed.match(/^\d+\.\s+(.*)$/);
+      if (nm) {
+        if (inList === 'itemize') closeList();
+        if (!inList) { out += '\\begin{enumerate}\n'; inList = 'enumerate'; }
+        out += '\\item ' + inlineMd2Tex(nm[1]) + '\n';
+        continue;
+      }
+      // Blank
+      if (trimmed === '') { closeList(); out += '\n'; continue; }
+      // Directives / unknowns: pass through as comment
+      if (trimmed.startsWith(':::')) { out += '% ' + trimmed + '\n'; continue; }
+      out += inlineMd2Tex(trimmed) + '\n';
+    }
+    closeList(); closeProof(); closeEnv();
+    out += '\n\\end{document}\n';
+    return out;
+  }
+
+  function inlineMd2Tex(s) {
+    // Cross-ref [text](#id) → \hyperref[id]{text}
+    s = s.replace(/\[([^\]]+)\]\(#([\w-]+)\)/g, '\\hyperref[$2]{$1}');
+    // External [text](url) → \href{url}{text}
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '\\href{$2}{$1}');
+    // Bold **x**, italic *x*, code `x`
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, '\\textbf{$1}');
+    s = s.replace(/(?<![*\w])\*([^*\n]+)\*(?![*\w])/g, '\\textit{$1}');
+    s = s.replace(/`([^`\n]+)`/g, '\\texttt{$1}');
+    return s;
+  }
+
+  // ---- Graph view (DAG from cross-references) -----------------------------
+  function buildGraphData(bodyText) {
+    const nodes = [];
+    const links = [];
+    const ids = new Map();
+    const headingRe = /^(#{2,6})\s+(.+?)(?:\s*\{([^}]+)\})?\s*$/gm;
+    let m;
+    const blocks = [];
+    while ((m = headingRe.exec(bodyText)) !== null) {
+      const text = m[2].trim();
+      const attrs = m[3] || '';
+      const id = (attrs.match(/#([\w-]+)/) || [])[1];
+      const first = (text.match(/^(\w+)/) || [])[1] || '';
+      const kind = first.toLowerCase();
+      const KINDS = {
+        theorem:'#2a4d7a', lemma:'#4a6db5', proposition:'#7a8db5', corollary:'#6f4d7a',
+        definition:'#c39548', example:'#6a9255',
+        remark:'#888', note:'#888', aside:'#888',
+      };
+      if (!KINDS[kind]) continue;
+      const useId = id || text.toLowerCase().replace(/[^\w]+/g,'-').replace(/^-|-$/g,'') || ('b-'+blocks.length);
+      blocks.push({ id: useId, label: text, kind, color: KINDS[kind], start: m.index + m[0].length });
+      ids.set(useId, blocks.length - 1);
+    }
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      const end = (i+1 < blocks.length) ? blocks[i+1].start : bodyText.length;
+      const slice = bodyText.slice(b.start, end);
+      const linkRe = /\[([^\]]+)\]\(#([\w-]+)\)/g;
+      let lm;
+      while ((lm = linkRe.exec(slice)) !== null) {
+        if (ids.has(lm[2]) && lm[2] !== b.id) {
+          links.push({ source: b.id, target: lm[2] });
+        }
+      }
+      nodes.push({ id: b.id, label: b.label, kind: b.kind, color: b.color });
+    }
+    return { nodes, links };
+  }
+
+  function renderGraphView() {
+    const { nodes, links } = buildGraphData(currentBody);
+    if (nodes.length === 0) {
+      body.innerHTML = '<div class="view-stub">No referenceable blocks in this document. Add reserved-word headings (Theorem, Lemma, Definition, Example, …) with cross-references to populate the graph.</div>';
+      return;
+    }
+    body.innerHTML = '';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'view-graph');
+    svg.id = 'graph-svg';
+    body.appendChild(svg);
+
+    if (!window.d3) {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js';
+      s.onload = () => drawGraph(svg, nodes, links);
+      document.head.appendChild(s);
+    } else {
+      drawGraph(svg, nodes, links);
+    }
+  }
+
+  function drawGraph(svgEl, nodes, links) {
+    const svg = d3.select(svgEl);
+    const rect = svgEl.getBoundingClientRect();
+    const width = rect.width;
+    const height = rect.height;
+    svg.selectAll('*').remove();
+
+    svg.append('defs').append('marker')
+      .attr('id','arrow').attr('viewBox','0 -5 10 10').attr('refX',24).attr('refY',0)
+      .attr('markerWidth',7).attr('markerHeight',7).attr('orient','auto')
+      .append('path').attr('d','M0,-5L10,0L0,5').attr('fill','#b8b8b0');
+
+    const container = svg.append('g');
+    svg.call(d3.zoom().scaleExtent([0.2, 4]).on('zoom', ev => container.attr('transform', ev.transform)));
+
+    const linkSel = container.append('g').selectAll('line').data(links)
+      .enter().append('line')
+      .attr('stroke','#b8b8b0').attr('stroke-width', 1.5).attr('marker-end','url(#arrow)');
+
+    const incoming = {};
+    links.forEach(l => { incoming[l.target] = (incoming[l.target]||0)+1; });
+
+    const nodeSel = container.append('g').selectAll('g').data(nodes)
+      .enter().append('g')
+      .call(d3.drag()
+        .on('start', (ev,d) => { if (!ev.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+        .on('drag',  (ev,d) => { d.fx=ev.x; d.fy=ev.y; })
+        .on('end',   (ev,d) => { if (!ev.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+
+    nodeSel.append('circle')
+      .attr('r', d => 12 + 4 * (incoming[d.id]||0))
+      .attr('fill', d => d.color)
+      .attr('stroke','white').attr('stroke-width', 2).style('cursor','pointer')
+      .on('click', (ev, d) => {
+        currentView = 'doc';
+        renderViewTabs();
+        renderCurrentView();
+        setTimeout(() => {
+          const el = document.getElementById(d.id);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 80);
+      });
+
+    nodeSel.append('text')
+      .attr('text-anchor','middle')
+      .attr('dy', d => -16 - 4 * (incoming[d.id]||0))
+      .style('font','12px system-ui').style('fill','#222')
+      .text(d => d.label.length > 36 ? d.label.slice(0,34) + '…' : d.label);
+
+    const sim = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink(links).id(d => d.id).distance(140))
+      .force('charge', d3.forceManyBody().strength(-260))
+      .force('x', d3.forceX(width/2).strength(0.06))
+      .force('y', d3.forceY(height/2).strength(0.08))
+      .force('collide', d3.forceCollide().radius(d => 38 + 4*(incoming[d.id]||0)));
+
+    sim.on('tick', () => {
+      linkSel
+        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      nodeSel.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+    });
+  }
+
+  // ---- Selection ----------------------------------------------------------
+  const BLOCK_KINDS = ['theorem','lemma','proposition','corollary','definition',
+                       'example','proof','solution','remark','note','aside','abstract'];
+
+  function findBlock(el) {
+    while (el && el !== body && el.nodeType === 1) {
+      if (el.classList) {
+        if (el.classList.contains('directive')) return el;
+        for (const k of BLOCK_KINDS) {
+          if (el.classList.contains('kind-' + k)) return el;
+        }
+      }
+      if (/^H[1-6]$/.test(el.tagName) && el.id) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+  function findBlockOrParagraph(el) {
+    const block = findBlock(el);
+    if (block) return block;
+    while (el && el !== body && el.nodeType === 1) {
+      if (el.tagName === 'P' || el.tagName === 'LI' || el.tagName === 'BLOCKQUOTE') return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function blockInfo(el) {
+    const id = el.id || null;
+    const heading = el.matches('h1,h2,h3,h4,h5,h6')
+      ? el
+      : el.querySelector('h1,h2,h3,h4,h5,h6');
+    const label = (heading ? heading.textContent : el.textContent)
+      .split('\n')[0].trim().slice(0, 80);
+    const excerpt = el.textContent.replace(/\s+/g, ' ').trim().slice(0, 2000);
+    return { id, label, excerpt, element: el };
+  }
+
+  function setSelections(list) {
+    // Clear visual outlines from previous selections.
+    selectedEls.forEach(el => el.classList.remove('selected-block'));
+    selectedEls.clear();
+    currentSelections = (list || []).filter(s => s && (s.id || s.label || s.excerpt));
+    for (const s of currentSelections) {
+      if (s.element) {
+        s.element.classList.add('selected-block');
+        selectedEls.add(s.element);
+      }
+    }
+    if (currentSelections.length > 0) {
+      const labels = currentSelections.map(s => s.label || s.id || 'block');
+      if (labels.length === 1) {
+        selectionLabel.textContent = labels[0];
+      } else {
+        const head = labels.slice(0, 2).join(', ');
+        const tail = labels.length > 2 ? `, +${labels.length - 2} more` : '';
+        selectionLabel.textContent = `${labels.length} blocks: ${head}${tail}`;
+      }
+      selectionBar.classList.add('visible');
+    } else {
+      selectionBar.classList.remove('visible');
+    }
+  }
+
+  body.addEventListener('mouseover', (e) => {
+    const block = findBlockOrParagraph(e.target);
+    if (block && !selectedEls.has(block)) block.classList.add('hover-block');
+  });
+  body.addEventListener('mouseout', (e) => {
+    const block = findBlockOrParagraph(e.target);
+    if (block) block.classList.remove('hover-block');
+  });
+  body.addEventListener('mousedown', (e) => {
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      const block = findBlockOrParagraph(e.target);
+      if (block) e.preventDefault();
+    }
+  });
+  body.addEventListener('click', (e) => {
+    const block = findBlockOrParagraph(e.target);
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    // Don't intercept clicks on links.
+    if (e.target.closest('a')) return;
+    if (!block) {
+      if (currentSelections.length > 0) setSelections([]);
+      return;
+    }
+    e.preventDefault();
+    try { const s = document.getSelection(); if (s) s.removeAllRanges(); } catch (err) {}
+    block.classList.remove('hover-block');
+
+    let newList;
+    if (!additive) {
+      newList = [blockInfo(block)];
+    } else if (selectedEls.has(block)) {
+      newList = currentSelections.filter(s => s.element !== block);
+    } else {
+      newList = [...currentSelections, blockInfo(block)];
+    }
+    setSelections(newList);
+  });
+
+  selectionClear.addEventListener('click', () => setSelections([]));
+
+  // ---- WebSocket ----------------------------------------------------------
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    ws.onopen = () => { statusEl.textContent = 'connected'; sendBtn.disabled = false; };
+    ws.onclose = () => {
+      statusEl.textContent = 'disconnected — reconnecting...';
+      sendBtn.disabled = true;
+      setTimeout(connect, 1500);
+    };
+    ws.onerror = () => { statusEl.textContent = 'error'; };
+    ws.onmessage = (e) => {
+      try { handleMessage(JSON.parse(e.data)); }
+      catch (err) { console.warn('bad msg', err); }
+    };
+  }
+
+  function populateDocs(docs) {
+    docSelect.innerHTML = '';
+    for (const d of docs) {
+      const opt = document.createElement('option');
+      opt.value = d;
+      opt.textContent = d;
+      docSelect.appendChild(opt);
+    }
+    if (currentDoc) docSelect.value = currentDoc;
+  }
+
+  docSelect.addEventListener('change', () => {
+    const newDoc = docSelect.value;
+    if (!newDoc || newDoc === currentDoc) return;
+    currentDoc = newDoc;
+    loadDoc('/' + newDoc);
+    const url = new URL(window.location);
+    url.searchParams.set('doc', newDoc);
+    history.replaceState(null, '', url);
+  });
+
+  function populateModels(models, currentSdkId) {
+    modelSelect.innerHTML = '';
+    for (const alias of models) {
+      const opt = document.createElement('option');
+      opt.value = alias;
+      // Label: "Haiku (fast)", "Sonnet (balanced)", "Opus (smart)"
+      const tags = { haiku: 'fast', sonnet: 'balanced', opus: 'smart' };
+      opt.textContent = alias.charAt(0).toUpperCase() + alias.slice(1) +
+        (tags[alias] ? ' (' + tags[alias] + ')' : '');
+      modelSelect.appendChild(opt);
+    }
+    const friendly = aliasForSdk(currentSdkId) || 'haiku';
+    currentModel = friendly;
+    modelSelect.value = friendly;
+  }
+
+  function aliasForSdk(sdkId) {
+    if (!sdkId) return null;
+    if (sdkId.includes('haiku'))  return 'haiku';
+    if (sdkId.includes('sonnet')) return 'sonnet';
+    if (sdkId.includes('opus'))   return 'opus';
+    return null;
+  }
+
+  modelSelect.addEventListener('change', () => {
+    const newModel = modelSelect.value;
+    if (!newModel || newModel === currentModel) return;
+    if (!confirm(`Switch to ${newModel}? This starts a fresh conversation.`)) {
+      modelSelect.value = currentModel;
+      return;
+    }
+    currentModel = newModel;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'new_chat', model: newModel }));
+    }
+    log.innerHTML = '';
+    currentAssistantMsg = null;
+    hideActivity();
+  });
+
+  function handleMessage(data) {
+    if (data.type === 'ready') {
+      const urlDoc = new URLSearchParams(location.search).get('doc');
+      currentDoc = urlDoc || data.doc;
+      if (Array.isArray(data.docs)) populateDocs(data.docs);
+      if (Array.isArray(data.models)) populateModels(data.models, data.model);
+      loadDoc('/' + currentDoc);
+      return;
+    }
+    if (data.type === 'model_changed') {
+      // Backend confirmed switch; reflect in UI.
+      const friendly = aliasForSdk(data.model);
+      if (friendly && friendly !== currentModel) {
+        currentModel = friendly;
+        modelSelect.value = friendly;
+      }
+      return;
+    }
+    if (data.type === 'doc_changed') {
+      if (data.file === currentDoc) loadDoc('/' + data.file);
+      return;
+    }
+    if (data.type === 'chat_reset') {
+      log.innerHTML = '';
+      currentAssistantMsg = null;
+      hideActivity();
+      return;
+    }
+    if (data.type === 'turn_done') {
+      hideActivity();
+      currentAssistantMsg = null;
+      return;
+    }
+    if (data.type === 'error') {
+      hideActivity();
+      appendMessage('error', data.text);
+      return;
+    }
+    if (data.role === 'user' && data.type === 'text') {
+      appendMessage('user', data.text);
+      return;
+    }
+    if (data.role === 'assistant') {
+      if (data.type === 'text') { appendOrExtendAssistant(data.text); return; }
+      if (data.type === 'tool_use') { updateActivityStatus(friendlyToolStatus(data)); return; }
+    }
+  }
+
+  function basename(path) {
+    if (!path) return '';
+    const m = String(path).match(/[^\\/]+$/);
+    return m ? m[0] : path;
+  }
+  function friendlyToolStatus(data) {
+    const inp = data.input || {};
+    const name = data.name || '';
+    switch (name) {
+      case 'Read':      return 'Reading ' + (basename(inp.file_path) || 'a file') + '...';
+      case 'Edit':      return 'Editing ' + (basename(inp.file_path) || 'a file') + '...';
+      case 'Write':     return 'Writing ' + (basename(inp.file_path) || 'a file') + '...';
+      case 'Glob':      return 'Searching for files matching ' + (inp.pattern || '...');
+      case 'Grep':      return 'Searching content for "' + (inp.pattern || '...') + '"';
+      case 'Bash':      return 'Running ' + ((inp.command || '').trim().split(/\s+/)[0] || 'a command') + '...';
+      case 'WebFetch':  return 'Fetching ' + (inp.url || 'a URL') + '...';
+      case 'WebSearch': return 'Searching the web...';
+      default:          return 'Working with ' + name + '...';
+    }
+  }
+
+  function appendMessage(role, text) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + role;
+    const r = document.createElement('div');
+    r.className = 'msg-role';
+    r.textContent = role;
+    const t = document.createElement('div');
+    t.className = 'msg-text';
+    t.textContent = text;
+    div.appendChild(r);
+    div.appendChild(t);
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    if (window.renderMathInElement) {
+      try { window.renderMathInElement(t, {
+        delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],
+        throwOnError: false,
+      }); } catch(err) {}
+    }
+    if (role === 'user') currentAssistantMsg = null;
+    return div;
+  }
+  function appendOrExtendAssistant(text) {
+    if (!currentAssistantMsg) {
+      currentAssistantMsg = appendMessage('assistant', text);
+    } else {
+      const t = currentAssistantMsg.querySelector('.msg-text');
+      t.textContent = (t.textContent || '') + text;
+      if (window.renderMathInElement) {
+        try { window.renderMathInElement(t, {
+          delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],
+          throwOnError: false,
+        }); } catch(err) {}
+      }
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+  function showActivity() {
+    hideActivity();
+    const div = document.createElement('div');
+    div.className = 'activity';
+    div.id = 'activity-indicator';
+    const txt = document.createElement('span');
+    txt.className = 'activity-text';
+    txt.textContent = 'Working...';
+    div.appendChild(txt);
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+  function updateActivityStatus(text) {
+    let el = document.getElementById('activity-indicator');
+    if (!el) { showActivity(); el = document.getElementById('activity-indicator'); }
+    const txt = el.querySelector('.activity-text');
+    if (txt) txt.textContent = text;
+    log.scrollTop = log.scrollHeight;
+  }
+  function hideActivity() {
+    const el = document.getElementById('activity-indicator');
+    if (el) el.remove();
+  }
+
+  sendBtn.addEventListener('click', () => {
+    const text = input.value.trim();
+    if (!text || sendBtn.disabled) return;
+    const payload = { type: 'chat', text, model: currentModel };
+    if (currentDoc || currentSelections.length > 0) {
+      payload.context = {
+        doc: currentDoc || null,
+        selections: currentSelections.map(s => ({
+          id: s.id, label: s.label, excerpt: s.excerpt,
+        })),
+      };
+    }
+    ws.send(JSON.stringify(payload));
+    input.value = '';
+    showActivity();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendBtn.click();
+    }
+  });
+  newChatBtn.addEventListener('click', () => {
+    if (!confirm('Start a fresh conversation? Document state preserved.')) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'new_chat' }));
+    }
+    log.innerHTML = '';
+    currentAssistantMsg = null;
+    hideActivity();
+  });
+
+  // ---- Resizable split pane ------------------------------------------------
+  (function setupResizer() {
+    const resizer = document.getElementById('resizer');
+    const chatPane = document.getElementById('chat-pane');
+    const saved = parseInt(localStorage.getItem('ddf-chat-width') || '', 10);
+    if (saved && saved >= 280 && saved <= 1200) {
+      chatPane.style.width = saved + 'px';
+    }
+    let dragging = false;
+    resizer.addEventListener('mousedown', (e) => {
+      dragging = true;
+      resizer.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const w = window.innerWidth - e.clientX - 3;
+      const clamped = Math.max(280, Math.min(window.innerWidth * 0.6, w));
+      chatPane.style.width = clamped + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      resizer.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      const w = parseInt(chatPane.style.width, 10);
+      if (w) localStorage.setItem('ddf-chat-width', String(w));
+    });
+  })();
+
+  renderViewTabs();
+  connect();
+})();
+</script>
+</body>
+</html>
