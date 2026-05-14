@@ -23,8 +23,6 @@ desktop.ini
 
 # Runtime / generated state
 screenshots/
-.ddf-snapshots/
-.ddf-versions/
 .history/
 *.html.bak
 *.id-aliases.json

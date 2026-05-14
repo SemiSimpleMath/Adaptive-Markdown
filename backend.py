@@ -1,4 +1,4 @@
-"""v2 backend: aiohttp WS server wrapping Claude Agent SDK.
+"""Adaptive Markdown backend: aiohttp WS server wrapping Claude Agent SDK.
 
 Differences from v1:
 - No on-disk compile step. The browser renders markdown live.
@@ -422,9 +422,20 @@ _pre_edit_state: dict[str, dict] = {}
 
 async def pre_tool_use_hook(input_data, tool_use_id, context):
     """Capture the .md file's content before an Edit/Write. Snapshots it under
-    .history/ so we can reference the parent state in derived patches."""
+    .history/ so we can reference the parent state in derived patches.
+
+    Also blocks any agent write/edit that targets `examples/_pristine/`, since
+    that directory holds the ship-with originals used by /reset."""
     tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
+    # Guard: pristines are read-only from the agent's perspective.
+    if file_path and "_pristine" in Path(file_path).as_posix().split("/"):
+        return {
+            "decision": "block",
+            "reason": "examples/_pristine/ holds the ship-with original docs; "
+                      "edit the working copy at examples/<name>.md instead. "
+                      "Readers can roll back via the viewer's Reset button.",
+        }
     if file_path and file_path.endswith(".md"):
         try:
             p = Path(file_path)
@@ -479,6 +490,15 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
     except ValueError:
         rel = file_path
     await state.broadcast({"type": "doc_changed", "file": rel})
+
+    # If the agent created a NEW .md under examples/ (e.g. via Write during a
+    # format conversion), refresh the viewer's doc list so it appears in the
+    # dropdown. Idempotent for existing files.
+    if rel.startswith("examples/") and rel.endswith(".md"):
+        docs = sorted(
+            p.relative_to(ROOT).as_posix() for p in EXAMPLES_DIR.glob("*.md")
+        )
+        await state.broadcast({"type": "docs", "list": docs, "doc": rel})
     return {}
 
 
@@ -718,6 +738,208 @@ async def serve_static(request: web.Request) -> web.Response:
     return web.FileResponse(target)
 
 
+# ---- Drop-to-upload ------------------------------------------------------
+# POST /upload with multipart form, field name "file", .md only. Saves to
+# examples/, mints doc_id, broadcasts updated docs list. Returns the
+# relative path the client should switch to.
+_UPLOAD_MAX_BYTES = 1 * 1024 * 1024  # 1 MB safety cap
+
+
+async def upload_md(request: web.Request) -> web.Response:
+    reader = await request.multipart()
+    field = None
+    async for part in reader:
+        if part.name == "file":
+            field = part
+            break
+    if field is None:
+        return web.json_response({"error": "no file field"}, status=400)
+
+    raw_name = field.filename or "uploaded.md"
+    ext = Path(raw_name).suffix.lower()
+    # Accepted text-ish formats. .md drops directly into examples/.
+    # Others land in examples/raw/ and the viewer asks the agent to convert.
+    SUPPORTED_EXTS = {".md", ".tex", ".txt", ".rst", ".org"}
+    if ext not in SUPPORTED_EXTS:
+        return web.json_response(
+            {"error": f"unsupported file type: {ext or '(no extension)'}. "
+                      f"accepted: {', '.join(sorted(SUPPORTED_EXTS))}"},
+            status=400,
+        )
+    needs_conversion = ext != ".md"
+    # Sanitize: strip path components, keep only safe chars
+    safe_name = re.sub(r"[^\w.\-]", "_", Path(raw_name).name)
+    if not safe_name or safe_name == ext:
+        safe_name = f"uploaded{ext}"
+
+    if needs_conversion:
+        raw_dir = EXAMPLES_DIR / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        target = raw_dir / safe_name
+    else:
+        target = EXAMPLES_DIR / safe_name
+    counter = 1
+    base = target.stem
+    while target.exists():
+        target = target.with_name(f"{base}-{counter}{ext}")
+        counter += 1
+
+    # Stream-read with size cap
+    total = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = await field.read_chunk(size=64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _UPLOAD_MAX_BYTES:
+            return web.json_response({"error": "file too large (max 1MB)"}, status=413)
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    # Strip UTF-8 BOM if present (Notepad / PowerShell often add this) so
+    # the frontmatter regex's ^--- anchor still matches.
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    elif raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        # UTF-16 — re-encode as UTF-8
+        raw = raw.decode("utf-16").encode("utf-8")
+    text = raw.decode("utf-8", errors="replace")
+    # Normalize line endings to LF
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    EXAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    # newline="" prevents Python's text-mode CRLF translation on Windows
+    with target.open("w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+    rel = target.relative_to(ROOT).as_posix()
+
+    if needs_conversion:
+        # Non-.md files: viewer will ask the agent to convert. No doc_id mint,
+        # no docs broadcast — the new .md doesn't exist yet.
+        target_name = f"examples/{Path(safe_name).stem}.md"
+        print(f"[upload:raw] {rel} ({total} bytes, kind={ext})", flush=True)
+        return web.json_response({
+            "path": rel,
+            "name": target.name,
+            "kind": ext,
+            "needs_conversion": True,
+            "target": target_name,
+        })
+
+    # .md upload: mint doc_id and tell connected viewers
+    ensure_doc_ids()
+    docs = sorted(
+        p.relative_to(ROOT).as_posix() for p in EXAMPLES_DIR.glob("*.md")
+    )
+    await state.broadcast({"type": "docs", "list": docs, "doc": rel})
+    print(f"[upload] {target.name} ({total} bytes)", flush=True)
+    return web.json_response({"path": rel, "name": target.name})
+
+
+# ---- Reset to pristine --------------------------------------------------
+# POST /reset?doc=examples/<name>.md restores the working copy from the
+# matching ship-with pristine at examples/_pristine/<name>.md.
+PRISTINE_DIR = EXAMPLES_DIR / "_pristine"
+
+
+async def list_history(request: web.Request) -> web.Response:
+    """GET /history?doc=examples/X.md — list snapshots captured by pre-edit hook."""
+    doc_param = request.query.get("doc", "").strip()
+    if not doc_param.startswith("examples/") or not doc_param.endswith(".md"):
+        return web.json_response({"error": "bad doc path"}, status=400)
+    doc_path = ROOT / doc_param
+    hist = _history_dir_for(doc_path)
+    snaps = []
+    if hist.exists():
+        for p in sorted(hist.glob("snap-*.md"), reverse=True):
+            stat = p.stat()
+            snaps.append({
+                "snap_id": p.stem.replace("snap-", ""),
+                "ts_ms": int(stat.st_mtime * 1000),
+                "size": stat.st_size,
+            })
+    return web.json_response({"doc": doc_param, "snapshots": snaps})
+
+
+async def undo_doc(request: web.Request) -> web.Response:
+    """POST /undo?doc=examples/X.md — restore the most recent snapshot.
+
+    Convenience over /restore_snapshot when the user just wants "go back one"
+    without opening the history panel."""
+    doc_param = request.query.get("doc", "").strip()
+    if not doc_param.startswith("examples/") or not doc_param.endswith(".md"):
+        return web.json_response({"error": "bad doc path"}, status=400)
+    doc_path = (ROOT / doc_param).resolve()
+    try:
+        doc_path.relative_to(EXAMPLES_DIR)
+    except ValueError:
+        return web.json_response({"error": "path traversal"}, status=400)
+    if doc_path.parent != EXAMPLES_DIR:
+        return web.json_response({"error": "doc must live directly in examples/"}, status=400)
+    hist = _history_dir_for(doc_path)
+    if not hist.exists():
+        return web.json_response({"error": "no snapshots yet"}, status=404)
+    snaps = sorted(hist.glob("snap-*.md"), reverse=True)
+    if not snaps:
+        return web.json_response({"error": "no snapshots yet"}, status=404)
+    newest = snaps[0]
+    doc_path.write_bytes(newest.read_bytes())
+    rel = doc_path.relative_to(ROOT).as_posix()
+    await state.broadcast({"type": "doc_changed", "file": rel})
+    snap_id = newest.stem.replace("snap-", "")
+    print(f"[undo] {rel} <- snap-{snap_id}", flush=True)
+    return web.json_response({"path": rel, "snap_id": snap_id, "ok": True})
+
+
+async def restore_snapshot(request: web.Request) -> web.Response:
+    """POST /restore_snapshot?doc=...&snap_id=... — overwrite working copy with snapshot."""
+    doc_param = request.query.get("doc", "").strip()
+    snap_id = request.query.get("snap_id", "").strip()
+    if not doc_param.startswith("examples/") or not doc_param.endswith(".md"):
+        return web.json_response({"error": "bad doc path"}, status=400)
+    if not snap_id or not re.fullmatch(r"[A-Za-z0-9_-]{6,40}", snap_id):
+        return web.json_response({"error": "bad snap_id"}, status=400)
+    doc_path = (ROOT / doc_param).resolve()
+    try:
+        doc_path.relative_to(EXAMPLES_DIR)
+    except ValueError:
+        return web.json_response({"error": "path traversal"}, status=400)
+    if doc_path.parent != EXAMPLES_DIR:
+        return web.json_response({"error": "doc must live directly in examples/"}, status=400)
+    snap_path = _history_dir_for(doc_path) / f"snap-{snap_id}.md"
+    if not snap_path.exists():
+        return web.json_response({"error": "snapshot not found"}, status=404)
+    doc_path.write_bytes(snap_path.read_bytes())
+    rel = doc_path.relative_to(ROOT).as_posix()
+    await state.broadcast({"type": "doc_changed", "file": rel})
+    print(f"[restore] {rel} <- snap-{snap_id}", flush=True)
+    return web.json_response({"path": rel, "snap_id": snap_id, "ok": True})
+
+
+async def reset_doc(request: web.Request) -> web.Response:
+    doc_param = request.query.get("doc", "").strip()
+    if not doc_param.startswith("examples/") or not doc_param.endswith(".md"):
+        return web.json_response({"error": "bad doc path"}, status=400)
+    doc_path = (ROOT / doc_param).resolve()
+    try:
+        doc_path.relative_to(EXAMPLES_DIR)
+    except ValueError:
+        return web.json_response({"error": "path traversal"}, status=400)
+    if doc_path.parent != EXAMPLES_DIR:
+        return web.json_response({"error": "doc must live directly in examples/"}, status=400)
+    pristine = PRISTINE_DIR / doc_path.name
+    if not pristine.exists():
+        return web.json_response(
+            {"error": f"no pristine for {doc_path.name}"}, status=404,
+        )
+    doc_path.write_bytes(pristine.read_bytes())
+    rel = doc_path.relative_to(ROOT).as_posix()
+    await state.broadcast({"type": "doc_changed", "file": rel})
+    print(f"[reset] {rel} <- _pristine/{doc_path.name}", flush=True)
+    return web.json_response({"path": rel, "ok": True})
+
+
 async def on_startup(app: web.Application):
     ensure_doc_ids()
     await init_sdk()
@@ -731,6 +953,11 @@ def make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", serve_index)
     app.router.add_get("/ws", ws_handler)
+    app.router.add_post("/upload", upload_md)
+    app.router.add_get("/history", list_history)
+    app.router.add_post("/undo", undo_doc)
+    app.router.add_post("/restore_snapshot", restore_snapshot)
+    app.router.add_post("/reset", reset_doc)
     app.router.add_get("/{path:.+}", serve_static)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
@@ -738,6 +965,10 @@ def make_app() -> web.Application:
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
-    print(f"v2 backend on http://127.0.0.1:{port}", flush=True)
+    # Port: CLI arg wins, else PORT env var, else 8090.
+    if len(sys.argv) > 1:
+        port = int(sys.argv[1])
+    else:
+        port = int(os.environ.get("PORT", "8090"))
+    print(f"Adaptive Markdown listening on http://127.0.0.1:{port}", flush=True)
     web.run_app(make_app(), host="127.0.0.1", port=port, print=None)

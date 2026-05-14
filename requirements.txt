@@ -1,0 +1,5 @@
+# Adaptive Markdown — runtime dependencies
+# Python 3.10+ required.
+
+aiohttp>=3.8,<4
+claude-agent-sdk>=0.1.81,<0.2

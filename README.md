@@ -1,63 +1,110 @@
-# v2 — adaptive markdown documents
+# Adaptive Markdown
 
-A reader-steered markdown document system. You write a `.md` file with light conventions; an agent (loaded with a small skill) edits, expands, restyles, translates, illustrates, and queries it; the viewer lets readers click any block and ask anything about it.
+**Documents that are programmable objects.** Write plain markdown; a coding agent on the side rewrites, translates, illustrates, animates, or extends it in place — including arbitrary HTML, CSS, and JavaScript that ships *inside* the doc. The page you see is the file, executing.
 
-**Status:** v2 rebuild from scratch. v1 lessons captured in `LESSONS_FROM_V1.md` (forthcoming). v1 lives at `E:\DPF\DPF\` and is referred to only for the skill content and the example documents we want to keep demoing.
-
-## Design principles (lessons from v1)
-
-1. **Markdown source, no new format.** A `v2.md` file is a regular markdown file. Open it in any editor, render it with any markdown viewer — it works. The "adaptive" lives in the skill + viewer, not the file extension.
-2. **Skill is the artifact.** ~300 lines of plain text that teaches any agent how to operate on the document. The skill is portable: same text works in Claude Code CLI, in the embedded SDK, in the browser viewer.
-3. **Markdown directives instead of HTML tags.** Use `:::figure { intent="..." renderer=canvas }` instead of `<ddf-figure ...>`. No HTML-in-markdown parser fights. Pandoc / MyST / remark-directive all support this.
-4. **Browser-first deployment.** The primary artifact is a single `index.html` you can open from any file system. Optional native backend exists for users who want real-filesystem-and-bash for Lean/Python integration.
-5. **AST-based pipeline.** Parse once (markdown-it + plugins), render many. No regex soup. The same AST drives the doc view, the graph view, the LaTeX export, etc.
-6. **Components register themselves.** Each block type lives in a single file declaring parse rules + HTML render + LaTeX render + DAG-extract + skill snippet. Adding a new block kind is one file, not edits across the codebase.
-7. **Views are first-class.** A view is `(name, generator)`. Built-in: doc, graph, source, latex, print. New views slot in by registering a function.
-8. **In-place DOM patching.** When the agent edits, the viewer fetches the new compiled HTML, diffs against the current DOM, applies surgical replacements. No iframe reloads, no scroll jumps.
-
-## Folder layout (planned)
+Think of it as ChatGPT Canvas or Claude Artifacts, but the agent isn't restricted to a sandboxed component — it has the full web platform. Dark mode toggle, animated headings, falling-letter effect, a snake game in the corner? All by asking, all stored as a normal `.md` file you can share.
 
 ```
-v2/
-├── README.md                # this file
-├── SKILL.md                 # the skill — the agent's contract
-├── LESSONS_FROM_V1.md       # what worked, what didn't, why we're rebuilding
-├── index.html               # single-file browser app
-├── viewer.py                # optional native backend (later)
-├── components/              # one file per block type
-│   ├── theorem.js
-│   ├── proof.js
-│   ├── figure.js
-│   ├── computation.js
-│   ├── pinned.js
-│   └── claim.js
-└── examples/
-    ├── intro.md             # tiny smoke test
-    ├── textbook.md          # ported from v1's MVT doc
-    └── paper.md             # ported from v1's Apéry conversion
+$ python backend.py
+Adaptive Markdown listening on http://127.0.0.1:8090
 ```
 
-## Capabilities (target functionality)
+---
 
-Carried over from v1 (proven):
-- Edit / expand / collapse / restyle / translate any block via chat
-- Click-to-focus selection (single + multi-select via shift/ctrl)
-- Reserved heading words → structural blocks (Theorem, Lemma, Definition, Proof, Example, Remark)
-- Dependency graph view derived from cross-reference links
-- Multiple derived views from a single source (HTML, Graph, LaTeX, Print, Source)
-- Per-doc version history with browse-and-restore
-- Live in-place DOM patches on agent edits
-- Figure intent-vs-implementation pattern
+## Prerequisites
 
-New in v2:
-- Annotations layer (highlights, query results) — non-destructive overlay
-- Dependency-aware operations ("expand this proof, plus the lemmas it cites")
-- Audience presets — reader picks novice/intermediate/expert; cached per-doc render
-- Live computation via Pyodide (in-browser Python / SymPy)
-- Chat-history-per-block — clicking a block shows the conversation that shaped it
-- Component plugin system — new block types as drop-in files
+- **Python 3.10+**
+- An **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com). The Claude Agent SDK draws from your API credits, not your Claude.ai subscription.
+- A modern browser (Chrome / Edge / Firefox / Safari).
 
-Deferred / stretch:
-- Lean verification of formal statements
-- Multi-document workspace + cross-doc dependency graph
-- Multi-user real-time collaboration
+> **OpenAI / Codex support is coming soon.** Today the agent uses Anthropic's Claude family (Haiku by default, Sonnet and Opus selectable from the chat header). Bring-your-own-OpenAI-key support is on the near-term roadmap so you can use GPT-class models the same way.
+
+## Install
+
+```bash
+git clone https://github.com/SemiSimpleMath/Adaptive-Markdown
+cd Adaptive-Markdown
+
+# (recommended) use a virtual environment
+python -m venv .venv
+# Windows:   .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+Set your API key in your shell:
+
+```bash
+# macOS / Linux
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Windows PowerShell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+```
+
+Run the backend:
+
+```bash
+python backend.py
+```
+
+Open <http://127.0.0.1:8090> in your browser. The tutorial doc loads by default.
+
+## First run — the tutorial
+
+`examples/intro.md` is itself the tutorial. It has four interactive sections:
+
+1. **Rewrite for a kid** — click an ε-δ continuity definition, ask the agent to rewrite it for a 10-year-old.
+2. **Translate from French** — click a paragraph about Évariste Galois, ask to translate.
+3. **Add a figure** — click the unit-circle section, ask the agent to animate a point tracing it.
+4. **Change the page itself** — ask for a dark-mode toggle, animated headings, or falling letters. The agent writes a literal `<script>` block into the markdown source.
+
+Open the **Source** tab afterwards to see exactly what got added — no hidden framework, no component palette. Just markdown with embedded `<style>` and `<script>`.
+
+## Configuration
+
+Environment variables (all optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | (required) | Your Anthropic API key. |
+| `MODEL` | `claude-haiku-4-5-20251001` | Default model. Override with a full SDK model id, or use the chat dropdown to switch between Haiku / Sonnet / Opus per session. |
+| `MAX_BUDGET_USD` | `1.0` | Per-turn budget cap (USD). The SDK aborts a turn if costs would exceed it. |
+| `PORT` | `8090` | Backend port. |
+
+## The format
+
+The full technical spec lives in [`FORMAT.md`](FORMAT.md) — file shape, reserved heading words, the two-tier ID model (anchor vs tracking), directive vocabulary, math conventions, embedded `<style>` / `<script>` semantics, sidecar files. Read that if you're writing tooling, an alternative agent, or a viewer port.
+
+The agent's contract is at [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) — the prescriptive instructions the model loads at the start of every session.
+
+## How it works
+
+- **The doc** (`examples/*.md`) is a regular markdown file with optional `{#anchor}` attributes, `:::` directives, and inline `<style>` / `<script>` blocks.
+- **The viewer** (`index.html`) renders the doc inside a sandboxed iframe and pipes click-to-focus selections, drops, and live updates over a WebSocket.
+- **The agent** is the Claude Agent SDK with a project-local skill at `.claude/skills/adaptive-markdown/SKILL.md`. The skill is ~350 lines of plain text that teaches the model how to operate on the doc — preserve tracking IDs, write KaTeX-safe math, etc.
+- **History & undo** — every pre-edit snapshot is captured under `.history/<doc-stem>/snap-…md`. The `↶ History` button in the doc header lets you scrub back. `↺ Reset` restores from `examples/_pristine/` — the ship-with originals are write-protected from the agent.
+
+## Drop your own files
+
+Drag any `.md` onto the viewer to open it. Drop a `.tex` (or `.txt` / `.rst` / `.org`) and the agent auto-converts it to adaptive markdown in place.
+
+## What's not there yet
+
+- OpenAI / Codex backend (above)
+- Multi-document workspace with cross-doc dependency graphs
+- Pyodide for in-browser Python / SymPy in `:::computation` blocks
+- Lean verification of formal theorem statements
+- Hosted multi-user mode
+
+See `TODO.md` for the full backlog (gitignored — internal).
+
+## License
+
+- Code: [MIT](LICENSE)
+- The skill text (`.claude/skills/adaptive-markdown/SKILL.md`) is the portable specification of the format — it's CC BY-SA 4.0 so derivatives stay open. See `SKILL-LICENSE`.
+
+---
+
+In a few years, no one will be reading journals on paper. Everyone will be interacting with articles, translating them instantly, exploring alternative proofs, asking questions, writing code on the spot into the document. This is what we're building toward.

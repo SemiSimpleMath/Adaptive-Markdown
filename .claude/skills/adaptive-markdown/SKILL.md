@@ -20,6 +20,21 @@ This skill is the agent's contract. Without it, an agent doesn't know the conven
 
 The answer to "make X happen on this page" is almost always **Edit the active `.md` file to add the implementation**, then let the viewer's in-place patch logic re-render.
 
+## The doc is a self-contained webpage
+
+The active `.md` renders inside a sandboxed `<iframe>` — its own `<html>`, `<head>`, `<body>`. Anything you embed in the source becomes the iframe's content: `<style>` blocks style only the doc, `<script>` blocks run in the iframe's window, event listeners on `document`/`window` only see iframe events, `position: fixed` is fixed to the iframe viewport. Nothing leaks into the chat panel or viewer chrome.
+
+You have the full web platform inside the doc, used freely:
+
+- **Any selector works** — `body { background: #1a1a1a; color: #f0f0f0; }` for dark mode paints only the doc, not the chat.
+- **Any positioning works** — `position: fixed; top: 1rem; right: 1rem;` puts a toggle button at the doc's top-right.
+- **CSS custom properties** on `:root` or `body` are doc-local; they don't leak.
+- **Document-level event listeners** only fire for events inside the doc.
+- **`localStorage`, `sessionStorage`, `fetch`, `requestAnimationFrame`, etc.** all work as in any web page — useful for persisting reader preferences (dark-mode on/off, font size, expanded/collapsed sections) across reloads.
+
+When the reader says "the page," they mean the rendered doc — that's exactly what your edits affect. Editing `index.html` (the viewer chrome — chat panel, header, dropdowns) is a separate, rare request that requires the user to ask explicitly for a "viewer change." Default to editing the `.md`.
+
+
 ## Mental model
 
 - **Source** (`*.md`): the truth. Frontmatter + markdown body + a tiny set of `:::` directives.
@@ -132,6 +147,24 @@ Reader requests fall into four buckets. Decide first, then act.
 | **Conversation** | "I don't follow", "What's the motivation?" | Reply in chat. No file edits. |
 
 Ambiguous → default to Query, offer to edit or annotate.
+
+### Chat reply formatting
+
+The chat panel renders your replies as markdown — bold, lists, code blocks, headings all parse. A few conventions that make replies scannable:
+
+- **Keep narration short.** The user is watching the doc re-render — they don't need a play-by-play. A one- or two-sentence summary of what changed is plenty.
+- **Don't dump verbatim before/after text in the chat.** The user can scrub the **History** dropdown or the **Source** tab to see exact content. If you must show a snippet, use a fenced code block — the chat styles them as bordered boxes:
+
+  ```markdown
+  Replaced the proof with a one-line version:
+
+  ```latex
+  By Rolle's theorem applied to $f - g$, $c$ exists.
+  ```
+  ```
+
+- **Label lines on their own** (`**Note:**`, `**Caveat:**`, `**Edit:**`) render as small chips. Useful sparingly — overuse looks busy.
+- **No nested heavy structure.** Numbered lists of 8 sub-bullets are hard to read in a 420px-wide chat column. Prefer one short paragraph + one example over an exhaustive outline.
 
 ## Identity: anchors vs tracking IDs
 
@@ -261,8 +294,29 @@ When NOT to parallelize:
 - Operations where one section's outcome affects another (renumbering, cross-ref rewrites).
 - Operations needing global consistency (whole-doc translation — better as one pass for terminology).
 
+## Read-only paths
+
+`examples/_pristine/` holds the ship-with original docs used by the viewer's Reset button. Treat them as read-only — never `Edit` or `Write` anything under that directory. The pre-tool-use hook will block such attempts; if your tool call is blocked with that reason, edit the working copy at `examples/<name>.md` instead.
+
+## Importing other formats
+
+The viewer accepts drag-and-drop of `.tex`, `.txt`, `.rst`, `.org` files alongside `.md`. Non-`.md` drops land at `examples/raw/<name>.<ext>` and the viewer auto-asks you to convert. Your job:
+
+1. **Read** the raw file from the path the user gives you.
+2. **Write** a clean adaptive markdown file at `examples/<stem>.md`, following this skill's conventions:
+   - Frontmatter with `title:`, `audience:`, `language:`. Omit `doc_id` — it gets minted automatically.
+   - `## Theorem ({name}) {#anchor}` for theorem-like environments.
+   - In-block `**Statement.**` / `**Proof.**` labels (not their LaTeX env wrappers).
+   - KaTeX-safe math: `$...$` inline, `$$...$$` display. Convert `align`/`eqnarray` → `\begin{aligned}...\end{aligned}` inside `$$`.
+   - `\label{x}` → `{#x}` on the enclosing heading; `\ref{x}` / `\cite{x}` → `[text](#x)`.
+   - Strip preamble noise (`\documentclass`, package loads, `\maketitle`). Inline simple custom macros; flag complex ones.
+3. **Conversion ≠ adaptation.** Stay faithful to the source — do not translate, restyle, or condense during import. Reader-driven adaptation happens later.
+4. Leave the raw file at `examples/raw/` as provenance.
+
+If the source is large or messy, do it section-by-section using the `Agent` tool (see Parallel sub-work). The viewer will switch to the new file as soon as you write it — no further announce needed.
+
 ## See also
 
-- `import-tex` skill (future) — converting LaTeX/AMS-TeX papers into adaptive markdown
+- `import-tex` skill (future, hardened) — deterministic LaTeX/AMS-TeX → adaptive markdown converter
 - `export-tex` skill (future) — emitting LaTeX from adaptive markdown
 - `claim-lean` skill (future) — formal-statement verification via Lean

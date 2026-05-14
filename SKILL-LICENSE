@@ -1,0 +1,17 @@
+Adaptive Markdown — Skill License
+=================================
+
+The skill text at `.claude/skills/adaptive-markdown/SKILL.md` is the portable
+specification of the adaptive-markdown format. It is the contract that lets
+any agent operate on these documents predictably.
+
+It is released under the Creative Commons Attribution-ShareAlike 4.0
+International License (CC BY-SA 4.0).
+
+  https://creativecommons.org/licenses/by-sa/4.0/
+
+This license is chosen deliberately so derivatives of the skill — extensions,
+forks, translations, port to other agent runtimes — remain openly available
+to the community.
+
+The viewer, backend, and example docs ship under MIT (see LICENSE).

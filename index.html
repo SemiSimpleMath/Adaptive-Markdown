@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>v2 — adaptive markdown</title>
+<title>Adaptive Markdown</title>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -70,12 +70,21 @@ body {
   background: var(--accent);
 }
 .doc-pane {
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
   min-width: 200px;
   min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+#doc-frame {
   flex: 1 1 0;
+  width: 100%;
+  border: 0;
+  display: block;
+  background: #fff;
 }
 .doc-pane .scroll {
   flex: 1 1 0;
@@ -89,12 +98,89 @@ body {
 }
 .view-tabs {
   display: flex;
+  align-items: stretch;
   background: #ececea;
   border-bottom: 1px solid var(--border);
   padding: 0 0.5rem;
-  gap: 1px;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
+.view-tab-buttons {
+  display: flex;
+  gap: 1px;
+  flex: 1 1 auto;
+}
+.view-tabs #doc-select {
+  max-width: 240px;
+  align-self: center;
+}
+.view-tabs #reset-doc-btn { align-self: center; }
+.history-wrap { position: relative; align-self: center; }
+.new-doc-overlay {
+  position: absolute;
+  inset: 38px 0 0 0;            /* leave the view-tabs row visible above */
+  background: rgba(255, 255, 255, 0.97);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.6rem;
+  z-index: 60;
+  border: 3px dashed var(--border);
+  border-radius: 6px;
+  margin: 0.6rem;
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  padding: 1rem;
+}
+.new-doc-overlay.dropping {
+  background: rgba(42, 77, 122, 0.05);
+  border-color: var(--accent);
+}
+.new-doc-overlay strong {
+  font-size: 1.15rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+.new-doc-overlay .new-doc-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.new-doc-overlay #new-doc-close { margin-top: 0.6rem; }
+.history-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  min-width: 280px;
+  max-width: 400px;
+  max-height: 340px;
+  overflow-y: auto;
+  z-index: 100;
+  font-size: 0.8rem;
+}
+.history-panel .history-empty {
+  padding: 1rem; color: var(--muted); text-align: center; font-style: italic;
+}
+.history-panel button.history-row {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.5rem 0.8rem;
+  background: white;
+  border: 0; border-bottom: 1px solid var(--border);
+  font: inherit; font-size: 0.8rem;
+  text-align: left; cursor: pointer; color: inherit;
+}
+.history-panel button.history-row:hover { background: var(--accent-soft); }
+.history-panel button.history-row:last-child { border-bottom: 0; }
+.history-panel .history-row-ts { flex: 1 1 auto; }
+.history-panel .history-row-size { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.75rem; }
 .view-tab {
   padding: 0.4rem 0.95rem;
   background: transparent; border: 0;
@@ -307,6 +393,96 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 .msg-text { white-space: pre-wrap; word-wrap: break-word; }
 .msg.error .msg-role, .msg.error .msg-text { color: var(--error); }
 
+/* Assistant messages render as markdown — give them readable typography */
+.msg.assistant .msg-text { white-space: normal; }
+.msg.assistant .msg-text > *:first-child { margin-top: 0; }
+.msg.assistant .msg-text > *:last-child { margin-bottom: 0; }
+.msg.assistant .msg-text h1,
+.msg.assistant .msg-text h2,
+.msg.assistant .msg-text h3,
+.msg.assistant .msg-text h4,
+.msg.assistant .msg-text h5,
+.msg.assistant .msg-text h6 {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  margin: 0.7em 0 0.3em;
+  line-height: 1.3;
+  color: var(--fg);
+}
+.msg.assistant .msg-text h1 { font-size: 1.12rem; }
+.msg.assistant .msg-text h2 { font-size: 1.04rem; }
+.msg.assistant .msg-text h3 { font-size: 0.96rem; }
+.msg.assistant .msg-text h4,
+.msg.assistant .msg-text h5,
+.msg.assistant .msg-text h6 { font-size: 0.9rem; }
+.msg.assistant .msg-text p { margin: 0.45em 0; }
+.msg.assistant .msg-text ul,
+.msg.assistant .msg-text ol {
+  padding-left: 1.4em; margin: 0.4em 0;
+}
+.msg.assistant .msg-text li { margin: 0.15em 0; }
+.msg.assistant .msg-text li > p:first-child { margin-top: 0; }
+.msg.assistant .msg-text li > p:last-child { margin-bottom: 0; }
+.msg.assistant .msg-text code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 0.04em 0.32em;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.msg.assistant .msg-text pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 0.55em 0.75em;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.8em;
+  margin: 0.5em 0;
+  line-height: 1.45;
+}
+.msg.assistant .msg-text pre code {
+  background: transparent; border: 0; padding: 0; font-size: 1em;
+}
+.msg.assistant .msg-text blockquote {
+  margin: 0.5em 0;
+  padding: 0.25em 0.7em;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+.msg.assistant .msg-text strong { font-weight: 600; color: var(--fg); }
+/* When the agent puts a bare label on its own line (e.g. **Before:**, **After:**,
+   **Note:**, **Edit:**), markdown-it produces <p><strong>Label</strong></p>.
+   Style that pattern as a small chip so it visually separates the chunks below. */
+.msg.assistant .msg-text p > strong:first-child:last-child {
+  display: inline-block;
+  margin: 0.5em 0 0.15em;
+  padding: 0.1em 0.55em;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.msg.assistant .msg-text p:has(> strong:first-child:last-child) {
+  margin: 0;
+}
+.msg.assistant .msg-text em { font-style: italic; }
+.msg.assistant .msg-text a { color: var(--accent); }
+.msg.assistant .msg-text hr {
+  border: 0; border-top: 1px solid var(--border); margin: 0.8em 0;
+}
+.msg.assistant .msg-text table {
+  border-collapse: collapse; margin: 0.5em 0; font-size: 0.88em;
+}
+.msg.assistant .msg-text th,
+.msg.assistant .msg-text td {
+  border: 1px solid var(--border); padding: 0.25em 0.55em;
+}
+.msg.assistant .msg-text th { background: var(--accent-soft); font-weight: 600; }
+
 .activity {
   display: flex; align-items: center; gap: 0.5rem;
   font-size: 0.88rem; color: var(--muted); font-style: italic;
@@ -321,10 +497,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   display: inline-block;
   width: 9px; height: 9px; border-radius: 50%;
   background: var(--accent);
-  animation: ddf-pulse 1.4s ease-in-out infinite;
+  animation: am-pulse 1.4s ease-in-out infinite;
   flex-shrink: 0;
 }
-@keyframes ddf-pulse {
+@keyframes am-pulse {
   0%, 100% { opacity: 0.3; transform: scale(0.8); }
   50%      { opacity: 1;   transform: scale(1.1); }
 }
@@ -375,8 +551,25 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 <body>
 <div class="app">
   <div class="doc-pane" id="doc-pane">
-    <div class="view-tabs" id="view-tabs"></div>
-    <div class="scroll" id="doc-scroll">
+    <div class="view-tabs" id="view-tabs">
+      <div class="view-tab-buttons" id="view-tab-buttons"></div>
+      <select id="doc-select" class="doc-select" title="Switch document"></select>
+      <button id="new-doc-btn" class="btn-tiny" title="Add a new document — drop a file or browse">＋ Doc</button>
+      <button id="undo-btn" class="btn-tiny" title="Revert to the state before the last edit">↶ Undo</button>
+      <div class="history-wrap">
+        <button id="history-btn" class="btn-tiny" title="Browse pre-edit snapshots and restore an earlier version">History</button>
+        <div id="history-panel" class="history-panel" hidden></div>
+      </div>
+      <button id="reset-doc-btn" class="btn-tiny" title="Restore this document to its ship-with original">↺ Reset</button>
+    </div>
+    <iframe id="doc-frame" sandbox="allow-scripts allow-same-origin allow-popups" title="Document"></iframe>
+    <div id="new-doc-overlay" class="new-doc-overlay" hidden>
+      <strong>Drop a file to import</strong>
+      <div class="new-doc-hint">.md, .tex, .txt, .rst, .org &nbsp;—&nbsp; or click anywhere to browse</div>
+      <button id="new-doc-close" class="btn-tiny" type="button">Cancel</button>
+    </div>
+    <input type="file" id="new-doc-input" accept=".md,.tex,.txt,.rst,.org" style="display:none;">
+    <div class="scroll" id="doc-scroll" hidden>
       <main>
         <header class="frontmatter" id="frontmatter"></header>
         <article id="body"></article>
@@ -388,7 +581,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     <div class="chat-header">
       <span id="status">connecting...</span>
       <div class="header-right">
-        <select id="doc-select" class="doc-select" title="Switch document"></select>
         <select id="model-select" class="doc-select" title="Model (switching resets conversation)"></select>
         <button id="new-chat-btn" class="btn-tiny" title="Fresh conversation">＋ New</button>
       </div>
@@ -421,11 +613,23 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const body = document.getElementById('body');
   const frontmatterEl = document.getElementById('frontmatter');
   const docPane = document.getElementById('doc-pane');
+  const docFrame = document.getElementById('doc-frame');
+  const docScrollEl = document.getElementById('doc-scroll');
+  let docFrameReady = false;
+  let pendingFrameContent = null;
   const log = document.getElementById('log');
   const statusEl = document.getElementById('status');
   const docSelect = document.getElementById('doc-select');
   const modelSelect = document.getElementById('model-select');
   const newChatBtn = document.getElementById('new-chat-btn');
+  const resetDocBtn = document.getElementById('reset-doc-btn');
+  const historyBtn = document.getElementById('history-btn');
+  const historyPanel = document.getElementById('history-panel');
+  const undoBtn = document.getElementById('undo-btn');
+  const newDocBtn = document.getElementById('new-doc-btn');
+  const newDocOverlay = document.getElementById('new-doc-overlay');
+  const newDocClose = document.getElementById('new-doc-close');
+  const newDocInput = document.getElementById('new-doc-input');
   const sendBtn = document.getElementById('send');
   const input = document.getElementById('input');
   const selectionBar = document.getElementById('selection-bar');
@@ -452,7 +656,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     { id: 'latex',  label: 'LaTeX'  },
     { id: 'print',  label: 'Print', action: 'print' },
   ];
-  const viewTabs = document.getElementById('view-tabs');
+  const viewTabs = document.getElementById('view-tab-buttons');
   function renderViewTabs() {
     viewTabs.innerHTML = '';
     for (const v of VIEW_TYPES) {
@@ -597,12 +801,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
 
   function renderFrontmatter(fm) {
+    // Frontmatter `title` is metadata (browser tab). The body's H1 is the
+    // visible page title; rendering both would duplicate.
     frontmatterEl.innerHTML = '';
-    if (fm.title) {
-      const h = document.createElement('h1');
-      h.textContent = fm.title;
-      frontmatterEl.appendChild(h);
-    }
     const metaBits = [];
     const a = fm.authors || fm.author;
     if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
@@ -614,7 +815,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       d.textContent = metaBits.join(' · ');
       frontmatterEl.appendChild(d);
     }
-    document.title = (fm.title || 'v2') + ' — v2';
+    document.title = fm.title ? (fm.title + ' — Adaptive Markdown') : 'Adaptive Markdown';
   }
 
   function renderMath() {
@@ -629,6 +830,172 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       });
     } else {
       setTimeout(renderMath, 60);
+    }
+  }
+
+  // ---- Iframe doc rendering -----------------------------------------------
+  // The doc lives in a sandboxed <iframe> so its <style> and <script> blocks
+  // can't leak into the viewer chrome. Parent ↔ iframe communicate via
+  // postMessage only.
+
+  function buildIframeSrcdoc() {
+    // Reading-typography defaults; per-doc <style> in the .md overrides any of it.
+    return [
+      '<!DOCTYPE html>',
+      '<html lang="en"><head><meta charset="utf-8">',
+      '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">',
+      '<style>',
+      'html, body { margin: 0; padding: 0; min-height: 100%; box-sizing: border-box; }',
+      'body { font-family: ui-serif, Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.6; color: #1a1a1a; background: #fff; padding: 32px 56px; }',
+      '.meta { color: #888; font-size: 13px; margin: 0 auto 24px; max-width: 760px; font-family: ui-sans-serif, system-ui, sans-serif; }',
+      'article#body { max-width: 760px; margin: 0 auto; }',
+      'article#body h1 { font-size: 1.8rem; margin: 0 0 1rem; font-family: ui-sans-serif, system-ui, sans-serif; }',
+      'article#body h2 { font-size: 1.3rem; margin: 1.8em 0 0.5em; font-family: ui-sans-serif, system-ui, sans-serif; }',
+      'article#body h3 { font-size: 1.1rem; margin: 1.4em 0 0.4em; font-family: ui-sans-serif, system-ui, sans-serif; }',
+      'article#body p { margin: 1em 0; }',
+      'article#body blockquote { margin: 1em 0; padding: 0.6em 1em; border-left: 3px solid #d0d0c8; color: #555; }',
+      'article#body code { background: #f4f3ee; padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.92em; }',
+      'article#body pre { background: #f4f3ee; padding: 0.8em; border-radius: 3px; overflow-x: auto; }',
+      'article#body pre code { background: transparent; padding: 0; }',
+      'article#body a { color: #2a4d7a; }',
+      'article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,article,section,div.directive) { cursor: pointer; }',
+      'article#body .hover-block { outline: 1px dashed #b8b8b0; outline-offset: 6px; }',
+      'article#body .selected-block, article#body .selected-block.hover-block { outline: 2px solid #2a4d7a; outline-offset: 6px; border-radius: 2px; }',
+      'article#body [data-kind="theorem"], article#body [data-kind="lemma"], article#body [data-kind="proposition"], article#body [data-kind="corollary"] { color: #2a4d7a; font-style: italic; }',
+      'article#body [data-kind="definition"] { color: #c39548; font-style: italic; }',
+      'article#body [data-kind="example"], article#body [data-kind="solution"], article#body [data-kind="proof"] { color: #6a9255; font-style: italic; }',
+      '.directive { padding: 0.8em 1.2em; margin: 1em 0; border-left: 3px solid; }',
+      '.directive.note, .directive.aside { border-color: #888; background: #fafaf6; }',
+      '.directive.pinned { border-color: #4a6db5; background: #f3f6fa; }',
+      '.directive.figure { border: 1px dashed #c8c8c0; padding: 0.6em; text-align: center; }',
+      '.error-banner { background: #fdecec; border: 1px solid #d4a4a4; border-radius: 4px; padding: 0.75rem 1rem; color: #8a2a2a; font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }',
+      '</style></head><body>',
+      '<div class="meta" id="meta"></div>',
+      '<article id="body"></article>',
+      '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"><\/script>',
+      '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"><\/script>',
+      '<script>',
+      '(function(){',
+      'const body=document.getElementById("body"),meta=document.getElementById("meta");',
+      'const TRACK_ID_RE=/^\\s*id\\s*:\\s*(b-[A-Z0-9-]+)\\s*$/i;',
+      'const KIND=new Set(["theorem","lemma","proposition","corollary","definition","example","remark","note","aside","proof","solution"]);',
+      'function attachIds(c){const w=document.createTreeWalker(c,NodeFilter.SHOW_COMMENT);const cs=[];let n;while((n=w.nextNode()))cs.push(n);for(const k of cs){const m=k.textContent.match(TRACK_ID_RE);if(!m)continue;let s=k.nextSibling;while(s&&s.nodeType!==1)s=s.nextSibling;if(s)s.dataset.trackId=m[1];}}',
+      'function annotateHs(a){a.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach(h=>{const f=(h.textContent.trim().match(/^(\\w+)/)||[])[1];if(f&&KIND.has(f.toLowerCase()))h.dataset.kind=f.toLowerCase();});}',
+      'function activate(c){for(const o of Array.from(c.querySelectorAll("script"))){const ns=document.createElement("script");for(const a of Array.from(o.attributes))ns.setAttribute(a.name,a.value);ns.textContent=o.textContent;o.parentNode.replaceChild(ns,o);}}',
+      'function renderMath(){if(window.renderMathInElement){window.renderMathInElement(body,{delimiters:[{left:"$$",right:"$$",display:true},{left:"$",right:"$",display:false}],throwOnError:false,ignoredTags:["script","noscript","style","textarea","pre","code"]});}else{setTimeout(renderMath,60);}}',
+      'function findBlock(el){let c=el;while(c&&c!==body){if(c.parentElement===body)return c;c=c.parentElement;}return null;}',
+      'function blockInfo(el){const t=el.dataset.trackId||null,a=el.id||null,id=t||a||null;let label="";const h=el.querySelector(":scope>h1,:scope>h2,:scope>h3,:scope>h4,:scope>h5,:scope>h6");if(h)label=h.textContent.trim().replace(/\\s+/g," ").slice(0,60);else label=el.textContent.replace(/\\s+/g," ").trim().slice(0,60);const excerpt=el.textContent.replace(/\\s+/g," ").trim().slice(0,2000);return{id:id,track_id:t,anchor_id:a,label:label,excerpt:excerpt};}',
+      'const selectedEls=new Set();',
+      'body.addEventListener("click",e=>{if(e.target.closest("a"))return;const b=findBlock(e.target);const add=e.shiftKey||e.metaKey||e.ctrlKey;e.preventDefault();try{const s=document.getSelection();if(s)s.removeAllRanges();}catch(_){}if(b)b.classList.remove("hover-block");if(!b){selectedEls.forEach(el=>el.classList.remove("selected-block"));selectedEls.clear();}else if(!add){selectedEls.forEach(el=>el.classList.remove("selected-block"));selectedEls.clear();b.classList.add("selected-block");selectedEls.add(b);}else if(selectedEls.has(b)){b.classList.remove("selected-block");selectedEls.delete(b);}else{b.classList.add("selected-block");selectedEls.add(b);}parent.postMessage({type:"selection",block:b?blockInfo(b):null,additive:add},"*");});',
+      'body.addEventListener("mouseover",e=>{const b=findBlock(e.target);if(b&&!selectedEls.has(b))b.classList.add("hover-block");});',
+      'body.addEventListener("mouseout",e=>{const b=findBlock(e.target);if(b)b.classList.remove("hover-block");});',
+      'document.addEventListener("dragover",e=>{e.preventDefault();if(e.dataTransfer)e.dataTransfer.dropEffect="copy";});',
+      'document.addEventListener("drop",e=>{e.preventDefault();const fs=e.dataTransfer&&Array.from(e.dataTransfer.files||[]);if(fs&&fs.length)parent.postMessage({type:"fileDropped",files:fs},"*");});',
+      'document.addEventListener("dragenter",e=>{parent.postMessage({type:"dragenter"},"*");});',
+      'window.addEventListener("message",e=>{const d=e.data||{};if(d.type==="setContent"){const se=document.scrollingElement||document.documentElement;const sy=se.scrollTop;selectedEls.clear();body.innerHTML=d.html||"";meta.textContent=d.meta||"";annotateHs(body);attachIds(body);activate(body);renderMath();se.scrollTop=sy;}else if(d.type==="setSelections"){selectedEls.forEach(el=>el.classList.remove("selected-block"));selectedEls.clear();for(const sel of(d.selections||[])){let t=null;if(sel.track_id)t=body.querySelector("[data-track-id=\\""+sel.track_id+"\\"]");if(!t&&sel.anchor_id)t=document.getElementById(sel.anchor_id);if(t){t.classList.add("selected-block");selectedEls.add(t);}}}else if(d.type==="scrollToAnchor"){const el=document.getElementById(d.id);if(el)el.scrollIntoView({behavior:"smooth",block:"start"});}});',
+      'parent.postMessage({type:"iframeReady"},"*");',
+      '})();',
+      '<\/script></body></html>',
+    ].join('\n');
+  }
+
+  function initIframe() {
+    docFrameReady = false;
+    docFrame.srcdoc = buildIframeSrcdoc();
+  }
+
+  function sendToFrame(msg) {
+    if (!docFrameReady || !docFrame.contentWindow) {
+      if (msg && msg.type === 'setContent') pendingFrameContent = msg;
+      return;
+    }
+    docFrame.contentWindow.postMessage(msg, '*');
+  }
+
+  window.addEventListener('message', (e) => {
+    if (!docFrame || e.source !== docFrame.contentWindow) return;
+    const data = e.data || {};
+    if (data.type === 'iframeReady') {
+      docFrameReady = true;
+      if (pendingFrameContent) {
+        const m = pendingFrameContent; pendingFrameContent = null;
+        sendToFrame(m);
+      }
+      // Replay current selection state to the iframe
+      if (currentSelections && currentSelections.length) {
+        sendToFrame({ type: 'setSelections', selections: currentSelections });
+      }
+    } else if (data.type === 'selection') {
+      // A click inside the iframe — also treat as "click outside the panel".
+      if (historyPanel && !historyPanel.hidden) historyPanel.hidden = true;
+      handleFrameSelection(data.block, !!data.additive);
+    } else if (data.type === 'fileDropped') {
+      handleFrameDrop(data.files);
+    } else if (data.type === 'dragenter') {
+      // mirror drop overlay onto parent so the dashed border shows
+      document.body.classList.add('dropping');
+    }
+  });
+
+  function handleFrameSelection(info, additive) {
+    if (!info) {
+      if (currentSelections.length > 0) setSelections([]);
+      return;
+    }
+    const newSel = {
+      id: info.id, track_id: info.track_id, anchor_id: info.anchor_id,
+      label: info.label, excerpt: info.excerpt, element: null,
+    };
+    let newList;
+    if (!additive) {
+      newList = [newSel];
+    } else {
+      const dupIdx = currentSelections.findIndex(s => (s.id || '') === (newSel.id || ''));
+      if (dupIdx >= 0) {
+        newList = currentSelections.filter((_, i) => i !== dupIdx);
+      } else {
+        newList = [...currentSelections, newSel];
+      }
+    }
+    setSelections(newList);
+  }
+
+  async function handleFrameDrop(files) {
+    document.body.classList.remove('dropping');
+    if (!files || !files.length) return;
+    const pickable = files.find(f =>
+      SUPPORTED_DROP_EXTS.some(ext => (f.name || '').toLowerCase().endsWith(ext))
+    );
+    if (!pickable) {
+      appendMessage('error', 'Drop a ' + SUPPORTED_DROP_EXTS.join('/') + ' file');
+      return;
+    }
+    const form = new FormData();
+    form.append('file', pickable);
+    try {
+      const resp = await fetch('/upload', { method: 'POST', body: form });
+      if (!resp.ok) {
+        let msg = `upload failed: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
+        appendMessage('error', msg);
+        return;
+      }
+      const data = await resp.json();
+      if (data.needs_conversion) {
+        const prompt =
+          'I just dropped `' + data.path + '` (a ' + data.kind + ' file). ' +
+          'Convert it to adaptive markdown at `' + data.target + '`, following ' +
+          'the adaptive-markdown skill conventions. Preserve all math, structure, ' +
+          'and citations — do not adapt or rewrite content during import. ' +
+          'When the file is written, the viewer will switch to it automatically.';
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'chat', text: prompt, model: currentModel }));
+          appendMessage('user', 'Imported `' + data.path + '` — converting…');
+          showActivity();
+        }
+      }
+    } catch (err) {
+      appendMessage('error', 'upload error: ' + (err.message || err));
     }
   }
 
@@ -669,18 +1036,28 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
 
   function renderCurrentView() {
-    body.innerHTML = '';
-    body.className = '';
     if (currentView === 'doc') {
+      // Render markdown to HTML in the parent, then ship to the iframe.
+      // The iframe owns scripts, KaTeX, click-to-focus, hover, drag-drop, etc.
+      docFrame.style.display = 'block';
+      docScrollEl.hidden = true;
       const { text: protectedText, ph } = protectMath(currentBody);
       let html = md.render(protectedText);
       html = restoreMath(html, ph);
-      body.innerHTML = html;
-      annotateHeadings(body);
-      attachTrackingIds(body);
-      activateScripts(body);
-      renderMath();
-    } else if (currentView === 'source') {
+      const metaBits = [];
+      const a = currentFm.authors || currentFm.author;
+      if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
+      if (currentFm.audience) metaBits.push('audience: ' + currentFm.audience);
+      if (currentFm.language) metaBits.push('language: ' + currentFm.language);
+      sendToFrame({ type: 'setContent', html, meta: metaBits.join(' · ') });
+      return;
+    }
+    // Alt views render into the original <article id="body"> outside the iframe.
+    docFrame.style.display = 'none';
+    docScrollEl.hidden = false;
+    body.innerHTML = '';
+    body.className = '';
+    if (currentView === 'source') {
       body.className = 'view-source';
       body.textContent = currentText;
     } else if (currentView === 'graph') {
@@ -705,11 +1082,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 
   function renderLatexView() {
     body.className = 'view-source';
-    body.textContent = ddfToLatex(currentFm, currentBody);
+    body.textContent = mdToLatex(currentFm, currentBody);
   }
 
   // ---- LaTeX export (best-effort, AST-light) ------------------------------
-  function ddfToLatex(fm, bodyText) {
+  function mdToLatex(fm, bodyText) {
     let out = '';
     out += '\\documentclass[11pt]{article}\n';
     out += '\\usepackage[utf8]{inputenc}\\usepackage{amsmath,amssymb,amsthm,hyperref}\n';
@@ -926,9 +1303,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         renderViewTabs();
         renderCurrentView();
         setTimeout(() => {
-          const el = document.getElementById(d.id);
-          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 80);
+          sendToFrame({ type: 'scrollToAnchor', id: d.id });
+        }, 120);
       });
 
     nodeSel.append('text')
@@ -996,7 +1372,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
 
   function setSelections(list) {
-    // Clear visual outlines from previous selections.
+    const wasNonEmpty = currentSelections.length > 0;
+    // Clear visual outlines from previous selections (alt views only — the
+    // iframe manages its own outline based on the actual element clicked).
     selectedEls.forEach(el => el.classList.remove('selected-block'));
     selectedEls.clear();
     currentSelections = (list || []).filter(s => s && (s.id || s.label || s.excerpt));
@@ -1018,6 +1396,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       selectionBar.classList.add('visible');
     } else {
       selectionBar.classList.remove('visible');
+      // Only mirror to the iframe when *clearing* — for additions, the
+      // iframe already applied the outline locally on click. Re-sending
+      // the new list back to the iframe would clear blocks whose ID we
+      // don't know (plain paragraphs without {#anchor} / track_id).
+      if (wasNonEmpty) sendToFrame({ type: 'setSelections', selections: [] });
     }
   }
 
@@ -1093,6 +1476,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const newDoc = docSelect.value;
     if (!newDoc || newDoc === currentDoc) return;
     currentDoc = newDoc;
+    initIframe();  // fresh iframe — drops any timers / listeners agent left behind
     loadDoc('/' + newDoc);
     const url = new URL(window.location);
     url.searchParams.set('doc', newDoc);
@@ -1146,6 +1530,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (Array.isArray(data.docs)) populateDocs(data.docs);
       if (Array.isArray(data.models)) populateModels(data.models, data.model);
       loadDoc('/' + currentDoc);
+      return;
+    }
+    if (data.type === 'docs') {
+      // Doc list changed (e.g. after upload). Repopulate dropdown.
+      if (Array.isArray(data.list)) populateDocs(data.list);
+      // If server hints a doc to switch to (upload just landed), switch.
+      if (data.doc && data.doc !== currentDoc) {
+        currentDoc = data.doc;
+        docSelect.value = data.doc;
+        loadDoc('/' + data.doc);
+        const url = new URL(window.location);
+        url.searchParams.set('doc', data.doc);
+        history.replaceState(null, '', url);
+      }
       return;
     }
     if (data.type === 'model_changed') {
@@ -1208,6 +1606,28 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   }
 
+  function renderChatMarkdown(target, rawText) {
+    // Parse the assistant's text with the same markdown pipeline the doc uses,
+    // including math protection so multi-line $$...$$ doesn't get split.
+    try {
+      const { text: protectedText, ph } = protectMath(rawText);
+      let html = md.render(protectedText);
+      html = restoreMath(html, ph);
+      target.innerHTML = html;
+      // Drop any <script> the assistant might have embedded — chat must not execute.
+      target.querySelectorAll('script').forEach(s => s.remove());
+    } catch (e) {
+      target.textContent = rawText;
+    }
+    if (window.renderMathInElement) {
+      try { window.renderMathInElement(target, {
+        delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],
+        throwOnError: false,
+        ignoredTags: ['script','noscript','style','textarea','pre','code'],
+      }); } catch(err) {}
+    }
+  }
+
   function appendMessage(role, text) {
     const div = document.createElement('div');
     div.className = 'msg ' + role;
@@ -1216,17 +1636,22 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     r.textContent = role;
     const t = document.createElement('div');
     t.className = 'msg-text';
-    t.textContent = text;
+    if (role === 'assistant') {
+      t.dataset.raw = text || '';
+      renderChatMarkdown(t, text || '');
+    } else {
+      t.textContent = text;
+      if (window.renderMathInElement) {
+        try { window.renderMathInElement(t, {
+          delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],
+          throwOnError: false,
+        }); } catch(err) {}
+      }
+    }
     div.appendChild(r);
     div.appendChild(t);
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
-    if (window.renderMathInElement) {
-      try { window.renderMathInElement(t, {
-        delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],
-        throwOnError: false,
-      }); } catch(err) {}
-    }
     if (role === 'user') currentAssistantMsg = null;
     return div;
   }
@@ -1235,13 +1660,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       currentAssistantMsg = appendMessage('assistant', text);
     } else {
       const t = currentAssistantMsg.querySelector('.msg-text');
-      t.textContent = (t.textContent || '') + text;
-      if (window.renderMathInElement) {
-        try { window.renderMathInElement(t, {
-          delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}],
-          throwOnError: false,
-        }); } catch(err) {}
-      }
+      t.dataset.raw = (t.dataset.raw || '') + text;
+      renderChatMarkdown(t, t.dataset.raw);
     }
     log.scrollTop = log.scrollHeight;
   }
@@ -1304,12 +1724,247 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     currentAssistantMsg = null;
     hideActivity();
   });
+  function formatRelative(tsMs) {
+    const diff = Date.now() - tsMs;
+    const s = Math.floor(diff / 1000);
+    if (s < 60) return s + 's ago';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    return Math.floor(h / 24) + 'd ago';
+  }
+  function formatBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' kB';
+    return (n / 1024 / 1024).toFixed(2) + ' MB';
+  }
+  async function openHistoryPanel() {
+    if (!currentDoc) return;
+    historyPanel.innerHTML = '<div class="history-empty">loading…</div>';
+    historyPanel.hidden = false;
+    try {
+      const resp = await fetch('/history?doc=' + encodeURIComponent(currentDoc));
+      const data = await resp.json();
+      const snaps = data.snapshots || [];
+      if (!snaps.length) {
+        historyPanel.innerHTML = '<div class="history-empty">No snapshots yet. They appear after the first agent edit.</div>';
+        return;
+      }
+      historyPanel.innerHTML = '';
+      for (const snap of snaps) {
+        const btn = document.createElement('button');
+        btn.className = 'history-row';
+        btn.innerHTML = '<span class="history-row-ts"></span><span class="history-row-size"></span>';
+        btn.querySelector('.history-row-ts').textContent =
+          formatRelative(snap.ts_ms) + '  ·  ' + new Date(snap.ts_ms).toLocaleString();
+        btn.querySelector('.history-row-size').textContent = formatBytes(snap.size);
+        btn.addEventListener('click', async () => {
+          if (!confirm('Restore `' + currentDoc + '` to this snapshot?\n' +
+                       new Date(snap.ts_ms).toLocaleString() + '\n\n' +
+                       'Current contents will be overwritten (but a fresh snapshot' +
+                       ' of "before" will be saved on the next agent edit).')) return;
+          historyPanel.hidden = true;
+          initIframe();
+          try {
+            const r = await fetch(
+              '/restore_snapshot?doc=' + encodeURIComponent(currentDoc) +
+              '&snap_id=' + encodeURIComponent(snap.snap_id),
+              { method: 'POST' }
+            );
+            if (!r.ok) {
+              let msg = `restore failed: ${r.status}`;
+              try { const j = await r.json(); if (j.error) msg = j.error; } catch (_) {}
+              appendMessage('error', msg);
+            }
+          } catch (err) {
+            appendMessage('error', 'restore error: ' + (err.message || err));
+          }
+        });
+        historyPanel.appendChild(btn);
+      }
+    } catch (err) {
+      historyPanel.innerHTML =
+        '<div class="history-empty">failed to load history: ' +
+        escapeHtml(err.message || String(err)) + '</div>';
+    }
+  }
+  historyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (historyPanel.hidden) { openHistoryPanel(); } else { historyPanel.hidden = true; }
+  });
+  function showNewDocOverlay() { newDocOverlay.hidden = false; }
+  function hideNewDocOverlay() {
+    newDocOverlay.hidden = true;
+    newDocOverlay.classList.remove('dropping');
+  }
+  newDocBtn.addEventListener('click', showNewDocOverlay);
+  newDocClose.addEventListener('click', (e) => { e.stopPropagation(); hideNewDocOverlay(); });
+  newDocOverlay.addEventListener('click', (e) => {
+    if (e.target === newDocClose) return;
+    newDocInput.click();
+  });
+  newDocOverlay.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    newDocOverlay.classList.add('dropping');
+  });
+  newDocOverlay.addEventListener('dragleave', (e) => {
+    if (!newDocOverlay.contains(e.relatedTarget)) {
+      newDocOverlay.classList.remove('dropping');
+    }
+  });
+  newDocOverlay.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    newDocOverlay.classList.remove('dropping');
+    const files = Array.from(e.dataTransfer && e.dataTransfer.files || []);
+    if (!files.length) { hideNewDocOverlay(); return; }
+    hideNewDocOverlay();
+    await handleFrameDrop(files);
+  });
+  newDocInput.addEventListener('change', async () => {
+    const file = newDocInput.files && newDocInput.files[0];
+    newDocInput.value = '';  // allow re-picking the same file
+    if (!file) return;
+    hideNewDocOverlay();
+    await handleFrameDrop([file]);
+  });
+  // Esc also closes the new-doc overlay (alongside the history panel).
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !newDocOverlay.hidden) hideNewDocOverlay();
+  });
+
+  undoBtn.addEventListener('click', async () => {
+    if (!currentDoc || undoBtn.disabled) return;
+    undoBtn.disabled = true;
+    initIframe();  // fresh iframe so any agent timers from the last edit die with the undo
+    try {
+      const resp = await fetch('/undo?doc=' + encodeURIComponent(currentDoc),
+                               { method: 'POST' });
+      if (!resp.ok) {
+        let msg = `undo failed: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
+        appendMessage('error', msg);
+      }
+    } catch (err) {
+      appendMessage('error', 'undo error: ' + (err.message || err));
+    } finally {
+      undoBtn.disabled = false;
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!historyPanel.hidden && !historyPanel.contains(e.target) && e.target !== historyBtn) {
+      historyPanel.hidden = true;
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !historyPanel.hidden) {
+      historyPanel.hidden = true;
+    }
+  });
+
+  resetDocBtn.addEventListener('click', async () => {
+    if (!currentDoc) return;
+    if (!confirm('Reset `' + currentDoc + '` to its ship-with original?\n' +
+                 'All agent edits to this document will be discarded.')) return;
+    initIframe();  // fresh iframe so any agent timers/listeners die with the reset
+    try {
+      const resp = await fetch('/reset?doc=' + encodeURIComponent(currentDoc),
+                               { method: 'POST' });
+      if (!resp.ok) {
+        let msg = `reset failed: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (e) {}
+        appendMessage('error', msg);
+        return;
+      }
+      // doc_changed broadcast will reload the viewer.
+    } catch (err) {
+      appendMessage('error', 'reset error: ' + (err.message || err));
+    }
+  });
+
+  // ---- Drop-to-upload ------------------------------------------------------
+  // Drop a .md and it loads directly. Drop a .tex/.txt/.rst/.org and the agent
+  // is auto-prompted to convert it to adaptive markdown; the viewer switches
+  // when the new file lands.
+  const SUPPORTED_DROP_EXTS = ['.md', '.tex', '.txt', '.rst', '.org'];
+  let dragDepth = 0;
+  document.addEventListener('dragenter', (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    dragDepth++;
+    document.body.classList.add('dropping');
+  });
+  document.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    dragDepth--;
+    if (dragDepth <= 0) {
+      dragDepth = 0;
+      document.body.classList.remove('dropping');
+    }
+  });
+  document.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer) return;
+    e.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove('dropping');
+
+    const files = Array.from(e.dataTransfer.files || []);
+    const pickable = files.find(f =>
+      SUPPORTED_DROP_EXTS.some(ext => f.name.toLowerCase().endsWith(ext))
+    );
+    if (!pickable) {
+      appendMessage('error',
+        'Drop a ' + SUPPORTED_DROP_EXTS.join('/') + ' file (got: ' +
+        (files.map(f => f.name).join(', ') || 'no file') + ')');
+      return;
+    }
+
+    const form = new FormData();
+    form.append('file', pickable);
+    try {
+      const resp = await fetch('/upload', { method: 'POST', body: form });
+      if (!resp.ok) {
+        let msg = `upload failed: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (e) {}
+        appendMessage('error', msg);
+        return;
+      }
+      const data = await resp.json();
+      if (data.needs_conversion) {
+        // Raw file landed at data.path; ask the agent to convert into data.target.
+        const prompt =
+          'I just dropped `' + data.path + '` (a ' + data.kind + ' file). ' +
+          'Convert it to adaptive markdown at `' + data.target + '`, following ' +
+          'the adaptive-markdown skill conventions. Preserve all math, structure, ' +
+          'and citations — do not adapt or rewrite content during import. ' +
+          'When the file is written, the viewer will switch to it automatically.';
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'chat', text: prompt, model: currentModel,
+          }));
+          appendMessage('user', 'Imported `' + data.path + '` — converting…');
+          showActivity();
+        } else {
+          appendMessage('error', 'WebSocket not connected — cannot start conversion');
+        }
+      }
+      // For .md drops, the server's docs broadcast switches the viewer.
+    } catch (err) {
+      appendMessage('error', 'upload error: ' + (err.message || err));
+    }
+  });
 
   // ---- Resizable split pane ------------------------------------------------
   (function setupResizer() {
     const resizer = document.getElementById('resizer');
     const chatPane = document.getElementById('chat-pane');
-    const saved = parseInt(localStorage.getItem('ddf-chat-width') || '', 10);
+    const saved = parseInt(localStorage.getItem('am-chat-width') || '', 10);
     if (saved && saved >= 280 && saved <= 1200) {
       chatPane.style.width = saved + 'px';
     }
@@ -1334,11 +1989,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       const w = parseInt(chatPane.style.width, 10);
-      if (w) localStorage.setItem('ddf-chat-width', String(w));
+      if (w) localStorage.setItem('am-chat-width', String(w));
     });
   })();
 
   renderViewTabs();
+  initIframe();
   connect();
 })();
 </script>

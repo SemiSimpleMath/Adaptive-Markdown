@@ -5,13 +5,9 @@ audience: novice
 language: en
 ---
 
-<button id="dark-mode-toggle" style="position: fixed; top: 1rem; right: 1rem; z-index: 1000; padding: 0.5rem 1rem; background-color: #333; color: #fff; border: none; border-radius: 0.25rem; cursor: pointer; font-weight: bold;">🌙 Dark</button>
-
 # Welcome to Adaptive Markdown
 
-**This document is a programmable object.** It's not a render of a file, it *is* the file, executing. Any document is now just your launching pad; the coding agent on the right turns *"I wonder if…"* into a live, working page. Rewrite a paragraph, add a figure, ELI5, complete this proof, paint dark mode, animate the headings, drop in a game — all by asking.
-
-Any text document or latex document or .md can be turned into Adaptive Markdown.  Simply drag and drop your own file and the coding agent will convert it.
+**This document is a programmable object.** It's not a render of a file, it *is* the file, executing. Any document is now just your launching pad; the coding agent on the right turns *"I wonder if…"* into a live, working page. Rewrite a paragraph, add a figure, ELI5, complete this proof, create dark mode, animate the headings, drop in a game — all by asking.
 
 Each section below ends with something to try. Click any block to give the agent focus on it, then send your message.
 
@@ -22,7 +18,7 @@ A function $f : \mathbb{R} \to \mathbb{R}$ is **continuous at the point $a$** if
 > Click the paragraph above. Then ask the agent: **"Rewrite this for a 10-year-old."**
 
 The agent receives the block's id and content as explicit context, so it knows exactly which paragraph to operate on. Watch the chat narrate the edit, then watch this paragraph re-render in place.
-
+    
 ## Try 2 — Translate from French {#try-translate}
 
 Évariste Galois, mort à vingt ans dans un duel obscur en 1832, a transformé l'algèbre moderne en quelques nuits d'écriture fébrile. La veille de sa mort, il rédigea à la hâte ses dernières découvertes — la théorie des groupes appliquée aux équations polynomiales — dans une lettre adressée à Auguste Chevalier. Ces pages, longtemps ignorées, contiennent les germes d'une révolution mathématique que ses contemporains ne comprirent qu'à grand-peine, des décennies après sa mort.
@@ -50,7 +46,7 @@ Try one of these (no click needed — these are page-wide changes):
 
 If you don't like what the agent creates, you can always revert the change or instruct it again until you get what you want.
 
-Open the **Source** tab afterwards and scroll to the bottom — you'll see the literal `<script>` block the agent wrote. The page isn't a render of a doc; it *is* the doc, executing.
+Open the **Source** tab afterward and scroll to the bottom — you'll see the literal `<script>` block the agent wrote. The page isn't a render of a doc; it *is* the doc, executing.
 
 ::: pinned
 This block is author-locked. The agent may restyle and augment the surrounding tutorial, but the words inside `:::pinned` directives won't be rewritten.
@@ -58,75 +54,20 @@ This block is author-locked. The agent may restyle and augment the surrounding t
 Authors can choose what sections are non-editable. The entire document history is also carried, and the original document is the provenance.
 :::
 
-In a few years, no one will be reading journals on paper or text books. Everyone will be interacting with articles, books, translating them instantly, exploring alternative proofs, asking questions, writing code on the spot into the document. This is Adaptive Markdown.
+## Future
+In a few years, no one will be reading journals on paper. Everyone will be interacting with articles, translating them instantly, exploring alternative proofs, asking questions, writing code on the spot into the document. This is Adaptive Markdown.
 
-<style>
-  :root {
-    --bg-color: #ffffff;
-    --text-color: #000000;
-    --code-bg: #f5f5f5;
-    --border-color: #e0e0e0;
-  }
+## More Use Cases (this is a growing list!)
 
-  body.dark-mode {
-    --bg-color: #1a1a1a;
-    --text-color: #e0e0e0;
-    --code-bg: #2a2a2a;
-    --border-color: #444444;
-  }
+- Embed images and automatically create descriptions of them and alt text.
+- Embed audio and have it translated.
+- Embed video and have the coding agent create playback features for you.
+- Excel sheets, tabular data of any kind.
+- Live consoles inside your document.
+- Slide shows.
+- Take notes in classrooms with automatically maintained formatting.
+- Attach other agents and make this part of your workflow — have them format your documents, extract important parts, email documents, etc.
+- Run executable code.
+- Convert proofs to Lean (once reliable).
+- Convert documents to any format.
 
-  body {
-    background-color: var(--bg-color);
-    color: var(--text-color);
-    transition: background-color 0.3s ease, color 0.3s ease;
-  }
-
-  body.dark-mode pre,
-  body.dark-mode code {
-    background-color: var(--code-bg);
-    color: var(--text-color);
-  }
-
-  body.dark-mode blockquote {
-    border-color: var(--border-color);
-    color: var(--text-color);
-  }
-
-  #dark-mode-toggle {
-    transition: background-color 0.3s ease, color 0.3s ease;
-  }
-
-  body.dark-mode #dark-mode-toggle {
-    background-color: #f0f0f0;
-    color: #333;
-  }
-
-  body.dark-mode #dark-mode-toggle:hover {
-    background-color: #ffffff;
-  }
-
-  #dark-mode-toggle:hover {
-    opacity: 0.8;
-  }
-</style>
-
-<script>
-  (function() {
-    const toggle = document.getElementById('dark-mode-toggle');
-    const isDarkMode = localStorage.getItem('dark-mode') === 'true';
-
-    // Apply saved preference on load
-    if (isDarkMode) {
-      document.body.classList.add('dark-mode');
-      toggle.textContent = '☀️ Light';
-    }
-
-    // Handle toggle clicks
-    toggle.addEventListener('click', function() {
-      document.body.classList.toggle('dark-mode');
-      const isNowDark = document.body.classList.contains('dark-mode');
-      localStorage.setItem('dark-mode', isNowDark);
-      toggle.textContent = isNowDark ? '☀️ Light' : '🌙 Dark';
-    });
-  })();
-</script>
