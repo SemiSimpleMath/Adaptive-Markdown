@@ -119,53 +119,62 @@ body {
 .new-doc-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(20, 20, 20, 0.45);
+  background: white;        /* opaque — hides the previous doc */
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 60;
-  cursor: pointer;     /* backdrop click → close */
-}
-/* Class rule above wins over the user-agent [hidden] rule, so we have to
-   re-assert display:none when the attribute is present. */
-.new-doc-overlay[hidden] { display: none; }
-.new-doc-card {
-  background: white;
-  padding: 1.6rem 2rem 1.2rem;
-  border-radius: 8px;
-  border: 2px dashed var(--border);
-  text-align: center;
-  cursor: default;     /* clicks on the card don't close */
-  user-select: none;
-  display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  min-width: 340px;
-  max-width: 480px;
-  box-shadow: 0 18px 48px rgba(0,0,0,0.25);
+  z-index: 60;
+  cursor: default;
 }
-.new-doc-overlay.dropping .new-doc-card {
+/* Re-assert display:none against [hidden] (the class rule above otherwise wins
+   over the user-agent rule). */
+.new-doc-overlay[hidden] { display: none; }
+/* A large inset dashed border defines the whole drop area visually. */
+.new-doc-overlay::before {
+  content: '';
+  position: absolute;
+  inset: 1rem;
+  border: 3px dashed var(--border);
+  border-radius: 10px;
+  pointer-events: none;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.new-doc-overlay.dropping::before {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.new-doc-card {
+  text-align: center;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  align-items: center;
+  position: relative;       /* lifts above ::before */
+  z-index: 1;
+  padding: 1rem 2rem;
+}
 .new-doc-card strong {
-  font-size: 1.15rem; color: var(--accent); font-weight: 600;
+  font-size: 1.6rem; color: var(--accent); font-weight: 600;
+  letter-spacing: 0.005em;
 }
 .new-doc-card .new-doc-hint {
-  font-size: 0.85rem; color: var(--muted); line-height: 1.4;
+  font-size: 0.95rem; color: var(--muted); line-height: 1.5;
+  max-width: 460px;
 }
 .new-doc-card .new-doc-actions {
-  display: flex; gap: 0.6rem; justify-content: center; margin-top: 0.5rem;
+  display: flex; gap: 0.6rem; justify-content: center; margin-top: 0.4rem;
+  align-items: center;
 }
 .new-doc-card .btn-primary {
   background: var(--accent); color: white; border: 0;
-  padding: 0.45rem 1.1rem; border-radius: 4px;
-  font: inherit; font-size: 0.88rem; cursor: pointer; font-weight: 600;
+  padding: 0.55rem 1.3rem; border-radius: 4px;
+  font: inherit; font-size: 0.92rem; cursor: pointer; font-weight: 600;
 }
 .new-doc-card .btn-primary:hover { filter: brightness(1.1); }
-.new-doc-card #new-doc-close { align-self: center; }
 .new-doc-card .new-doc-dismiss {
-  font-size: 0.72rem; color: var(--muted); margin-top: 0.5rem;
+  font-size: 0.75rem; color: var(--muted); margin-top: 0.6rem;
   letter-spacing: 0.01em;
 }
 .history-panel {
@@ -591,7 +600,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           <button id="new-doc-choose" class="btn-primary" type="button">Choose file…</button>
           <button id="new-doc-close" class="btn-tiny" type="button">Cancel</button>
         </div>
-        <div class="new-doc-dismiss">Click outside the card, press Esc, or use Cancel to close.</div>
+        <div class="new-doc-dismiss">Drop anywhere in this area · or click anywhere to browse · Esc / Cancel to close</div>
       </div>
     </div>
     <input type="file" id="new-doc-input" style="display:none;">
@@ -893,7 +902,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       '.directive { padding: 0.8em 1.2em; margin: 1em 0; border-left: 3px solid; }',
       '.directive.note, .directive.aside { border-color: #888; background: #fafaf6; }',
       '.directive.pinned { border-color: #4a6db5; background: #f3f6fa; }',
-      '.directive.figure { border: 1px dashed #c8c8c0; padding: 0.6em; text-align: center; }',
+      '.directive.figure { padding: 0.6em; text-align: center; }',
+      '/* Only empty / intent-only figures get the dashed placeholder border; ',
+      '   real figures with rendered content render cleanly. */',
+      '.directive.figure:not(:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table)) {',
+      '  border: 1px dashed #c8c8c0;',
+      '}',
       '.error-banner { background: #fdecec; border: 1px solid #d4a4a4; border-radius: 4px; padding: 0.75rem 1rem; color: #8a2a2a; font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }',
       '</style></head><body>',
       '<div class="meta" id="meta"></div>',
@@ -912,7 +926,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       'function findBlock(el){let c=el;while(c&&c!==body){if(c.parentElement===body)return c;c=c.parentElement;}return null;}',
       'function blockInfo(el){const t=el.dataset.trackId||null,a=el.id||null,id=t||a||null;let label="";const h=el.querySelector(":scope>h1,:scope>h2,:scope>h3,:scope>h4,:scope>h5,:scope>h6");if(h)label=h.textContent.trim().replace(/\\s+/g," ").slice(0,60);else label=el.textContent.replace(/\\s+/g," ").trim().slice(0,60);const excerpt=el.textContent.replace(/\\s+/g," ").trim().slice(0,2000);return{id:id,track_id:t,anchor_id:a,label:label,excerpt:excerpt};}',
       'const selectedEls=new Set();',
-      'body.addEventListener("click",e=>{if(e.target.closest("a"))return;const b=findBlock(e.target);const add=e.shiftKey||e.metaKey||e.ctrlKey;e.preventDefault();try{const s=document.getSelection();if(s)s.removeAllRanges();}catch(_){}if(b)b.classList.remove("hover-block");if(!b){selectedEls.forEach(el=>el.classList.remove("selected-block"));selectedEls.clear();}else if(!add){selectedEls.forEach(el=>el.classList.remove("selected-block"));selectedEls.clear();b.classList.add("selected-block");selectedEls.add(b);}else if(selectedEls.has(b)){b.classList.remove("selected-block");selectedEls.delete(b);}else{b.classList.add("selected-block");selectedEls.add(b);}parent.postMessage({type:"selection",block:b?blockInfo(b):null,additive:add},"*");});',
+      'document.addEventListener("click",e=>{if(e.target.closest("a"))return;const b=findBlock(e.target);const add=e.shiftKey||e.metaKey||e.ctrlKey;e.preventDefault();try{const s=document.getSelection();if(s)s.removeAllRanges();}catch(_){}if(b)b.classList.remove("hover-block");if(!b){selectedEls.forEach(el=>el.classList.remove("selected-block"));selectedEls.clear();}else if(!add){selectedEls.forEach(el=>el.classList.remove("selected-block"));selectedEls.clear();b.classList.add("selected-block");selectedEls.add(b);}else if(selectedEls.has(b)){b.classList.remove("selected-block");selectedEls.delete(b);}else{b.classList.add("selected-block");selectedEls.add(b);}parent.postMessage({type:"selection",block:b?blockInfo(b):null,additive:add},"*");});',
       'body.addEventListener("mouseover",e=>{const b=findBlock(e.target);if(b&&!selectedEls.has(b))b.classList.add("hover-block");});',
       'body.addEventListener("mouseout",e=>{const b=findBlock(e.target);if(b)b.classList.remove("hover-block");});',
       'document.addEventListener("dragover",e=>{e.preventDefault();if(e.dataTransfer)e.dataTransfer.dropEffect="copy";});',
@@ -1856,9 +1870,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     newDocOverlay.classList.remove('dropping');
   }
   newDocBtn.addEventListener('click', showNewDocOverlay);
-  // Click on the backdrop (the overlay itself, not the inner card) → close.
+  // Click anywhere on the drop area (overlay backdrop, not the buttons) opens
+  // the file picker. Dismiss via Cancel / Esc / outside-the-doc-pane.
   newDocOverlay.addEventListener('click', (e) => {
-    if (e.target === newDocOverlay) hideNewDocOverlay();
+    if (e.target === newDocChoose || e.target === newDocClose) return;
+    if (newDocCard && newDocCard.contains(e.target) &&
+        e.target !== newDocCard) return;  // clicks on hint text etc. don't picker
+    newDocInput.click();
   });
   newDocChoose.addEventListener('click', (e) => {
     e.stopPropagation();

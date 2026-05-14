@@ -7,7 +7,7 @@ language: en
 
 # Welcome to Adaptive Markdown
 
-**This document is a programmable object.** It's not a render of a file, it *is* the file, executing. Any document is now just your launching pad; the coding agent on the right turns *"I wonder if…"* into a live, working page. Rewrite a paragraph, add a figure, ELI5, complete this proof, create dark mode, animate the headings, drop in a game — all by asking.
+**This document is a programmable object.** It's not a render of a file, it *is* the file, executing. Any document is now just your launching pad! The coding agent on the right, turns *"I wonder if…"* into a live, working page. Rewrite a paragraph, add a figure, ELI5, complete this proof, create dark mode, animate the headings, drop in a game — all by asking.
 
 Each section below ends with something to try. Click any block to give the agent focus on it, then send your message.
 

@@ -229,6 +229,8 @@ Tracking IDs let the runtime do things authors and readers care about: scroll po
 
 ## Figures: intent vs. implementation
 
+The `::: figure` directive is most useful for **agent-generated visuals** (canvas drawings, animations, Desmos plots) where `intent` carries the regenerability hint. For a plain external image with a URL, just use markdown — `![alt](url)` or `<img src="..." alt="...">` — without the figure wrapper. The viewer styles plain images cleanly; wrapping every image in a directive is unnecessary noise.
+
 `::: figure` has two forms.
 
 **Placeholder (no body or descriptive body only):**
@@ -284,6 +286,20 @@ Use `renderer=desmos` when the figure is naturally a graph and the reader will w
 - Animations: `requestAnimationFrame`, never `setInterval`.
 - No external `<script src=...>` libraries unless the page already loads them.
 - Keep the figure inert if its math is wrong — never silently fake values.
+
+### Never fabricate external URLs
+
+**Hard rule.** Do not invent URLs for `<img src>`, `<a href>`, `<script src>`, `<link href>`, or any other external resource. LLMs are notoriously good at producing plausible-looking but non-existent URLs (Wikipedia thumbnails with wrong dimensions, GitHub raw URLs to files that were renamed, CDN paths that look right but 404). These leak through as broken images and dead links, and the reader has no way to know whether the URL is real without clicking through.
+
+When the reader asks for an image:
+
+- **First preference:** generate the image yourself as inline SVG, a `<canvas>` drawing, or a Desmos plot. You wrote the source; it can't be wrong about its own existence.
+- **Second preference:** ask the reader for the URL (or to drag the image file into the doc area as an upload — the import flow handles binary uploads via the unknown-format prompt).
+- **Last resort, only if you can actually verify:** if you have just used the `WebFetch` tool to load a specific URL and it returned 200, you may embed that exact URL. Cite it inline so the reader knows where you got it.
+
+Same rule for hyperlinks: don't add `[link](https://example.com)` unless you verified the URL or the reader gave it to you. If the URL is to a paper or reference, prefer DOI form (`https://doi.org/...`) — those resolve more stably than publisher URLs and are easier for the reader to check.
+
+If you genuinely need an external resource and can't verify it, say so in chat and leave the figure as intent-only (placeholder form). A broken image is worse than no image.
 
 ## Parallel sub-work
 
