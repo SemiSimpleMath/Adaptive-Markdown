@@ -168,6 +168,80 @@ def _find_block_line(lines: list[str], signature: dict) -> int | None:
     return None
 
 
+def _aliases_path(doc_path: Path) -> Path:
+    return doc_path.with_suffix(doc_path.suffix + ".id-aliases.json")
+
+
+def load_aliases(doc_path: Path) -> dict[str, str | None]:
+    p = _aliases_path(doc_path)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_aliases(doc_path: Path, aliases: dict) -> None:
+    _aliases_path(doc_path).write_text(
+        json.dumps(aliases, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def resolve_alias(doc_path: Path, old_id: str) -> str | None:
+    """Follow alias chain. Returns the current canonical ID, or None if the
+    historical ID was explicitly dropped (tombstoned).
+    """
+    aliases = load_aliases(doc_path)
+    seen: set[str] = set()
+    cur = old_id
+    while cur in aliases:
+        if cur in seen:
+            return None  # cycle — corrupt state
+        seen.add(cur)
+        nxt = aliases[cur]
+        if nxt is None:
+            return None  # dropped
+        cur = nxt
+    return cur
+
+
+_TRACK_ID_PATTERN = re.compile(r"<!--\s*id\s*:\s*(b-[A-Z0-9-]+)\s*-->", re.IGNORECASE)
+
+
+def extract_track_ids(text: str) -> set[str]:
+    """Find every `<!-- id:b-... -->` tracking ID in source."""
+    return set(m.group(1) for m in _TRACK_ID_PATTERN.finditer(text))
+
+
+async def detect_id_drift(doc_path: Path, before_text: str) -> None:
+    """Compare before/after track-id sets. Record disappearances in the
+    alias map as tombstones (None marker). Path-compress while we're at it.
+
+    Doesn't (yet) try to detect merge targets by content similarity —
+    that's a follow-on. For now, "this ID is gone" is recorded explicitly.
+    """
+    try:
+        after_text = doc_path.read_text(encoding="utf-8")
+    except Exception:
+        return
+    before_ids = extract_track_ids(before_text)
+    after_ids = extract_track_ids(after_text)
+    dropped = before_ids - after_ids
+    if not dropped:
+        return
+    aliases = load_aliases(doc_path)
+    changed = False
+    for d in dropped:
+        if d not in aliases:
+            aliases[d] = None  # tombstone — we know it's gone but not why
+            changed = True
+            print(f"[alias] {d} -> dropped (in {doc_path.name})", flush=True)
+    if changed:
+        save_aliases(doc_path, aliases)
+
+
 def mint_track_id_for(doc_path: Path, signature: dict) -> str | None:
     """Insert `<!-- id:b-... -->` before the matching block. Returns the new
     track_id, or None if the block couldn't be located. If a tracking
@@ -220,16 +294,43 @@ class State:
 state = State()
 
 
-async def post_tool_use_hook(input_data, tool_use_id, context):
-    """After an Edit/Write to a .md file, broadcast doc_changed.
+# Per-tool-call stash of pre-edit content so post-edit hook can diff for drift.
+_pre_edit_state: dict[str, dict[str, str]] = {}
 
-    No on-disk compile — the browser renders markdown live, so we just
-    notify the viewer that the source changed.
+
+async def pre_tool_use_hook(input_data, tool_use_id, context):
+    """Capture the .md file's content before an Edit/Write so post-hook can
+    detect tracking-ID drift (disappearances → alias-map tombstones)."""
+    tool_input = input_data.get("tool_input", {}) or {}
+    file_path = tool_input.get("file_path", "")
+    if file_path and file_path.endswith(".md"):
+        try:
+            content = Path(file_path).read_text(encoding="utf-8")
+            _pre_edit_state[tool_use_id] = {file_path: content}
+        except Exception:
+            pass
+    return {}
+
+
+async def post_tool_use_hook(input_data, tool_use_id, context):
+    """After an Edit/Write to a .md file: detect track-id drift, then broadcast.
+
+    No on-disk compile — the browser renders markdown live, so we just notify
+    the viewer that the source changed after handling alias bookkeeping.
     """
     tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
     if not file_path or not file_path.endswith(".md"):
         return {}
+
+    # Detect alias drift if we captured before-state.
+    before = _pre_edit_state.pop(tool_use_id, {}).get(file_path)
+    if before is not None:
+        try:
+            await detect_id_drift(Path(file_path), before)
+        except Exception as e:
+            print(f"[alias] drift detection failed: {e}", flush=True)
+
     p = Path(file_path)
     try:
         rel = p.resolve().relative_to(ROOT).as_posix()
@@ -257,6 +358,7 @@ async def init_sdk(model: str | None = None):
         model=chosen,
         max_budget_usd=MAX_BUDGET_USD,
         hooks={
+            "PreToolUse":  [HookMatcher(matcher="Edit|Write", hooks=[pre_tool_use_hook])],
             "PostToolUse": [HookMatcher(matcher="Edit|Write", hooks=[post_tool_use_hook])],
         },
     )

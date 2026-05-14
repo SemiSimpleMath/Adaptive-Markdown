@@ -26,6 +26,7 @@ screenshots/
 .ddf-snapshots/
 .ddf-versions/
 *.html.bak
+*.id-aliases.json
 
 # Local-only helpers (not part of the published artifact)
 convert.py
