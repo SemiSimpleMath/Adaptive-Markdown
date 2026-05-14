@@ -573,6 +573,29 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     });
   }
 
+  // Walk for `<!-- id:b-... -->` HTML comments and propagate the tracking ID
+  // to the immediately following element as data-track-id. Comments without
+  // a following element (or with the wrong format) are ignored.
+  const TRACK_ID_RE = /^\s*id\s*:\s*(b-[A-Z0-9-]+)\s*$/i;
+  function attachTrackingIds(container) {
+    const walker = container.ownerDocument.createTreeWalker(
+      container, NodeFilter.SHOW_COMMENT
+    );
+    const comments = [];
+    let n;
+    while ((n = walker.nextNode())) comments.push(n);
+    for (const c of comments) {
+      const m = c.textContent.match(TRACK_ID_RE);
+      if (!m) continue;
+      const id = m[1];
+      // Find the next ELEMENT sibling — skip text nodes and other comments.
+      let sib = c.nextSibling;
+      while (sib && sib.nodeType !== 1) sib = sib.nextSibling;
+      if (!sib) continue;
+      sib.dataset.trackId = id;
+    }
+  }
+
   function renderFrontmatter(fm) {
     frontmatterEl.innerHTML = '';
     if (fm.title) {
@@ -654,6 +677,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       html = restoreMath(html, ph);
       body.innerHTML = html;
       annotateHeadings(body);
+      attachTrackingIds(body);
       activateScripts(body);
       renderMath();
     } else if (currentView === 'source') {
@@ -956,14 +980,19 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
 
   function blockInfo(el) {
-    const id = el.id || null;
+    // Tracking ID is primary if present (sticky, system-minted). Falls back to
+    // the element's id attribute (author-set anchor). Send both so the agent
+    // can use whichever is more useful for its task.
+    const trackId = el.dataset.trackId || null;
+    const anchorId = el.id || null;
+    const id = trackId || anchorId;
     const heading = el.matches('h1,h2,h3,h4,h5,h6')
       ? el
       : el.querySelector('h1,h2,h3,h4,h5,h6');
     const label = (heading ? heading.textContent : el.textContent)
       .split('\n')[0].trim().slice(0, 80);
     const excerpt = el.textContent.replace(/\s+/g, ' ').trim().slice(0, 2000);
-    return { id, label, excerpt, element: el };
+    return { id, track_id: trackId, anchor_id: anchorId, label, excerpt, element: el };
   }
 
   function setSelections(list) {
@@ -1248,7 +1277,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       payload.context = {
         doc: currentDoc || null,
         selections: currentSelections.map(s => ({
-          id: s.id, label: s.label, excerpt: s.excerpt,
+          id: s.id,
+          track_id: s.track_id,
+          anchor_id: s.anchor_id,
+          label: s.label,
+          excerpt: s.excerpt,
         })),
       };
     }
