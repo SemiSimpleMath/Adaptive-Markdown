@@ -70,4 +70,5 @@ In a few years, no one will be reading journals on paper. Everyone will be inter
 - Run executable code.
 - Convert proofs to Lean (once reliable).
 - Convert documents to any format.
+- Record a person speaking in real time from your computer stream the text to your document, take pictures of a blackboard have the blackboard notes converted to LaTex.
 

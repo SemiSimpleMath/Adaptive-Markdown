@@ -2,7 +2,7 @@
 
 **Documents that are programmable objects.** Write plain markdown; a coding agent on the side rewrites, translates, illustrates, animates, or extends it in place — including arbitrary HTML, CSS, and JavaScript that ships *inside* the doc. The page you see is the file, executing.
 
-Think of it as ChatGPT Canvas or Claude Artifacts, but the agent isn't restricted to a sandboxed component — it has the full web platform. Dark mode toggle, animated headings, falling-letter effect, a snake game in the corner? All by asking, all stored as a normal `.md` file you can share.
+Most agent-driven editing tools box the agent into a fixed component palette: it can rewrite text or fill in a sandboxed widget. **Here it has the full web platform** — every CSS rule, every `<script>` tag, every API the browser exposes — and the output is a normal `.md` file you can share, fork, and check into git. Dark mode toggle, animated headings, falling-letter effect, a snake game in the corner? All by asking, all stored as plain markdown.
 
 ```
 $ python backend.py
@@ -18,6 +18,14 @@ Adaptive Markdown listening on http://127.0.0.1:8090
 - A modern browser (Chrome / Edge / Firefox / Safari).
 
 > **OpenAI / Codex support is coming soon.** Today the agent uses Anthropic's Claude family (Haiku by default, Sonnet and Opus selectable from the chat header). Bring-your-own-OpenAI-key support is on the near-term roadmap so you can use GPT-class models the same way.
+
+## Security & responsible use
+
+This tool runs a capable coding agent on your local machine with access to your filesystem, your shell (via the `Bash` tool), and any document you load. **Treat this like running someone else's code locally** — because that's effectively what every chat turn is.
+
+- **Use it with documents you authored or fully trust.** Document content becomes part of the agent's context. A malicious markdown or LaTeX file can include hidden instructions — natural-language prompt injection — aimed at the agent. Dropping in a `.md` you found on a sketchy corner of the internet is the same risk class as `curl … | bash`.
+- **The agent edits files in place and can execute shell commands.** It's unlikely (and not its intent) to do something destructive like wipe a drive — but capable agents occasionally do unexpected things, and the only one accountable for the result is the person who pressed Run. Inspect the snapshot history (`↶ History` button), keep your own backups for anything irreplaceable, and run this on a workspace you can afford to lose.
+- **This software is provided AS-IS** per the [MIT license](LICENSE). The authors assume no responsibility for misuse, data loss, or unexpected agent behavior. Use at your own risk.
 
 ## Install
 
@@ -98,7 +106,7 @@ Drag any `.md` onto the viewer to open it. Drop a `.tex` (or `.txt` / `.rst` / `
 - Lean verification of formal theorem statements
 - Hosted multi-user mode
 
-See `TODO.md` for the full backlog (gitignored — internal).
+Feature requests and ideas welcome via GitHub issues.
 
 ## License
 
