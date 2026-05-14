@@ -25,8 +25,10 @@ desktop.ini
 screenshots/
 .ddf-snapshots/
 .ddf-versions/
+.history/
 *.html.bak
 *.id-aliases.json
+*.patches/
 
 # Local-only helpers (not part of the published artifact)
 convert.py

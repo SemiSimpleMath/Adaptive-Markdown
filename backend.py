@@ -29,11 +29,13 @@ WS protocol:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aiohttp import web, WSMsgType
@@ -215,6 +217,125 @@ def extract_track_ids(text: str) -> set[str]:
     return set(m.group(1) for m in _TRACK_ID_PATTERN.finditer(text))
 
 
+# ---- Patches: derived from before/after diffs ---------------------------
+# After each agent edit, we compute a structured patch by diffing the source
+# at block-level (using tracking IDs as block boundaries). Each changed
+# tracked block becomes one op. Untracked content changes are skipped from
+# the patch (they're agent-discretion before-IDs-existed work).
+
+_HISTORY_ROOT = ROOT  # `.history/<doc-stem>/<snap-id>.md` lives in here
+
+
+def _history_dir_for(doc_path: Path) -> Path:
+    return _HISTORY_ROOT / ".history" / doc_path.stem
+
+
+def _patches_dir_for(doc_path: Path) -> Path:
+    return doc_path.with_suffix(doc_path.suffix + ".patches")
+
+
+def save_snapshot(doc_path: Path, text: str) -> str:
+    """Save text as a snapshot under .history/<stem>/, returning the snapshot id."""
+    d = _history_dir_for(doc_path)
+    d.mkdir(parents=True, exist_ok=True)
+    snap_id = gen_id("snap")
+    (d / f"{snap_id}.md").write_text(text, encoding="utf-8")
+    return snap_id
+
+
+def _norm_block(text: str) -> str:
+    """Normalize block text for hashing: strip outer whitespace, collapse line endings."""
+    return text.replace("\r\n", "\n").strip()
+
+
+def _sha256(s: str) -> str:
+    return "sha256:" + hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def parse_tracked_blocks(text: str) -> dict[str, str]:
+    """Walk source; return {track_id: block_text} for every tracked block.
+
+    A "block" starts at the line containing `<!-- id:b-... -->` and continues
+    until the next tracking comment OR end of file. The tracking comment
+    itself is included as the first line of the block text.
+    """
+    blocks: dict[str, str] = {}
+    lines = text.split("\n")
+    cur_id: str | None = None
+    cur_start: int = 0
+    for i, line in enumerate(lines):
+        m = _TRACK_ID_PATTERN.match(line.strip())
+        if m:
+            if cur_id is not None:
+                blocks[cur_id] = "\n".join(lines[cur_start:i])
+            cur_id = m.group(1)
+            cur_start = i
+    if cur_id is not None:
+        blocks[cur_id] = "\n".join(lines[cur_start:])
+    return blocks
+
+
+def derive_patch_ops(before: str, after: str) -> list[dict]:
+    """Compare tracked blocks in before vs after; emit replace/insert/delete ops."""
+    before_blocks = parse_tracked_blocks(before)
+    after_blocks = parse_tracked_blocks(after)
+    ops: list[dict] = []
+    # Replaced or unchanged
+    for bid, before_text in before_blocks.items():
+        if bid in after_blocks:
+            after_text = after_blocks[bid]
+            if _norm_block(before_text) == _norm_block(after_text):
+                continue
+            ops.append({
+                "op": "replace",
+                "block_id": bid,
+                "before_hash": _sha256(_norm_block(before_text)),
+                "after_text": after_text,
+                "after_hash": _sha256(_norm_block(after_text)),
+            })
+        else:
+            # Block disappeared — alias map records the tombstone separately.
+            ops.append({
+                "op": "delete",
+                "block_id": bid,
+                "before_hash": _sha256(_norm_block(before_text)),
+            })
+    # Newly-appeared tracked IDs (rare in our model since the agent doesn't
+    # mint IDs — these typically come from lazy-mint or copy-paste).
+    for bid, after_text in after_blocks.items():
+        if bid not in before_blocks:
+            ops.append({
+                "op": "insert",
+                "block_id": bid,
+                "after_text": after_text,
+                "after_hash": _sha256(_norm_block(after_text)),
+            })
+    return ops
+
+
+def write_patch(doc_path: Path, parent_snap_id: str, ops: list[dict],
+                author: str = "agent") -> str | None:
+    """Write a patch JSON if there's at least one op; return its filename or None."""
+    if not ops:
+        return None
+    pdir = _patches_dir_for(doc_path)
+    pdir.mkdir(parents=True, exist_ok=True)
+    patch_id = gen_id("p")
+    payload = {
+        "patch_id": patch_id,
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "parent": parent_snap_id,
+        "doc": doc_path.name,
+        "author": author,
+        "ops": ops,
+    }
+    out = pdir / f"{patch_id}.json"
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"[patch] {patch_id} -> {doc_path.name} ({len(ops)} op{'s' if len(ops)!=1 else ''})",
+          flush=True)
+    return patch_id
+
+
 async def detect_id_drift(doc_path: Path, before_text: str) -> None:
     """Compare before/after track-id sets. Record disappearances in the
     alias map as tombstones (None marker). Path-compress while we're at it.
@@ -294,46 +415,67 @@ class State:
 state = State()
 
 
-# Per-tool-call stash of pre-edit content so post-edit hook can diff for drift.
-_pre_edit_state: dict[str, dict[str, str]] = {}
+# Per-tool-call stash so post-edit hook can diff for drift + derive patches.
+# Keyed by tool_use_id; value: {"file_path": str, "before_text": str, "snap_id": str}
+_pre_edit_state: dict[str, dict] = {}
 
 
 async def pre_tool_use_hook(input_data, tool_use_id, context):
-    """Capture the .md file's content before an Edit/Write so post-hook can
-    detect tracking-ID drift (disappearances → alias-map tombstones)."""
+    """Capture the .md file's content before an Edit/Write. Snapshots it under
+    .history/ so we can reference the parent state in derived patches."""
     tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
     if file_path and file_path.endswith(".md"):
         try:
-            content = Path(file_path).read_text(encoding="utf-8")
-            _pre_edit_state[tool_use_id] = {file_path: content}
-        except Exception:
-            pass
+            p = Path(file_path)
+            before_text = p.read_text(encoding="utf-8")
+            snap_id = save_snapshot(p, before_text)
+            _pre_edit_state[tool_use_id] = {
+                "file_path": file_path,
+                "before_text": before_text,
+                "snap_id": snap_id,
+            }
+        except Exception as e:
+            print(f"[pre-edit] snapshot failed: {e}", flush=True)
     return {}
 
 
 async def post_tool_use_hook(input_data, tool_use_id, context):
-    """After an Edit/Write to a .md file: detect track-id drift, then broadcast.
-
-    No on-disk compile — the browser renders markdown live, so we just notify
-    the viewer that the source changed after handling alias bookkeeping.
-    """
+    """After an Edit/Write to a .md file: detect track-id drift, derive a
+    patch from the before/after pair, then broadcast doc_changed."""
     tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
     if not file_path or not file_path.endswith(".md"):
         return {}
 
-    # Detect alias drift if we captured before-state.
-    before = _pre_edit_state.pop(tool_use_id, {}).get(file_path)
-    if before is not None:
+    stash = _pre_edit_state.pop(tool_use_id, None)
+    before_text = stash["before_text"] if stash else None
+    snap_id = stash["snap_id"] if stash else None
+    doc_path = Path(file_path)
+
+    if before_text is not None:
+        # Alias-map bookkeeping (Stage 4)
         try:
-            await detect_id_drift(Path(file_path), before)
+            await detect_id_drift(doc_path, before_text)
         except Exception as e:
             print(f"[alias] drift detection failed: {e}", flush=True)
 
-    p = Path(file_path)
+        # Patch derivation (Stage 6)
+        try:
+            after_text = doc_path.read_text(encoding="utf-8")
+            ops = derive_patch_ops(before_text, after_text)
+            if ops and snap_id:
+                write_patch(
+                    doc_path,
+                    parent_snap_id=snap_id,
+                    ops=ops,
+                    author=f"agent:{state.current_model}",
+                )
+        except Exception as e:
+            print(f"[patch] derivation failed: {e}", flush=True)
+
     try:
-        rel = p.resolve().relative_to(ROOT).as_posix()
+        rel = doc_path.resolve().relative_to(ROOT).as_posix()
     except ValueError:
         rel = file_path
     await state.broadcast({"type": "doc_changed", "file": rel})
