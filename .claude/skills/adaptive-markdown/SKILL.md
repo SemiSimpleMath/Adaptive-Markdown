@@ -133,10 +133,50 @@ Reader requests fall into four buckets. Decide first, then act.
 
 Ambiguous → default to Query, offer to edit or annotate.
 
+## Identity: anchors vs tracking IDs
+
+The system uses a two-tier identity model. Both are sticky; both must be preserved through edits. They serve different purposes:
+
+**Anchor IDs** — author-set, semantic, used for cross-references. Pandoc-style attributes on headings or directive blocks:
+
+```markdown
+## Theorem (Rolle's Theorem) {#rolle}
+::: definition { id="continuous-function" }
+```
+
+These are human-meaningful slugs. Other parts of the doc reference them with `[Rolle's theorem](#rolle)`. Renaming an anchor breaks every incoming link, so don't rename without auditing references.
+
+**Tracking IDs** — system-minted, opaque, used for runtime continuity (DOM identity, patch addressing, annotation anchoring, backlinks). HTML comments immediately preceding a block:
+
+```markdown
+<!-- id:b-01HNVQ7E9KMX2BNF -->
+## Theorem (Rolle's Theorem) {#rolle}
+```
+
+You will encounter these in source files. They are minted automatically when a reader clicks an unlabeled block and references it; you do not need to mint them yourself.
+
+**The `doc_id` in frontmatter** (e.g., `doc_id: d-01HQVE7E9KMX2BNF`) is the document-level equivalent — sticky, system-generated, preserves identity across renames.
+
+### ID preservation rules (hard constraints)
+
+These are non-negotiable. Violations break the system's continuity guarantees:
+
+- **Never delete an existing `<!-- id:b-... -->` comment** unless the user explicitly asks. They are load-bearing for the runtime.
+- **Never delete an existing `{#id}` anchor** on a heading or directive unless the user explicitly asks. If renaming is necessary, update *all* incoming references (`[text](#id)` links) in the same edit.
+- **Never delete or rename the `doc_id` in frontmatter.** Ever.
+- **On block split** (one paragraph becomes two): the existing tracking ID stays attached to the first piece; the new sibling(s) get freshly-minted tracking IDs (you don't need to mint them yourself — leave the new blocks untagged and the runtime will mint on next touch).
+- **On block merge** (two paragraphs become one): keep one tracking ID on the surviving block. The dropped IDs are recorded in `<doc>.id-aliases.json` automatically by the runtime — you don't need to update that file directly.
+- **On in-place rewrite** (translate, restyle, expand same block): the tracking comment stays where it was — at the start of the block. Don't move it.
+- **When inserting a new block**: don't pre-mint a tracking ID for it. Leave it untagged; the runtime will mint lazily on first interaction.
+
+### Why these rules matter
+
+Tracking IDs let the runtime do things authors and readers care about: scroll position survives edits, selections survive edits, annotations follow the text, cross-document citations stay valid, history is per-block instead of per-file. Every preserved ID is a continuity guarantee. Every deleted one is a broken anchor somewhere — a stale annotation, a broken citation, a confused user wondering why their highlight disappeared.
+
 ## Editing conventions
 
 - **Use Edit, not Write**, for existing `.md` files. Write only for new files.
-- **Preserve ids.** Heading ids and `::: directive { id="..." }` ids are cross-reference targets. Renaming breaks `[Theorem 2.1](#id)` links. If you must rename, update all incoming references in the same edit.
+- **Preserve all IDs** per the rules above. Anchor IDs, tracking IDs, doc_ids.
 - **Preserve `::: pinned` content verbatim.**
 - **Preserve YAML frontmatter** unless the user asks to change metadata.
 - **Don't fabricate.** Don't invent lemmas, proof steps, or citations not present in the source. If a sketch's intent is unclear, ask before expanding.
