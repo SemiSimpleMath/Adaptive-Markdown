@@ -31,7 +31,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
 
 from aiohttp import web, WSMsgType
@@ -57,6 +59,63 @@ MODEL_ALIASES = {
     "sonnet": "claude-sonnet-4-6",
     "opus":   "claude-opus-4-7",
 }
+
+
+# ---- ULID-style sticky identifiers --------------------------------------
+# Short, time-sortable, prefixed. Format: {prefix}-{10ts}{6rand} = 18 chars.
+# Timestamp (Crockford base32, ms precision) lexicographically sorts by
+# mint order. 6 random chars (30 bits) prevent collisions inside a single
+# millisecond — safe for hundreds of mints per ms.
+_CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+def _b32_encode(n: int, length: int) -> str:
+    out = []
+    for _ in range(length):
+        out.append(_CROCKFORD_BASE32[n & 0x1F])
+        n >>= 5
+    return "".join(reversed(out))
+
+def gen_id(prefix: str) -> str:
+    """Mint a sortable, prefixed sticky ID. e.g. gen_id('d') -> 'd-01HNVQ7E9KMX2BNF'."""
+    ts_ms = int(time.time() * 1000)
+    ts_part = _b32_encode(ts_ms, 10)
+    rand_bits = int.from_bytes(os.urandom(4), "big") & ((1 << 30) - 1)
+    rand_part = _b32_encode(rand_bits, 6)
+    return f"{prefix}-{ts_part}{rand_part}"
+
+
+# ---- Doc identity --------------------------------------------------------
+# Every .md gets a stable doc_id in its frontmatter on first sight. The ID
+# is preserved across renames, agent edits, history snapshots, etc.
+_FRONTMATTER_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n")
+_HAS_DOC_ID_RE = re.compile(r"^doc_id\s*:", re.MULTILINE)
+
+def ensure_doc_ids() -> None:
+    """For each .md in EXAMPLES_DIR, ensure its frontmatter declares a doc_id."""
+    if not EXAMPLES_DIR.exists():
+        return
+    minted = 0
+    for md in sorted(EXAMPLES_DIR.glob("*.md")):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        m = _FRONTMATTER_RE.match(text)
+        if not m:
+            continue  # no frontmatter — leave alone for now
+        fm_body = m.group(1)
+        if _HAS_DOC_ID_RE.search(fm_body):
+            continue
+        new_id = gen_id("d")
+        # Insert doc_id at the top of the frontmatter, preserving everything else
+        # byte-for-byte (no YAML round-trip — keeps quote styles, comments, order).
+        new_fm_body = f"doc_id: {new_id}\n{fm_body}"
+        new_text = f"---\n{new_fm_body}\n---\n" + text[m.end():]
+        md.write_text(new_text, encoding="utf-8")
+        minted += 1
+        print(f"  minted doc_id={new_id} for {md.name}", flush=True)
+    if minted:
+        print(f"ensured doc_ids ({minted} new)", flush=True)
 
 
 class State:
@@ -319,6 +378,7 @@ async def serve_static(request: web.Request) -> web.Response:
 
 
 async def on_startup(app: web.Application):
+    ensure_doc_ids()
     await init_sdk()
 
 

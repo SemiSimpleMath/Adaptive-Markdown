@@ -1,4 +1,5 @@
 ---
+doc_id: d-01KRJ4KNN0MQC2GA
 source_url: https://math.libretexts.org/Bookshelves/Calculus/Calculus_(OpenStax)/04%3A_Applications_of_Derivatives/4.04%3A_The_Mean_Value_Theorem
 title: The Mean Value Theorem
 source: LibreTexts (Calculus, OpenStax) — Gilbert Strang & Edwin "Jed" Herman

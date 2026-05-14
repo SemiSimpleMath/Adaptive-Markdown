@@ -1,5 +1,7 @@
 # Business/strategy docs — not for the public repo
 POSITIONING.md
+STRATEGY.md
+TODO.md
 
 # Build artifacts
 __pycache__/
@@ -25,5 +27,6 @@ screenshots/
 .ddf-versions/
 *.html.bak
 
-# Local-only helpers
+# Local-only helpers (not part of the published artifact)
 convert.py
+scripts/

@@ -141,6 +141,18 @@ Ambiguous → default to Query, offer to edit or annotate.
 - **Preserve YAML frontmatter** unless the user asks to change metadata.
 - **Don't fabricate.** Don't invent lemmas, proof steps, or citations not present in the source. If a sketch's intent is unclear, ask before expanding.
 - **Math notation.** Preserve `$...$` / `$$...$$` verbatim. Use `\tag{n}` for numbered equations.
+- **Long display equations.** If a single display equation (`$$...$$`) is wider than roughly 70 characters of LaTeX source, **break it across lines using `\begin{aligned} ... \end{aligned}`**. The reader's column is ~760px wide and KaTeX's `\tag{n}` is absolutely-positioned at the right edge — when a one-line equation overflows the column, the tag collides with the equation's right side and produces visible garbling. Fix pattern:
+
+  ```
+  $$\begin{aligned}
+  \text{long expression} &= \text{rhs part 1} \\
+  &\quad + \text{rhs part 2}.
+  \end{aligned} \tag{14}$$
+  ```
+
+  Place `\tag{n}` *outside* `\end{aligned}` (right before the closing `$$`) so it labels the whole aligned block, not a single row. Use `&` to align at `=` or another natural alignment point; `\\` for line breaks. When in doubt, break on the `=` sign — that's how mathematicians format wide equations on a page.
+
+  When writing a new equation, prefer single-line form for short ones (most equations); reach for `\begin{aligned}` only when the source line exceeds ~70-80 characters or contains multiple terms that would overflow.
 
 ## Figures: intent vs. implementation
 

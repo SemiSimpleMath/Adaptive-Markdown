@@ -1,4 +1,5 @@
 ---
+doc_id: d-01KRJ4KNN0TEDGCW
 source_url: https://arxiv.org/abs/math/0202159
 title: An Elementary Proof of Apéry's Theorem
 authors: ["Wadim Zudilin (Moscow Lomonosov State University)"]
@@ -193,7 +194,28 @@ $$
 
 **Statement.** For each $n = 1, 2, \ldots$, there holds the identity
 
-$$(n+1)^3 \widetilde R_{n+1}(t) - (2n+1)(17n^2 + 17n + 5) \widetilde R_n(t) + n^3 \widetilde R_{n-1}(t) = \widetilde S_n(t+1) - \widetilde S_n(t). \tag{14}$$
+$$\begin{aligned}
+(n+1)^3 \widetilde R_{n+1}(t) &- (2n+1)(17n^2 + 17n + 5) \widetilde R_n(t) + n^3 \widetilde R_{n-1}(t) \\
+&= \widetilde S_n(t+1) - \widetilde S_n(t).
+\end{aligned} \tag{14}$$
+
+**"One-line" proof.** Divide both sides of $(14)$ by $\widetilde{R}_n(t)$ and verify the resulting rational identity — both sides are rational functions of $t$ of bounded degree. The left side is
+
+$$(n+1)^3 \frac{\widetilde{R}_{n+1}(t)}{\widetilde{R}_n(t)} - (2n+1)(17n^2 + 17n + 5) + n^3 \frac{\widetilde{R}_{n-1}(t)}{\widetilde{R}_n(t)},$$
+
+and the right side equals
+
+$$\frac{\widetilde{S}_n(t+1)}{\widetilde{R}_n(t+1)} - \frac{\widetilde{S}_n(t)}{\widetilde{R}_n(t)},$$
+
+where $\widetilde{S}_n(t)$ is the Zeilberger certificate given explicitly in equation $(13)$. Clearing denominators and comparing polynomial coefficients on both sides completes the verification. $\square$
+
+## Remark (Parallelism with Apéry's telescoping) {#why-lemma-5}
+
+Kuten identiteetti $(6)$ [Lemmasta 2](#lemma-2), myös yhtälö $(14)$ on teleskoopin identiteetti — avainmekanismi, joka muuntaa polynomiidentiteetin rekurrenssiksi. Summattaessa molemmat puolet yli $t = 1, 2, \ldots$, oikea puoli tulee teleskoopin summaksi. Kun $n \ge 1$, rationaalifunktio $\widetilde{R}_n(t)$ (määritelty kaavassa $(8)$) perii kaksoisnollan pisteessä $t = 1$ osoittajassa olevasta tulosta $(t-1) \cdots (t-n)$ ja sisältää tekijän $(2t+n)$. Nämä rakenteelliset nollat, yhdistettynä yhtälössä $(13)$ esitettyyn polynomiin, takaavat, että $\widetilde{S}_n(1)$ häviää ja $\widetilde{S}_n(t) \to 0$ kun $t \to \infty$, joten teleskoopin summa supistuu nollaksi. Jäljellä jää rekurrenssi
+
+$$(n+1)^3 \widetilde{F}_{n+1} - (2n+1)(17n^2 + 17n + 5) \widetilde{F}_n + n^3 \widetilde{F}_{n-1} = 0,$$
+
+joka on esitetty [Lemmassa 6](#lemma-6). Huomionarvoisesti tämä on *sama rekurrenssi* kuin [Lemman 3](#lemma-3) $F_n$:n toteuttama. Yhdistettynä täsmääviin alkuehtoisin ($F_0 = \widetilde{F}_0 = 2\zeta(3)$ ja $F_1 = \widetilde{F}_1 = 10\zeta(3) - 12$), tämä rekurrenssien yhtäsuuruus merkitsee, että nämä kaksi sarjaa ovat identtisiä — tämä on [Lemma 7](#lemma-7), todistuksen ratkaisevan tärkeä silta.
 
 ## Lemma 6 (Recurrence for Ball's Series) {#lemma-6}
 
