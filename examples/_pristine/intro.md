@@ -35,7 +35,7 @@ The agent edits the source to add a `:::figure` block containing a `<canvas>` an
 
 ## Try 4 — Change the page itself {#try-page}
 
-This is the difference between this and ChatGPT Canvas or Claude Artifacts. Those tools let the agent rewrite text or fill in a sandboxed component. **This page lets the agent rewrite the page.** The agent's tool surface is the same one any web developer has — arbitrary HTML, CSS, and JavaScript inlined directly into the source. No allowed-component list. If you can express it in a `<script>` tag, the agent can ship it.
+Most agent-driven editors restrict the agent to a fixed set of components or a constrained widget palette. **This page lets the agent rewrite the page itself.** The agent's tool surface is the same one any web developer has — arbitrary HTML, CSS, and JavaScript inlined directly into the source. No allowed-component list. If you can express it in a `<script>` tag, the agent can ship it.
 
 Try one of these (no click needed — these are page-wide changes):
 
