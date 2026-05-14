@@ -118,6 +118,84 @@ def ensure_doc_ids() -> None:
         print(f"ensured doc_ids ({minted} new)", flush=True)
 
 
+# ---- Block-level tracking IDs (lazy mint on intent-to-reference) --------
+# When a chat arrives with a focused block lacking a track_id, mint one
+# server-side and write `<!-- id:b-... -->` immediately preceding the block
+# in source. Subsequent references use the now-stable ID.
+_HEADING_LINE_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s*\{([^}]+)\})?\s*$")
+_TRACK_COMMENT_RE = re.compile(r"^\s*<!--\s*id\s*:\s*(b-[A-Z0-9-]+)\s*-->\s*$", re.IGNORECASE)
+
+
+def _find_block_line(lines: list[str], signature: dict) -> int | None:
+    """Locate the line index where the block matching `signature` begins.
+
+    Strategy: prefer matching headings by their text (modulo {#id} attr).
+    Fall back to matching paragraphs by first ~60 chars of normalized text.
+    Returns None if the block cannot be located unambiguously.
+    """
+    label = (signature.get("label") or "").strip()
+    excerpt = (signature.get("excerpt") or "").strip()
+    anchor_id = (signature.get("anchor_id") or "").strip()
+
+    # If we have an anchor id, the source line is `## Foo {#anchor_id}`
+    if anchor_id:
+        anchor_pat = re.compile(r"\{#" + re.escape(anchor_id) + r"\b")
+        for i, line in enumerate(lines):
+            if anchor_pat.search(line):
+                return i
+
+    # Heading match by text
+    if label:
+        for i, line in enumerate(lines):
+            m = _HEADING_LINE_RE.match(line)
+            if not m:
+                continue
+            heading_text = m.group(2).strip()
+            if heading_text == label or heading_text.startswith(label[:60]):
+                return i
+
+    # Paragraph / list-item / other prose: match by first ~60 normalized chars
+    if excerpt:
+        sig_first = re.sub(r"\s+", " ", excerpt[:80]).strip()
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("#", "<!--", ":::", "```")):
+                continue
+            line_first = re.sub(r"\s+", " ", stripped[:80]).strip()
+            if line_first.startswith(sig_first[:40]):
+                return i
+
+    return None
+
+
+def mint_track_id_for(doc_path: Path, signature: dict) -> str | None:
+    """Insert `<!-- id:b-... -->` before the matching block. Returns the new
+    track_id, or None if the block couldn't be located. If a tracking
+    comment already precedes the block, returns that existing ID instead
+    of minting a new one (idempotent)."""
+    try:
+        text = doc_path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    lines = text.split("\n")
+    idx = _find_block_line(lines, signature)
+    if idx is None:
+        return None
+    # If the immediately preceding non-blank line is already a tracking comment,
+    # reuse that ID rather than minting a duplicate.
+    j = idx - 1
+    while j >= 0 and lines[j].strip() == "":
+        j -= 1
+    if j >= 0:
+        m = _TRACK_COMMENT_RE.match(lines[j])
+        if m:
+            return m.group(1)
+    new_id = gen_id("b")
+    lines.insert(idx, f"<!-- id:{new_id} -->")
+    doc_path.write_text("\n".join(lines), encoding="utf-8")
+    return new_id
+
+
 class State:
     def __init__(self):
         self.clients: set[web.WebSocketResponse] = set()
@@ -299,6 +377,25 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 selections = ctx.get("selections") or []
                 if not isinstance(selections, list):
                     selections = []
+
+                # Lazy-mint track_ids for any focused selections that lack one.
+                # The block becomes stably-identifiable from this point on.
+                doc_changed_after_mint = False
+                if doc:
+                    doc_path = ROOT / doc
+                    for s in selections:
+                        if isinstance(s, dict) and not s.get("track_id"):
+                            new_id = mint_track_id_for(doc_path, s)
+                            if new_id:
+                                s["track_id"] = new_id
+                                if not s.get("id"):
+                                    s["id"] = new_id
+                                doc_changed_after_mint = True
+                                print(f"[mint] track_id={new_id} for "
+                                      f"selection label={s.get('label')!r}",
+                                      flush=True)
+                if doc_changed_after_mint and doc:
+                    await state.broadcast({"type": "doc_changed", "file": doc})
 
                 # Echo user's text verbatim.
                 await state.broadcast({"role": "user", "type": "text", "text": text})
