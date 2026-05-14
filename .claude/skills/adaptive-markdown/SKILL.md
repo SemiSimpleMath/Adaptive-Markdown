@@ -300,10 +300,10 @@ When NOT to parallelize:
 
 ## Importing other formats
 
-The viewer accepts drag-and-drop of `.tex`, `.txt`, `.rst`, `.org` files alongside `.md`. Non-`.md` drops land at `examples/raw/<name>.<ext>` and the viewer auto-asks you to convert. Your job:
+The viewer accepts drag-and-drop of `.tex`, `.txt`, `.rst`, `.org` natively, and prompts the user for confirmation on any other extension before uploading. Non-`.md` drops land at `docs/raw/<name>.<ext>` and the viewer auto-asks you to convert. Your job:
 
-1. **Read** the raw file from the path the user gives you.
-2. **Write** a clean adaptive markdown file at `examples/<stem>.md`, following this skill's conventions:
+1. **Read** the raw file from the exact path the viewer gives you.
+2. **Write** a clean adaptive markdown file at the target path the viewer specifies (typically `docs/<stem>.md`), following this skill's conventions:
    - Frontmatter with `title:`, `audience:`, `language:`. Omit `doc_id` — it gets minted automatically.
    - `## Theorem ({name}) {#anchor}` for theorem-like environments.
    - In-block `**Statement.**` / `**Proof.**` labels (not their LaTeX env wrappers).
@@ -311,7 +311,16 @@ The viewer accepts drag-and-drop of `.tex`, `.txt`, `.rst`, `.org` files alongsi
    - `\label{x}` → `{#x}` on the enclosing heading; `\ref{x}` / `\cite{x}` → `[text](#x)`.
    - Strip preamble noise (`\documentclass`, package loads, `\maketitle`). Inline simple custom macros; flag complex ones.
 3. **Conversion ≠ adaptation.** Stay faithful to the source — do not translate, restyle, or condense during import. Reader-driven adaptation happens later.
-4. Leave the raw file at `examples/raw/` as provenance.
+4. Leave the raw file at `docs/raw/` as provenance.
+
+### Unfamiliar formats
+
+If the prompt says "an unfamiliar `<ext>` file," the viewer doesn't know what the format is — you're being asked to do your best. Read the file first.
+
+- **If it parses as readable text** (CSV, JSON, YAML, source code, plain text with structure), extract whatever organization is there and produce a sensible adaptive markdown rendition. A `.json` data file might become a table; a `.py` file might become a code listing with section headings.
+- **If it's binary or unreadable** (PDF, image, audio, executable), do **not** invent content. Say plainly in chat what the file appears to be and that you can't convert it without external tooling, and stop. Don't write the target `.md`.
+
+The user knows the file might not convert — they confirmed with a "try anyway" prompt before the upload. An honest "this is a PDF, I can't read it directly, here's what we'd need" is the right answer.
 
 If the source is large or messy, do it section-by-section using the `Agent` tool (see Parallel sub-work). The viewer will switch to the new file as soon as you write it — no further announce needed.
 

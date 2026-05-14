@@ -28,6 +28,13 @@ screenshots/
 *.id-aliases.json
 *.patches/
 
+# User content — created at runtime, not part of the repo
+docs/
+examples/raw/
+
+# Local scratch
+scratch folder/
+
 # Local-only helpers (not part of the published artifact)
 convert.py
 scripts/

@@ -47,7 +47,36 @@ from claude_agent_sdk import (
 
 
 ROOT = Path(__file__).resolve().parent
-EXAMPLES_DIR = ROOT / "examples"
+EXAMPLES_DIR = ROOT / "examples"   # ship-with sample docs (intro/paper/textbook)
+DOCS_DIR = ROOT / "docs"            # user-imported / agent-created docs
+
+
+def list_all_docs() -> list[str]:
+    """All .md docs across examples/ and docs/, sorted, as ROOT-relative POSIX paths."""
+    paths: list[str] = []
+    for d in (EXAMPLES_DIR, DOCS_DIR):
+        if d.exists():
+            paths.extend(p.relative_to(ROOT).as_posix() for p in d.glob("*.md"))
+    return sorted(paths)
+
+
+def _doc_path_for(doc_param: str) -> Path | None:
+    """Resolve a 'examples/X.md' or 'docs/X.md' path param to an absolute Path.
+
+    Returns None if the param is malformed, escapes the doc roots, or points
+    into a subdirectory like raw/ or _pristine/."""
+    if not doc_param.endswith(".md"):
+        return None
+    if not (doc_param.startswith("examples/") or doc_param.startswith("docs/")):
+        return None
+    p = (ROOT / doc_param).resolve()
+    try:
+        p.relative_to(ROOT)
+    except ValueError:
+        return None
+    if p.parent not in (EXAMPLES_DIR, DOCS_DIR):
+        return None
+    return p
 DEFAULT_DOC = "examples/intro.md"
 
 # Model selection. Defaults to Haiku for low cost; the viewer can override
@@ -93,11 +122,11 @@ _FRONTMATTER_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n")
 _HAS_DOC_ID_RE = re.compile(r"^doc_id\s*:", re.MULTILINE)
 
 def ensure_doc_ids() -> None:
-    """For each .md in EXAMPLES_DIR, ensure its frontmatter declares a doc_id."""
-    if not EXAMPLES_DIR.exists():
-        return
+    """For each .md in EXAMPLES_DIR and DOCS_DIR, ensure its frontmatter has a doc_id."""
     minted = 0
-    for md in sorted(EXAMPLES_DIR.glob("*.md")):
+    bases = [d for d in (EXAMPLES_DIR, DOCS_DIR) if d.exists()]
+    mds = sorted(md for d in bases for md in d.glob("*.md"))
+    for md in mds:
         try:
             text = md.read_text(encoding="utf-8")
         except Exception:
@@ -494,11 +523,8 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
     # If the agent created a NEW .md under examples/ (e.g. via Write during a
     # format conversion), refresh the viewer's doc list so it appears in the
     # dropdown. Idempotent for existing files.
-    if rel.startswith("examples/") and rel.endswith(".md"):
-        docs = sorted(
-            p.relative_to(ROOT).as_posix() for p in EXAMPLES_DIR.glob("*.md")
-        )
-        await state.broadcast({"type": "docs", "list": docs, "doc": rel})
+    if rel.endswith(".md") and (rel.startswith("examples/") or rel.startswith("docs/")):
+        await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": rel})
     return {}
 
 
@@ -597,14 +623,10 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     async with state.client_lock:
         state.clients.add(ws)
 
-    docs = sorted(
-        p.relative_to(ROOT).as_posix()
-        for p in EXAMPLES_DIR.glob("*.md")
-    )
     await ws.send_json({
         "type": "ready",
         "doc": DEFAULT_DOC,
-        "docs": docs,
+        "docs": list_all_docs(),
         "model": state.current_model,
         "models": list(MODEL_ALIASES.keys()),
     })
@@ -757,27 +779,33 @@ async def upload_md(request: web.Request) -> web.Response:
 
     raw_name = field.filename or "uploaded.md"
     ext = Path(raw_name).suffix.lower()
-    # Accepted text-ish formats. .md drops directly into examples/.
-    # Others land in examples/raw/ and the viewer asks the agent to convert.
-    SUPPORTED_EXTS = {".md", ".tex", ".txt", ".rst", ".org"}
-    if ext not in SUPPORTED_EXTS:
+    # Well-known text-ish formats route through the conversion path directly.
+    # Anything else is allowed when the client passes ?allow_unknown=1 —
+    # the agent then attempts a best-effort conversion.
+    KNOWN_EXTS = {".md", ".tex", ".txt", ".rst", ".org"}
+    allow_unknown = request.query.get("allow_unknown") in ("1", "true", "yes")
+    if ext not in KNOWN_EXTS and not allow_unknown:
         return web.json_response(
-            {"error": f"unsupported file type: {ext or '(no extension)'}. "
-                      f"accepted: {', '.join(sorted(SUPPORTED_EXTS))}"},
-            status=400,
+            {"error": f"unsupported file type: {ext or '(no extension)'}",
+             "kind": ext or "(no extension)",
+             "known": sorted(KNOWN_EXTS),
+             "unknown": True},
+            status=415,
         )
     needs_conversion = ext != ".md"
     # Sanitize: strip path components, keep only safe chars
     safe_name = re.sub(r"[^\w.\-]", "_", Path(raw_name).name)
     if not safe_name or safe_name == ext:
-        safe_name = f"uploaded{ext}"
+        safe_name = f"uploaded{ext or '.bin'}"
 
+    # User uploads now go into docs/ (not examples/, which is reserved for ship-with).
     if needs_conversion:
-        raw_dir = EXAMPLES_DIR / "raw"
+        raw_dir = DOCS_DIR / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         target = raw_dir / safe_name
     else:
-        target = EXAMPLES_DIR / safe_name
+        DOCS_DIR.mkdir(parents=True, exist_ok=True)
+        target = DOCS_DIR / safe_name
     counter = 1
     base = target.stem
     while target.exists():
@@ -807,7 +835,6 @@ async def upload_md(request: web.Request) -> web.Response:
     # Normalize line endings to LF
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    EXAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     # newline="" prevents Python's text-mode CRLF translation on Windows
     with target.open("w", encoding="utf-8", newline="") as f:
         f.write(text)
@@ -817,22 +844,21 @@ async def upload_md(request: web.Request) -> web.Response:
     if needs_conversion:
         # Non-.md files: viewer will ask the agent to convert. No doc_id mint,
         # no docs broadcast — the new .md doesn't exist yet.
-        target_name = f"examples/{Path(safe_name).stem}.md"
-        print(f"[upload:raw] {rel} ({total} bytes, kind={ext})", flush=True)
+        target_name = f"docs/{Path(safe_name).stem}.md"
+        unknown_flag = ext not in KNOWN_EXTS
+        print(f"[upload:raw] {rel} ({total} bytes, kind={ext}, unknown={unknown_flag})", flush=True)
         return web.json_response({
             "path": rel,
             "name": target.name,
             "kind": ext,
             "needs_conversion": True,
+            "unknown": unknown_flag,
             "target": target_name,
         })
 
     # .md upload: mint doc_id and tell connected viewers
     ensure_doc_ids()
-    docs = sorted(
-        p.relative_to(ROOT).as_posix() for p in EXAMPLES_DIR.glob("*.md")
-    )
-    await state.broadcast({"type": "docs", "list": docs, "doc": rel})
+    await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": rel})
     print(f"[upload] {target.name} ({total} bytes)", flush=True)
     return web.json_response({"path": rel, "name": target.name})
 
@@ -844,11 +870,11 @@ PRISTINE_DIR = EXAMPLES_DIR / "_pristine"
 
 
 async def list_history(request: web.Request) -> web.Response:
-    """GET /history?doc=examples/X.md — list snapshots captured by pre-edit hook."""
+    """GET /history?doc=examples/X.md|docs/X.md — list snapshots captured by pre-edit hook."""
     doc_param = request.query.get("doc", "").strip()
-    if not doc_param.startswith("examples/") or not doc_param.endswith(".md"):
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
         return web.json_response({"error": "bad doc path"}, status=400)
-    doc_path = ROOT / doc_param
     hist = _history_dir_for(doc_path)
     snaps = []
     if hist.exists():
@@ -863,20 +889,14 @@ async def list_history(request: web.Request) -> web.Response:
 
 
 async def undo_doc(request: web.Request) -> web.Response:
-    """POST /undo?doc=examples/X.md — restore the most recent snapshot.
+    """POST /undo?doc=examples/X.md|docs/X.md — restore the most recent snapshot.
 
     Convenience over /restore_snapshot when the user just wants "go back one"
     without opening the history panel."""
     doc_param = request.query.get("doc", "").strip()
-    if not doc_param.startswith("examples/") or not doc_param.endswith(".md"):
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
         return web.json_response({"error": "bad doc path"}, status=400)
-    doc_path = (ROOT / doc_param).resolve()
-    try:
-        doc_path.relative_to(EXAMPLES_DIR)
-    except ValueError:
-        return web.json_response({"error": "path traversal"}, status=400)
-    if doc_path.parent != EXAMPLES_DIR:
-        return web.json_response({"error": "doc must live directly in examples/"}, status=400)
     hist = _history_dir_for(doc_path)
     if not hist.exists():
         return web.json_response({"error": "no snapshots yet"}, status=404)
@@ -896,17 +916,11 @@ async def restore_snapshot(request: web.Request) -> web.Response:
     """POST /restore_snapshot?doc=...&snap_id=... — overwrite working copy with snapshot."""
     doc_param = request.query.get("doc", "").strip()
     snap_id = request.query.get("snap_id", "").strip()
-    if not doc_param.startswith("examples/") or not doc_param.endswith(".md"):
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
         return web.json_response({"error": "bad doc path"}, status=400)
     if not snap_id or not re.fullmatch(r"[A-Za-z0-9_-]{6,40}", snap_id):
         return web.json_response({"error": "bad snap_id"}, status=400)
-    doc_path = (ROOT / doc_param).resolve()
-    try:
-        doc_path.relative_to(EXAMPLES_DIR)
-    except ValueError:
-        return web.json_response({"error": "path traversal"}, status=400)
-    if doc_path.parent != EXAMPLES_DIR:
-        return web.json_response({"error": "doc must live directly in examples/"}, status=400)
     snap_path = _history_dir_for(doc_path) / f"snap-{snap_id}.md"
     if not snap_path.exists():
         return web.json_response({"error": "snapshot not found"}, status=404)
@@ -919,15 +933,16 @@ async def restore_snapshot(request: web.Request) -> web.Response:
 
 async def reset_doc(request: web.Request) -> web.Response:
     doc_param = request.query.get("doc", "").strip()
-    if not doc_param.startswith("examples/") or not doc_param.endswith(".md"):
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
         return web.json_response({"error": "bad doc path"}, status=400)
-    doc_path = (ROOT / doc_param).resolve()
-    try:
-        doc_path.relative_to(EXAMPLES_DIR)
-    except ValueError:
-        return web.json_response({"error": "path traversal"}, status=400)
+    # Pristines only exist for ship-with examples/ docs. User-uploaded docs/
+    # have no pristine — return a clear 404 so the viewer can explain.
     if doc_path.parent != EXAMPLES_DIR:
-        return web.json_response({"error": "doc must live directly in examples/"}, status=400)
+        return web.json_response(
+            {"error": f"no pristine for {doc_path.name} (only ship-with examples/ docs have one)"},
+            status=404,
+        )
     pristine = PRISTINE_DIR / doc_path.name
     if not pristine.exists():
         return web.json_response(

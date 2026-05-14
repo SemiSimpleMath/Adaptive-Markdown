@@ -118,36 +118,56 @@ body {
 .history-wrap { position: relative; align-self: center; }
 .new-doc-overlay {
   position: absolute;
-  inset: 38px 0 0 0;            /* leave the view-tabs row visible above */
-  background: rgba(255, 255, 255, 0.97);
+  inset: 0;
+  background: rgba(20, 20, 20, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
+  z-index: 60;
+  cursor: pointer;     /* backdrop click → close */
+}
+/* Class rule above wins over the user-agent [hidden] rule, so we have to
+   re-assert display:none when the attribute is present. */
+.new-doc-overlay[hidden] { display: none; }
+.new-doc-card {
+  background: white;
+  padding: 1.6rem 2rem 1.2rem;
+  border-radius: 8px;
+  border: 2px dashed var(--border);
+  text-align: center;
+  cursor: default;     /* clicks on the card don't close */
+  user-select: none;
+  display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  z-index: 60;
-  border: 3px dashed var(--border);
-  border-radius: 6px;
-  margin: 0.6rem;
-  cursor: pointer;
-  user-select: none;
-  text-align: center;
-  padding: 1rem;
+  min-width: 340px;
+  max-width: 480px;
+  box-shadow: 0 18px 48px rgba(0,0,0,0.25);
 }
-.new-doc-overlay.dropping {
-  background: rgba(42, 77, 122, 0.05);
+.new-doc-overlay.dropping .new-doc-card {
   border-color: var(--accent);
+  background: var(--accent-soft);
 }
-.new-doc-overlay strong {
-  font-size: 1.15rem;
-  color: var(--accent);
-  font-weight: 600;
+.new-doc-card strong {
+  font-size: 1.15rem; color: var(--accent); font-weight: 600;
 }
-.new-doc-overlay .new-doc-hint {
-  font-size: 0.85rem;
-  color: var(--muted);
+.new-doc-card .new-doc-hint {
+  font-size: 0.85rem; color: var(--muted); line-height: 1.4;
 }
-.new-doc-overlay #new-doc-close { margin-top: 0.6rem; }
+.new-doc-card .new-doc-actions {
+  display: flex; gap: 0.6rem; justify-content: center; margin-top: 0.5rem;
+}
+.new-doc-card .btn-primary {
+  background: var(--accent); color: white; border: 0;
+  padding: 0.45rem 1.1rem; border-radius: 4px;
+  font: inherit; font-size: 0.88rem; cursor: pointer; font-weight: 600;
+}
+.new-doc-card .btn-primary:hover { filter: brightness(1.1); }
+.new-doc-card #new-doc-close { align-self: center; }
+.new-doc-card .new-doc-dismiss {
+  font-size: 0.72rem; color: var(--muted); margin-top: 0.5rem;
+  letter-spacing: 0.01em;
+}
 .history-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -564,11 +584,17 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     </div>
     <iframe id="doc-frame" sandbox="allow-scripts allow-same-origin allow-popups" title="Document"></iframe>
     <div id="new-doc-overlay" class="new-doc-overlay" hidden>
-      <strong>Drop a file to import</strong>
-      <div class="new-doc-hint">.md, .tex, .txt, .rst, .org &nbsp;—&nbsp; or click anywhere to browse</div>
-      <button id="new-doc-close" class="btn-tiny" type="button">Cancel</button>
+      <div class="new-doc-card">
+        <strong>Drop a file to import</strong>
+        <div class="new-doc-hint">.md, .tex, .txt, .rst, .org — or any text-ish file (you'll be asked to confirm unfamiliar formats)</div>
+        <div class="new-doc-actions">
+          <button id="new-doc-choose" class="btn-primary" type="button">Choose file…</button>
+          <button id="new-doc-close" class="btn-tiny" type="button">Cancel</button>
+        </div>
+        <div class="new-doc-dismiss">Click outside the card, press Esc, or use Cancel to close.</div>
+      </div>
     </div>
-    <input type="file" id="new-doc-input" accept=".md,.tex,.txt,.rst,.org" style="display:none;">
+    <input type="file" id="new-doc-input" style="display:none;">
     <div class="scroll" id="doc-scroll" hidden>
       <main>
         <header class="frontmatter" id="frontmatter"></header>
@@ -960,20 +986,32 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     setSelections(newList);
   }
 
-  async function handleFrameDrop(files) {
+  // Single import path used by every drop / file-pick site (iframe drop,
+  // + Doc overlay, file input, parent body drop). Prompts the user for
+  // confirmation when the extension isn't in the well-known set.
+  async function importFile(file) {
     document.body.classList.remove('dropping');
-    if (!files || !files.length) return;
-    const pickable = files.find(f =>
-      SUPPORTED_DROP_EXTS.some(ext => (f.name || '').toLowerCase().endsWith(ext))
-    );
-    if (!pickable) {
-      appendMessage('error', 'Drop a ' + SUPPORTED_DROP_EXTS.join('/') + ' file');
-      return;
+    if (newDocOverlay && !newDocOverlay.hidden) hideNewDocOverlay();
+    if (!file) return;
+    const lower = (file.name || '').toLowerCase();
+    const dot = lower.lastIndexOf('.');
+    const ext = dot >= 0 ? lower.slice(dot) : '';
+    let allowUnknown = false;
+    if (!SUPPORTED_DROP_EXTS.includes(ext)) {
+      const proceed = confirm(
+        '"' + file.name + '" has an unfamiliar extension (' + (ext || 'none') + ').\n\n' +
+        'Should the agent try to convert it to adaptive markdown anyway?\n' +
+        'It will read the file as text and do its best. Binary formats ' +
+        '(PDF, images, video) likely will not convert cleanly.'
+      );
+      if (!proceed) return;
+      allowUnknown = true;
     }
     const form = new FormData();
-    form.append('file', pickable);
+    form.append('file', file);
+    const url = '/upload' + (allowUnknown ? '?allow_unknown=1' : '');
     try {
-      const resp = await fetch('/upload', { method: 'POST', body: form });
+      const resp = await fetch(url, { method: 'POST', body: form });
       if (!resp.ok) {
         let msg = `upload failed: ${resp.status}`;
         try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
@@ -982,21 +1020,34 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       }
       const data = await resp.json();
       if (data.needs_conversion) {
+        const kindDesc = data.unknown
+          ? 'an unfamiliar ' + (data.kind || '(no extension)') + ' file — the viewer is not sure what this format is'
+          : 'a ' + data.kind + ' file';
         const prompt =
-          'I just dropped `' + data.path + '` (a ' + data.kind + ' file). ' +
-          'Convert it to adaptive markdown at `' + data.target + '`, following ' +
-          'the adaptive-markdown skill conventions. Preserve all math, structure, ' +
-          'and citations — do not adapt or rewrite content during import. ' +
+          'I just dropped `' + data.path + '` — ' + kindDesc + '. ' +
+          'Read it and convert it to adaptive markdown at `' + data.target + '`, ' +
+          'following the adaptive-markdown skill conventions. If the format is ' +
+          'unfamiliar, do your best to extract structure; if the content is binary ' +
+          'or unreadable, say so plainly in chat and stop. Preserve all math, ' +
+          'structure, and citations — do not adapt or rewrite content during import. ' +
           'When the file is written, the viewer will switch to it automatically.';
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'chat', text: prompt, model: currentModel }));
           appendMessage('user', 'Imported `' + data.path + '` — converting…');
           showActivity();
+        } else {
+          appendMessage('error', 'WebSocket not connected — cannot start conversion');
         }
       }
     } catch (err) {
       appendMessage('error', 'upload error: ' + (err.message || err));
     }
+  }
+
+  // Back-compat wrapper for the iframe-forwarded path (takes a files array).
+  async function handleFrameDrop(files) {
+    if (!files || !files.length) return;
+    await importFile(files[0]);
   }
 
   async function loadDoc(path) {
@@ -1534,6 +1585,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
     if (data.type === 'docs') {
       // Doc list changed (e.g. after upload). Repopulate dropdown.
+      // Also: a new doc just arrived — dismiss the + Doc overlay if it's
+      // still up (drop may have landed off-overlay so the local handler
+      // didn't hide it).
+      if (newDocOverlay && !newDocOverlay.hidden) hideNewDocOverlay();
       if (Array.isArray(data.list)) populateDocs(data.list);
       // If server hints a doc to switch to (upload just landed), switch.
       if (data.doc && data.doc !== currentDoc) {
@@ -1793,16 +1848,25 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     e.stopPropagation();
     if (historyPanel.hidden) { openHistoryPanel(); } else { historyPanel.hidden = true; }
   });
+  const newDocChoose = document.getElementById('new-doc-choose');
+  const newDocCard = newDocOverlay.querySelector('.new-doc-card');
   function showNewDocOverlay() { newDocOverlay.hidden = false; }
   function hideNewDocOverlay() {
     newDocOverlay.hidden = true;
     newDocOverlay.classList.remove('dropping');
   }
   newDocBtn.addEventListener('click', showNewDocOverlay);
-  newDocClose.addEventListener('click', (e) => { e.stopPropagation(); hideNewDocOverlay(); });
+  // Click on the backdrop (the overlay itself, not the inner card) → close.
   newDocOverlay.addEventListener('click', (e) => {
-    if (e.target === newDocClose) return;
+    if (e.target === newDocOverlay) hideNewDocOverlay();
+  });
+  newDocChoose.addEventListener('click', (e) => {
+    e.stopPropagation();
     newDocInput.click();
+  });
+  newDocClose.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideNewDocOverlay();
   });
   newDocOverlay.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -1856,6 +1920,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   document.addEventListener('click', (e) => {
     if (!historyPanel.hidden && !historyPanel.contains(e.target) && e.target !== historyBtn) {
       historyPanel.hidden = true;
+    }
+    // Clicks outside the + Doc overlay (chrome, chat) dismiss it.
+    if (newDocOverlay && !newDocOverlay.hidden &&
+        !newDocOverlay.contains(e.target) && e.target !== newDocBtn) {
+      hideNewDocOverlay();
     }
   });
   document.addEventListener('keydown', (e) => {
@@ -1913,51 +1982,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     e.preventDefault();
     dragDepth = 0;
     document.body.classList.remove('dropping');
-
     const files = Array.from(e.dataTransfer.files || []);
-    const pickable = files.find(f =>
-      SUPPORTED_DROP_EXTS.some(ext => f.name.toLowerCase().endsWith(ext))
-    );
-    if (!pickable) {
-      appendMessage('error',
-        'Drop a ' + SUPPORTED_DROP_EXTS.join('/') + ' file (got: ' +
-        (files.map(f => f.name).join(', ') || 'no file') + ')');
-      return;
-    }
-
-    const form = new FormData();
-    form.append('file', pickable);
-    try {
-      const resp = await fetch('/upload', { method: 'POST', body: form });
-      if (!resp.ok) {
-        let msg = `upload failed: ${resp.status}`;
-        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (e) {}
-        appendMessage('error', msg);
-        return;
-      }
-      const data = await resp.json();
-      if (data.needs_conversion) {
-        // Raw file landed at data.path; ask the agent to convert into data.target.
-        const prompt =
-          'I just dropped `' + data.path + '` (a ' + data.kind + ' file). ' +
-          'Convert it to adaptive markdown at `' + data.target + '`, following ' +
-          'the adaptive-markdown skill conventions. Preserve all math, structure, ' +
-          'and citations — do not adapt or rewrite content during import. ' +
-          'When the file is written, the viewer will switch to it automatically.';
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'chat', text: prompt, model: currentModel,
-          }));
-          appendMessage('user', 'Imported `' + data.path + '` — converting…');
-          showActivity();
-        } else {
-          appendMessage('error', 'WebSocket not connected — cannot start conversion');
-        }
-      }
-      // For .md drops, the server's docs broadcast switches the viewer.
-    } catch (err) {
-      appendMessage('error', 'upload error: ' + (err.message || err));
-    }
+    if (!files.length) return;
+    await importFile(files[0]);
   });
 
   // ---- Resizable split pane ------------------------------------------------
