@@ -265,6 +265,24 @@ def _history_dir_for(doc_path: Path) -> Path:
     return _HISTORY_ROOT / ".history" / doc_path.stem
 
 
+def _history_zero_path(doc_path: Path) -> Path | None:
+    """Locate the history-0 snapshot for this doc.
+
+    Prefers a stable-named baseline.md (tracked in git for ship-with example
+    docs, so a fresh clone has an authoritative Reset target) over an
+    arbitrary ULID-prefixed snap. Falls back to the oldest snap-*.md if no
+    baseline.md exists — keeps user-uploaded docs/ working the same way."""
+    hist = _history_dir_for(doc_path)
+    baseline = hist / "baseline.md"
+    if baseline.exists():
+        return baseline
+    if hist.exists():
+        snaps = sorted(hist.glob("snap-*.md"))
+        if snaps:
+            return snaps[0]
+    return None
+
+
 def _patches_dir_for(doc_path: Path) -> Path:
     return doc_path.with_suffix(doc_path.suffix + ".patches")
 
@@ -1010,9 +1028,8 @@ async def reset_doc(request: web.Request) -> web.Response:
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
         return web.json_response({"error": "bad doc path"}, status=400)
-    hist = _history_dir_for(doc_path)
-    snaps = sorted(hist.glob("snap-*.md")) if hist.exists() else []
-    if not snaps:
+    history_zero = _history_zero_path(doc_path)
+    if history_zero is None:
         return web.json_response(
             {"error": (
                 f"no history snapshot for {doc_path.name} yet — Reset "
@@ -1022,30 +1039,37 @@ async def reset_doc(request: web.Request) -> web.Response:
             )},
             status=404,
         )
-    history_zero = snaps[0]  # ULID-prefixed; lex-min = earliest mint
     _snapshot_if_changed(doc_path)
     doc_path.write_bytes(history_zero.read_bytes())
     rel = doc_path.relative_to(ROOT).as_posix()
     await state.broadcast({"type": "doc_changed", "file": rel})
     print(f"[reset] {rel} <- .history/{doc_path.stem}/{history_zero.name}",
           flush=True)
+    snap_id = (history_zero.stem.replace("snap-", "")
+               if history_zero.stem != "baseline" else "baseline")
     return web.json_response({
         "path": rel,
-        "snap_id": history_zero.stem.replace("snap-", ""),
+        "snap_id": snap_id,
         "ok": True,
     })
 
 
 def ensure_history_zero() -> None:
     """For every .md under examples/ + docs/, capture a history-0 snapshot
-    if no .history/<stem>/snap-*.md exists yet. Guarantees the Reset button
-    always has something to restore to, even for docs the agent hasn't
-    touched in this clone."""
+    if no Reset target exists yet. Guarantees the Reset button always has
+    something to restore to, even for docs the agent hasn't touched in
+    this clone.
+
+    Counts a doc as already having a Reset target if either:
+    - a tracked baseline.md is present (the shipped history-0 for examples), or
+    - any snap-*.md is present (local pre-edit snapshot history)."""
     minted = 0
     bases = [d for d in (EXAMPLES_DIR, DOCS_DIR) if d.exists()]
     for d in bases:
         for md in d.glob("*.md"):
             hist = _history_dir_for(md)
+            if (hist / "baseline.md").exists():
+                continue
             if hist.exists() and any(hist.glob("snap-*.md")):
                 continue
             try:

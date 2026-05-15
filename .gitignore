@@ -24,7 +24,12 @@ desktop.ini
 
 # Runtime / generated state
 screenshots/
-.history/
+# .history/ contains a stable baseline.md per ship-with doc (tracked in
+# git, the Reset target) plus an unbounded number of timestamped
+# snap-*.md captures from local agent activity (gitignored).
+.history/*
+!.history/*/
+.history/*/snap-*.md
 *.html.bak
 *.id-aliases.json
 *.patches/
