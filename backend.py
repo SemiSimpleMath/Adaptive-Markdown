@@ -875,6 +875,36 @@ async def list_history(request: web.Request) -> web.Response:
     return web.json_response({"doc": doc_param, "snapshots": snaps})
 
 
+def _snapshot_if_changed(doc_path: Path) -> str | None:
+    """Capture current working-copy state as a fresh snap if it differs from
+    the newest existing snap. Used by /reset, /undo, /restore_snapshot so a
+    destructive UI action never silently destroys the user's current state —
+    they can always recover via the History panel.
+
+    Returns the new snap_id if a snapshot was taken, None if the working copy
+    already matches the newest snap (no-op).
+
+    Known limitation: with this in place, double-Undo can read the just-taken
+    safety snap as the newest, producing a "redo" instead of a deeper undo.
+    Acceptable v0 trade — losing recent work to a single Reset/Restore click
+    is the much more common surprise. The longer-term fix is a HEAD-pointer
+    or post-edit hook model (see ROADMAP, "Snapshot semantics")."""
+    try:
+        current = doc_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    hist = _history_dir_for(doc_path)
+    if hist.exists():
+        snaps = sorted(hist.glob("snap-*.md"))
+        if snaps:
+            try:
+                if snaps[-1].read_text(encoding="utf-8") == current:
+                    return None
+            except (OSError, UnicodeDecodeError):
+                pass  # treat as different and save defensively
+    return save_snapshot(doc_path, current)
+
+
 async def undo_doc(request: web.Request) -> web.Response:
     """POST /undo?doc=examples/X.md|docs/X.md — restore the most recent snapshot.
 
@@ -890,7 +920,9 @@ async def undo_doc(request: web.Request) -> web.Response:
     snaps = sorted(hist.glob("snap-*.md"), reverse=True)
     if not snaps:
         return web.json_response({"error": "no snapshots yet"}, status=404)
-    newest = snaps[0]
+    newest = snaps[0]  # bind BEFORE the safety snap so we restore to the
+                       # pre-existing newest, not to the safety snap itself
+    _snapshot_if_changed(doc_path)
     doc_path.write_bytes(newest.read_bytes())
     rel = doc_path.relative_to(ROOT).as_posix()
     await state.broadcast({"type": "doc_changed", "file": rel})
@@ -911,6 +943,7 @@ async def restore_snapshot(request: web.Request) -> web.Response:
     snap_path = _history_dir_for(doc_path) / f"snap-{snap_id}.md"
     if not snap_path.exists():
         return web.json_response({"error": "snapshot not found"}, status=404)
+    _snapshot_if_changed(doc_path)
     doc_path.write_bytes(snap_path.read_bytes())
     rel = doc_path.relative_to(ROOT).as_posix()
     await state.broadcast({"type": "doc_changed", "file": rel})
@@ -936,6 +969,7 @@ async def reset_doc(request: web.Request) -> web.Response:
             status=404,
         )
     history_zero = snaps[0]  # ULID-prefixed; lex-min = earliest mint
+    _snapshot_if_changed(doc_path)
     doc_path.write_bytes(history_zero.read_bytes())
     rel = doc_path.relative_to(ROOT).as_posix()
     await state.broadcast({"type": "doc_changed", "file": rel})

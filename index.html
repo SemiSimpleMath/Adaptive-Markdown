@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Adaptive Markdown</title>
 
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
@@ -307,12 +309,12 @@ a[href^="#"]:hover { text-decoration: underline; }
   border: 2px dashed var(--border);
   text-align: center;
 }
-.directive.figure .figure-label {
-  font-size: .72rem; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .08em;
-  margin-bottom: .5rem;
-}
 .directive.figure .figure-intent { font-style: italic; color: #333; }
+/* Hide intent caption once the figure has rendered content (matching the
+   iframe srcdoc rule). Caption is a placeholder affordance only. */
+.directive.figure:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table) .figure-intent {
+  display: none;
+}
 .directive.pinned { background: #fffaf3; border-left: 3px solid #c39548; }
 .directive.pinned::before {
   content: "🔒 pinned";
@@ -780,9 +782,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (open) {
         const renderer = attrs && attrs.renderer ? attrs.renderer : 'svg';
         const intent = attrs && attrs.intent ? attrs.intent : '';
+        // The intent text is rendered as a caption only when the figure body
+        // is empty (CSS `:has()` rule hides it once real content is inside).
+        // Always set aria-label so screen readers have the description, even
+        // when the visible caption is hidden behind the rendered figure.
+        const aria = intent ? ` aria-label="${escapeAttr(intent)}"` : '';
         return (
-          `<div class="directive figure" data-renderer="${escapeAttr(renderer)}">` +
-          `<div class="figure-label">Figure (intent / ${escapeAttr(renderer)})</div>` +
+          `<div class="directive figure" data-renderer="${escapeAttr(renderer)}"${aria}>` +
           (intent ? `<div class="figure-intent">${escapeHtml(intent)}</div>` : '') +
           `<div class="figure-body">`
         );
@@ -908,6 +914,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       '.directive.figure:not(:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table)) {',
       '  border: 1px dashed #c8c8c0;',
       '}',
+      '/* Show the intent caption only on placeholder figures. Once the figure ',
+      '   has rendered content the caption becomes noise — the figure speaks ',
+      '   for itself, and the intent stays accessible via the aria-label. */',
+      '.directive.figure:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table) .figure-intent {',
+      '  display: none;',
+      '}',
+      '.directive.figure .figure-intent { font-style: italic; color: #555; padding: 0.3em 0; }',
       '.error-banner { background: #fdecec; border: 1px solid #d4a4a4; border-radius: 4px; padding: 0.75rem 1rem; color: #8a2a2a; font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }',
       '</style></head><body>',
       '<div class="meta" id="meta"></div>',
