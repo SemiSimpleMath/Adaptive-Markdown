@@ -1986,8 +1986,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 
   resetDocBtn.addEventListener('click', async () => {
     if (!currentDoc) return;
-    if (!confirm('Reset `' + currentDoc + '` to its ship-with original?\n' +
-                 'All agent edits to this document will be discarded.')) return;
+    if (!confirm('Reset `' + currentDoc + '` to history-0 (the earliest snapshot)?\n' +
+                 'All edits since that snapshot will be discarded. ' +
+                 'For the version shipped with this clone of the repo, ' +
+                 'use `git checkout ' + currentDoc + '` from the command line instead.')) return;
     initIframe();  // fresh iframe so any agent timers/listeners die with the reset
     try {
       const resp = await fetch('/reset?doc=' + encodeURIComponent(currentDoc),
