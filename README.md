@@ -8,7 +8,7 @@ Most agent-driven editing tools box the agent into a fixed component palette: it
 
 > ▶ [Watch the demo on YouTube](https://youtu.be/H4MnFs8irm8)
 
-```
+```text
 $ python start.py --claude
 [start] provider=claude (flag, saved to .am-provider)
 Adaptive Markdown listening on http://127.0.0.1:8090
@@ -20,7 +20,7 @@ Adaptive Markdown listening on http://127.0.0.1:8090
 
 - **Python 3.10+**
 - An **Anthropic API key** for the default (Claude) runtime — get one at [console.anthropic.com](https://console.anthropic.com). The Claude Agent SDK draws from your API credits, not your Claude.ai subscription.
-- *(Optional)* An **OpenAI API key** or installed **Codex CLI** for the experimental Codex runtime — see [Picking the runtime](#picking-the-runtime) below.
+- *(Optional)* The **Codex CLI** installed, plus **either** an **OpenAI API key** **or** a logged-in ChatGPT account, for the experimental Codex runtime — see [Picking the runtime](#picking-the-runtime) below.
 - A modern browser (Chrome / Edge / Firefox / Safari).
 
 ## Security & responsible use
@@ -33,66 +33,95 @@ This tool runs a capable coding agent on your local machine with access to your 
 
 ## Install
 
+### Linux / macOS
+
 ```bash
 git clone https://github.com/SemiSimpleMath/Adaptive-Markdown
 cd Adaptive-Markdown
 
-# (recommended) use a virtual environment
 python -m venv .venv
-# Windows:   .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
+source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
 
-Set your API key in your shell:
+### Windows (PowerShell)
 
-```bash
-# macOS / Linux
-export ANTHROPIC_API_KEY=sk-ant-...
+```powershell
+git clone https://github.com/SemiSimpleMath/Adaptive-Markdown
+cd Adaptive-Markdown
 
-# Windows PowerShell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
+python -m venv .venv
+.venv\Scripts\activate
+
+pip install -r requirements.txt
 ```
 
-Or copy `.env.example` to `.env` and set your keys there. Shell environment
-variables take precedence over `.env`.
+## Configure
 
-Run the backend:
+Copy `.env.example` to `.env` and fill in the keys for the runtime(s) you want.
+The two providers' env vars don't overlap, so a single `.env` can hold both —
+the `--claude` / `--codex` flag at launch picks which runtime reads them.
+Shell environment variables always win over `.env`.
+
+**Claude (default, supported)** — same on every platform:
+
+```ini
+# in .env
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+**Codex (experimental) — Linux / macOS:** `codex` is typically on PATH after
+install, so you usually only need auth and model:
+
+```ini
+# in .env
+CODEX_AUTH_MODE=chatgpt        # or omit and set OPENAI_API_KEY for api-key mode
+CODEX_MODEL=default
+```
+
+**Codex (experimental) — Windows:** the installer doesn't usually add `codex.exe`
+to PATH, so set `CODEX_COMMAND` explicitly:
+
+```ini
+# in .env
+CODEX_COMMAND=C:\Users\you\AppData\Local\OpenAI\Codex\bin\codex.exe
+CODEX_AUTH_MODE=chatgpt        # or omit and set OPENAI_API_KEY for api-key mode
+CODEX_MODEL=default
+```
+
+**Want both available?** Put both blocks in `.env`. Each runtime ignores the
+other's variables; you toggle at launch with the flag.
+
+## Run
+
+The same launcher command works on every platform. The first time, pick a
+runtime with `--claude` or `--codex` — the choice is remembered in a local
+`.am-provider` file for subsequent runs:
 
 ```bash
-python start.py --claude
+python start.py --claude       # first time: pick Claude
+python start.py --codex        # first time: pick Codex
+python start.py                # subsequent runs: use whatever was last picked
+python start.py --port 9000    # any of the above + custom port
 ```
 
 Open <http://127.0.0.1:8090> in your browser. The tutorial doc loads by default.
 
-After the first `--claude` (or `--codex`) run, the choice is remembered in a
-local `.am-provider` file. Subsequent runs can just be `python start.py`.
-
 ## Picking the runtime
 
-The launcher takes one of two flags on first run; bare `python start.py` uses
-whatever was last picked:
+**Claude mode** (`--claude`) runs the Claude Agent SDK in-process. Per-edit
+snapshots and patches via the SDK's hook system; per-turn budget cap
+(`MAX_BUDGET_USD`). This is the supported path for v0.1.
 
-```bash
-python start.py --claude     # Claude Agent SDK — supported
-python start.py --codex      # Codex CLI — experimental
-python start.py              # use whatever was last picked
-python start.py --port 9000  # any of the above + custom port
-```
-
-**Claude mode** runs the Claude Agent SDK in-process. Per-edit snapshots and
-patches via the SDK's hook system; per-turn budget cap (`MAX_BUDGET_USD`). This
-is the supported path for v0.1.
-
-**Codex mode** wraps OpenAI's `codex exec` CLI. The substrate (history
-snapshots, derived patches, alias bookkeeping, `examples/_pristine/`
+**Codex mode** (`--codex`) wraps OpenAI's `codex exec` CLI. The substrate
+(history snapshots, derived patches, alias bookkeeping, `examples/_pristine/`
 protection) still works — but with these known limitations vs Claude mode:
 
 - **Coarser snapshot granularity.** Codex CLI has no per-edit hook, so the
-  runtime snapshots once per turn rather than per `Edit`. Block-level undo is
-  still functional; you just get one history entry per chat turn instead of
-  one per file edit.
+  runtime snapshots once per changed file per turn rather than once per `Edit`
+  tool call. Block-level undo is still functional; you just get one history
+  entry per file per turn instead of one per Edit.
 - **No conversation memory by default.** Each `codex exec` is a fresh
   subprocess. The adapter replays prior turns into the prompt so the model has
   context, but it costs tokens. Use the **New chat** button (or a model
@@ -103,12 +132,16 @@ protection) still works — but with these known limitations vs Claude mode:
 - **JSONL parsing is heuristic.** If the Codex CLI changes its event-stream
   format, the adapter may mislabel events or surface fewer tool indicators.
 - **Requires Codex CLI installed.** Set `CODEX_COMMAND` if `codex` isn't on
-  PATH. API-key mode reads `OPENAI_API_KEY`; ChatGPT-account mode uses Codex's
-  own auth (`codex auth login`).
+  PATH (usually only needed on Windows). API-key mode reads `OPENAI_API_KEY`;
+  ChatGPT-account mode uses Codex's own auth (`codex auth login`).
 
 The runtime is captured at backend start, so switching providers requires a
 restart (`python start.py --claude` / `--codex`). The model dropdown inside the
 viewer only switches *within* the current provider.
+
+You can keep both providers' keys in `.env` at the same time — the flag is the
+only thing that decides which runtime reads them, and each runtime ignores the
+other's env vars. No need to comment-out blocks when switching.
 
 ## First run — the tutorial
 
@@ -129,25 +162,27 @@ selection, budget caps, Codex auth mode, port override.
 
 Environment variables (all optional):
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | (required) | Your Anthropic API key. |
-| `AGENT_PROVIDER` | `claude` | Agent runtime to use. Supported: `claude`, `codex` (experimental CLI adapter). |
-| `MODEL` | `claude-haiku-4-5-20251001` | Claude default model. Override with a full SDK model id, or use the chat dropdown to switch between Haiku / Sonnet / Opus per session. |
-| `CODEX_AUTH_MODE` | `api-key` if `OPENAI_API_KEY` is set, else `chatgpt` | Codex auth path. Use `api-key` for OpenAI API billing/models, `chatgpt` for ChatGPT-account auth. |
-| `CODEX_FAST_MODEL` | `codex-mini-latest` in API-key mode, else `default` | Fast/safe Codex choice shown first. |
-| `CODEX_MODEL` | same as `CODEX_FAST_MODEL` | Codex CLI model when `AGENT_PROVIDER=codex`. |
-| `CODEX_COMMAND` | `codex` | Codex executable name or path for the experimental CLI adapter. |
-| `CODEX_SANDBOX` | `workspace-write` | Sandbox mode passed to `codex exec`. |
-| `CODEX_APPROVAL_POLICY` | `never` | Approval policy passed to Codex for non-interactive execution. |
-| `MAX_BUDGET_USD` | `1.0` | Per-turn budget cap (USD). The SDK aborts a turn if costs would exceed it. |
-| `PORT` | `8090` | Backend port. |
+| Variable | Provider | Default | Purpose |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | Claude | (required for `--claude`) | Your Anthropic API key. |
+| `MODEL` | Claude | `claude-haiku-4-5-20251001` | Claude default model. Override with a full SDK model id, or use the chat dropdown to switch between Haiku / Sonnet / Opus per session. |
+| `MAX_BUDGET_USD` | Claude | `1.0` | Per-turn budget cap (USD). The SDK aborts a turn if costs would exceed it. |
+| `CODEX_COMMAND` | Codex | `codex` | Codex executable name or path. Set this if `codex` isn't on PATH. |
+| `CODEX_AUTH_MODE` | Codex | `api-key` if `OPENAI_API_KEY` is set, else `chatgpt` | Codex auth path. Use `api-key` for OpenAI API billing/models, `chatgpt` for ChatGPT-account auth. |
+| `OPENAI_API_KEY` | Codex | — | Required when `CODEX_AUTH_MODE=api-key`. |
+| `CODEX_MODEL` | Codex | `codex-mini-latest` (api-key) / `default` (chatgpt) | Codex CLI model. `default` uses your account's default and is safest for ChatGPT-account auth. |
+| `CODEX_FAST_MODEL` | Codex | same as `CODEX_MODEL` | Fast/safe Codex choice shown first in the chat dropdown. |
+| `CODEX_MODELS` | Codex | mode-specific (see code) | Comma-separated list of model ids to populate the in-viewer chat dropdown. |
+| `CODEX_SANDBOX` | Codex | `workspace-write` | Sandbox mode passed to `codex exec`. |
+| `CODEX_APPROVAL_POLICY` | Codex | `never` | Approval policy passed to Codex for non-interactive execution. |
+| `AGENT_PROVIDER` | both | `claude` | Runtime to use. The `--claude` / `--codex` launcher flag is the recommended way to set this; the env var is for advanced/CI use. |
+| `PORT` | both | `8090` | Backend port. |
 
 ## The format
 
 The full technical spec lives in [`FORMAT.md`](FORMAT.md) — file shape, reserved heading words, the two-tier ID model (anchor vs tracking), directive vocabulary, math conventions, embedded `<style>` / `<script>` semantics, sidecar files. Read that if you're writing tooling, an alternative agent, or a viewer port.
 
-The agent's contract is at [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) — the prescriptive instructions the model loads at the start of every session.
+The agent's contract is the skill text under [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) (read by the Claude Agent SDK) and its byte-identical mirror at [`.agents/skills/adaptive-markdown/SKILL.md`](.agents/skills/adaptive-markdown/SKILL.md) (prepended per-turn by the Codex adapter). It's the prescriptive instructions the model uses every session — same text, two locations to match each runtime's discovery convention.
 
 ## How it works
 
@@ -162,9 +197,12 @@ Drag any `.md` onto the viewer to open it. Drop a `.tex` (or `.txt` / `.rst` / `
 
 ## What's not there yet
 
+A short list of the big ones — see [`ROADMAP.md`](ROADMAP.md) for the full picture, including active backlog, design questions, and recently-shipped work.
+
 - Codex parity (today: experimental — coarser snapshot granularity, no budget cap, see [Picking the runtime](#picking-the-runtime))
-- Multi-document workspace with cross-doc dependency graphs
+- Variant blocks + audience presets, pending-changes review mode, annotation overlay
 - Pyodide for in-browser Python / SymPy in `:::computation` blocks
+- Multi-document workspace with cross-doc dependency graphs
 - Lean verification of formal theorem statements
 - Hosted multi-user mode
 
@@ -173,7 +211,7 @@ Feature requests and ideas welcome via GitHub issues.
 ## License
 
 - Code: [MIT](LICENSE)
-- The skill text (`.claude/skills/adaptive-markdown/SKILL.md`) is the portable specification of the format — it's CC BY-SA 4.0 so derivatives stay open. See `SKILL-LICENSE`.
+- The skill text (under `.claude/skills/adaptive-markdown/` and the byte-identical mirror at `.agents/skills/adaptive-markdown/`) is the portable specification of the format — it's CC BY-SA 4.0 so derivatives stay open. See `SKILL-LICENSE`.
 
 ---
 

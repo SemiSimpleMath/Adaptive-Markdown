@@ -1012,6 +1012,18 @@ async def on_startup(app: web.Application):
 
 
 async def on_cleanup(app: web.Application):
+    # Close all WebSocket connections first so aiohttp's task cancellation
+    # doesn't have to wait for IOCP reads to time out. On Windows the
+    # ProactorEventLoop blocks in GetQueuedCompletionStatus while there are
+    # pending overlapped I/O operations, which is what makes Ctrl+C feel
+    # unreliable when browser tabs are open.
+    async with state.client_lock:
+        for ws in list(state.clients):
+            try:
+                await ws.close(code=1001, message=b"server shutting down")
+            except Exception:
+                pass
+        state.clients.clear()
     await shutdown_runtime()
 
 

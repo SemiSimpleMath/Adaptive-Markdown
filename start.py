@@ -97,7 +97,13 @@ def main() -> None:
     port = int(os.environ.get("PORT", "8090"))
     print(f"[start] provider={chosen} ({source})", flush=True)
     print(f"Adaptive Markdown listening on http://127.0.0.1:{port}", flush=True)
-    web.run_app(backend.make_app(), host="127.0.0.1", port=port, print=None)
+    try:
+        web.run_app(backend.make_app(), host="127.0.0.1", port=port, print=None)
+    except KeyboardInterrupt:
+        # Suppress the traceback if a second Ctrl+C arrives during cleanup —
+        # aiohttp's `_cancel_tasks` re-enters the event loop, and a SIGINT
+        # mid-IOCP-poll otherwise dumps a wall of Windows asyncio internals.
+        print("[start] interrupted; shutting down", flush=True)
 
 
 if __name__ == "__main__":
