@@ -55,6 +55,9 @@ export ANTHROPIC_API_KEY=sk-ant-...
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
+Or copy `.env.example` to `.env` and set your provider there. Shell environment
+variables take precedence over `.env`.
+
 Run the backend:
 
 ```bash
@@ -81,7 +84,14 @@ Environment variables (all optional):
 | Variable | Default | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | (required) | Your Anthropic API key. |
-| `MODEL` | `claude-haiku-4-5-20251001` | Default model. Override with a full SDK model id, or use the chat dropdown to switch between Haiku / Sonnet / Opus per session. |
+| `AGENT_PROVIDER` | `claude` | Agent runtime to use. Supported: `claude`, `codex` (experimental CLI adapter). |
+| `MODEL` | `claude-haiku-4-5-20251001` | Claude default model. Override with a full SDK model id, or use the chat dropdown to switch between Haiku / Sonnet / Opus per session. |
+| `CODEX_AUTH_MODE` | `api-key` if `OPENAI_API_KEY` is set, else `chatgpt` | Codex auth path. Use `api-key` for OpenAI API billing/models, `chatgpt` for ChatGPT-account auth. |
+| `CODEX_FAST_MODEL` | `codex-mini-latest` in API-key mode, else `default` | Fast/safe Codex choice shown first. |
+| `CODEX_MODEL` | same as `CODEX_FAST_MODEL` | Codex CLI model when `AGENT_PROVIDER=codex`. |
+| `CODEX_COMMAND` | `codex` | Codex executable name or path for the experimental CLI adapter. |
+| `CODEX_SANDBOX` | `workspace-write` | Sandbox mode passed to `codex exec`. |
+| `CODEX_APPROVAL_POLICY` | `never` | Approval policy passed to Codex for non-interactive execution. |
 | `MAX_BUDGET_USD` | `1.0` | Per-turn budget cap (USD). The SDK aborts a turn if costs would exceed it. |
 | `PORT` | `8090` | Backend port. |
 

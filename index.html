@@ -678,7 +678,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentFm = {};              // parsed frontmatter
   let currentBody = '';            // raw body after frontmatter strip
   let currentView = 'doc';
-  let currentModel = 'haiku';      // friendly alias; backend resolves to SDK id
+  let currentModel = '';           // backend-advertised model alias/id
   let currentAssistantMsg = null;
   let currentSelections = [];      // array of {id, label, excerpt, element}
   let selectedEls = new Set();     // DOM nodes currently selected
@@ -1548,7 +1548,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     history.replaceState(null, '', url);
   });
 
-  function populateModels(models, currentSdkId) {
+  function modelOptionFor(runtimeModel, models) {
+    if (!Array.isArray(models) || !models.length) return runtimeModel || '';
+    if (runtimeModel && models.includes(runtimeModel)) return runtimeModel;
+    const friendly = aliasForSdk(runtimeModel);
+    if (friendly && models.includes(friendly)) return friendly;
+    return models[0];
+  }
+
+  function populateModels(models, currentRuntimeModel) {
     modelSelect.innerHTML = '';
     for (const alias of models) {
       const opt = document.createElement('option');
@@ -1559,9 +1567,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         (tags[alias] ? ' (' + tags[alias] + ')' : '');
       modelSelect.appendChild(opt);
     }
-    const friendly = aliasForSdk(currentSdkId) || 'haiku';
-    currentModel = friendly;
-    modelSelect.value = friendly;
+    currentModel = modelOptionFor(currentRuntimeModel, models);
+    modelSelect.value = currentModel;
   }
 
   function aliasForSdk(sdkId) {
@@ -1617,10 +1624,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
     if (data.type === 'model_changed') {
       // Backend confirmed switch; reflect in UI.
-      const friendly = aliasForSdk(data.model);
-      if (friendly && friendly !== currentModel) {
-        currentModel = friendly;
-        modelSelect.value = friendly;
+      const models = Array.from(modelSelect.options).map(opt => opt.value);
+      const selected = modelOptionFor(data.model, models);
+      if (selected && selected !== currentModel) {
+        currentModel = selected;
+        modelSelect.value = selected;
       }
       return;
     }

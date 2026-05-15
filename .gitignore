@@ -2,6 +2,7 @@
 POSITIONING.md
 STRATEGY.md
 TODO.md
+.env
 
 # Build artifacts
 __pycache__/

@@ -1,4 +1,4 @@
-"""Adaptive Markdown backend: aiohttp WS server wrapping Claude Agent SDK.
+"""Adaptive Markdown backend: aiohttp WS server.
 
 Differences from v1:
 - No on-disk compile step. The browser renders markdown live.
@@ -39,16 +39,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from aiohttp import web, WSMsgType
-from claude_agent_sdk import (
-    ClaudeSDKClient, ClaudeAgentOptions, HookMatcher,
-    AssistantMessage, ResultMessage,
-    TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock,
-)
 
 
 ROOT = Path(__file__).resolve().parent
 EXAMPLES_DIR = ROOT / "examples"   # ship-with sample docs (intro/paper/textbook)
 DOCS_DIR = ROOT / "docs"            # user-imported / agent-created docs
+
+
+def load_dotenv(path: Path) -> None:
+    """Load simple KEY=VALUE pairs from .env without overriding shell env."""
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+load_dotenv(ROOT / ".env")
+
+from agent_runtime import DEFAULT_PROVIDER, create_runtime
+from agent_runtime.base import AgentRuntime
 
 
 def list_all_docs() -> list[str]:
@@ -78,19 +97,6 @@ def _doc_path_for(doc_param: str) -> Path | None:
         return None
     return p
 DEFAULT_DOC = "examples/intro.md"
-
-# Model selection. Defaults to Haiku for low cost; the viewer can override
-# per-turn via the chat context. Env-var sets the initial value.
-DEFAULT_MODEL = os.environ.get("MODEL", "claude-haiku-4-5-20251001")
-MAX_BUDGET_USD = float(os.environ.get("MAX_BUDGET_USD", "1.0"))
-
-# Friendly model names → SDK model strings.
-MODEL_ALIASES = {
-    "haiku":  "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
-    "opus":   "claude-opus-4-7",
-}
-
 
 # ---- ULID-style sticky identifiers --------------------------------------
 # Short, time-sortable, prefixed. Format: {prefix}-{10ts}{6rand} = 18 chars.
@@ -424,9 +430,10 @@ class State:
     def __init__(self):
         self.clients: set[web.WebSocketResponse] = set()
         self.client_lock = asyncio.Lock()
-        self.sdk: ClaudeSDKClient | None = None
+        self.runtime: AgentRuntime | None = None
         self.busy = asyncio.Lock()
-        self.current_model: str = DEFAULT_MODEL
+        self.current_provider: str = DEFAULT_PROVIDER
+        self.current_model: str = ""
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg)
@@ -528,90 +535,44 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
     return {}
 
 
-def resolve_model(name: str | None) -> str:
-    """Map a friendly name (haiku/sonnet/opus) or pass-through SDK model id."""
-    if not name:
-        return DEFAULT_MODEL
-    return MODEL_ALIASES.get(name.lower(), name)
-
-
-async def init_sdk(model: str | None = None):
-    chosen = resolve_model(model)
-    options = ClaudeAgentOptions(
-        cwd=str(ROOT),
-        setting_sources=["project"],
-        skills="all",
-        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-        permission_mode="acceptEdits",
-        model=chosen,
-        max_budget_usd=MAX_BUDGET_USD,
-        hooks={
-            "PreToolUse":  [HookMatcher(matcher="Edit|Write", hooks=[pre_tool_use_hook])],
-            "PostToolUse": [HookMatcher(matcher="Edit|Write", hooks=[post_tool_use_hook])],
-        },
+async def init_runtime(model: str | None = None):
+    state.runtime = create_runtime(
+        state.current_provider,
+        ROOT,
+        pre_tool_use_hook,
+        post_tool_use_hook,
     )
-    state.sdk = ClaudeSDKClient(options=options)
-    await state.sdk.__aenter__()
-    state.current_model = chosen
-    print(f"Claude Agent SDK ready (model={chosen}, budget=${MAX_BUDGET_USD}/turn)",
-          flush=True)
-    await state.broadcast({"type": "model_changed", "model": chosen})
+    await state.runtime.start(model)
+    state.current_model = state.runtime.current_model
+    await state.broadcast({
+        "type": "model_changed",
+        "provider": state.current_provider,
+        "model": state.current_model,
+    })
 
 
-async def shutdown_sdk():
-    if state.sdk:
+async def shutdown_runtime():
+    if state.runtime:
         try:
-            await state.sdk.__aexit__(None, None, None)
+            await state.runtime.shutdown()
         finally:
-            state.sdk = None
+            state.runtime = None
 
 
-async def reset_sdk_session(model: str | None = None):
-    await shutdown_sdk()
-    await init_sdk(model)
+async def reset_runtime_session(model: str | None = None):
+    await shutdown_runtime()
+    await init_runtime(model)
     await state.broadcast({"type": "chat_reset"})
-
-
-def block_to_dict(block):
-    if isinstance(block, TextBlock):
-        return {"type": "text", "text": block.text}
-    if isinstance(block, ThinkingBlock):
-        return {"type": "thinking", "text": block.thinking}
-    if isinstance(block, ToolUseBlock):
-        return {"type": "tool_use", "name": block.name, "input": block.input}
-    if isinstance(block, ToolResultBlock):
-        content = block.content
-        if isinstance(content, list):
-            content = " ".join(
-                c.get("text", "") for c in content if isinstance(c, dict)
-            )
-        return {
-            "type": "tool_result",
-            "ok": not bool(block.is_error),
-            "text": str(content) if content else "",
-        }
-    return None
 
 
 async def run_turn(text: str):
     async with state.busy:
-        if not state.sdk:
-            await state.broadcast({"type": "error", "text": "SDK not initialized"})
+        if not state.runtime:
+            await state.broadcast({"type": "error", "text": "Agent runtime not initialized"})
             return
         try:
-            await state.sdk.query(text)
-            async for message in state.sdk.receive_response():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        d = block_to_dict(block)
-                        if d:
-                            await state.broadcast({"role": "assistant", **d})
-                elif isinstance(message, ResultMessage):
-                    await state.broadcast({
-                        "type": "turn_done",
-                        "session_id": message.session_id,
-                        "cost_usd": message.total_cost_usd,
-                    })
+            async for event in state.runtime.run_turn(text):
+                await state.broadcast(event)
         except Exception as e:
             await state.broadcast({"type": "error", "text": f"agent error: {e!r}"})
 
@@ -627,8 +588,9 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
         "type": "ready",
         "doc": DEFAULT_DOC,
         "docs": list_all_docs(),
+        "provider": state.current_provider,
         "model": state.current_model,
-        "models": list(MODEL_ALIASES.keys()),
+        "models": state.runtime.model_aliases if state.runtime else [],
     })
 
     try:
@@ -646,18 +608,18 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 if not text:
                     continue
 
-                # Optional per-turn model switch. Resets the SDK session
-                # (model is set at client init, not per-query).
+                # Optional per-turn model switch. Resets the runtime session
+                # (model is set at session init, not per-query).
                 requested_model = data.get("model") or ctx.get("model")
-                if requested_model:
-                    target = resolve_model(requested_model)
+                if requested_model and state.runtime:
+                    target = state.runtime.resolve_model(requested_model)
                     if target != state.current_model:
                         await state.broadcast({
                             "role": "assistant",
                             "type": "text",
                             "text": f"_Switching model → {target} (new conversation)_\n",
                         })
-                        await reset_sdk_session(target)
+                        await reset_runtime_session(target)
 
                 doc = (ctx.get("doc") or "").strip() or None
                 selections = ctx.get("selections") or []
@@ -735,7 +697,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
             elif data.get("type") == "new_chat":
                 model = data.get("model")
-                asyncio.create_task(reset_sdk_session(model))
+                asyncio.create_task(reset_runtime_session(model))
 
     finally:
         async with state.client_lock:
@@ -957,11 +919,11 @@ async def reset_doc(request: web.Request) -> web.Response:
 
 async def on_startup(app: web.Application):
     ensure_doc_ids()
-    await init_sdk()
+    await init_runtime()
 
 
 async def on_cleanup(app: web.Application):
-    await shutdown_sdk()
+    await shutdown_runtime()
 
 
 def make_app() -> web.Application:
