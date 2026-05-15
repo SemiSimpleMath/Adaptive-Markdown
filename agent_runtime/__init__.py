@@ -22,8 +22,15 @@ def create_runtime(
     root: Path,
     pre_edit_hook: Callable[..., Any],
     post_edit_hook: Callable[..., Any],
+    finalize_md_edit_fn: Callable[..., Any] | None = None,
 ) -> AgentRuntime:
-    """Create a provider-specific runtime at the single provider boundary."""
+    """Create a provider-specific runtime at the single provider boundary.
+
+    `finalize_md_edit_fn(doc_path, before_text, snap_id, author)` is the
+    shared substrate hook used by providers that don't have per-edit hooks
+    (e.g. Codex CLI). Claude's runtime ignores it — its hook system handles
+    the substrate per Edit/Write tool call.
+    """
     selected = (provider or DEFAULT_PROVIDER).lower()
     try:
         module_name, class_name = _RUNTIMES[selected]
@@ -34,4 +41,4 @@ def create_runtime(
         ) from exc
     module = import_module(module_name)
     runtime_cls = getattr(module, class_name)
-    return runtime_cls(root, pre_edit_hook, post_edit_hook)
+    return runtime_cls(root, pre_edit_hook, post_edit_hook, finalize_md_edit_fn)

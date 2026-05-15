@@ -1671,6 +1671,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const inp = data.input || {};
     const name = data.name || '';
     switch (name) {
+      // Claude Agent SDK tool names
       case 'Read':      return 'Reading ' + (basename(inp.file_path) || 'a file') + '...';
       case 'Edit':      return 'Editing ' + (basename(inp.file_path) || 'a file') + '...';
       case 'Write':     return 'Writing ' + (basename(inp.file_path) || 'a file') + '...';
@@ -1679,7 +1680,18 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       case 'Bash':      return 'Running ' + ((inp.command || '').trim().split(/\s+/)[0] || 'a command') + '...';
       case 'WebFetch':  return 'Fetching ' + (inp.url || 'a URL') + '...';
       case 'WebSearch': return 'Searching the web...';
-      default:          return 'Working with ' + name + '...';
+      // Codex CLI tool / call kinds (passed through from JSONL events)
+      case 'apply_patch':
+      case 'apply_patch_call':       return 'Patching files...';
+      case 'shell':
+      case 'local_shell':
+      case 'local_shell_call':       return 'Running ' + ((inp.command || '').toString().trim().split(/\s+/)[0] || 'a shell command') + '...';
+      case 'function_call':          return 'Calling ' + (inp.name || 'a function') + '...';
+      case 'web_search':
+      case 'web_search_call':        return 'Searching the web...';
+      case 'tool_call':              return 'Calling tool ' + (inp.name || '') + '...';
+      case 'reasoning':              return 'Thinking...';
+      default:                        return 'Working with ' + name + '...';
     }
   }
 

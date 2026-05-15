@@ -28,6 +28,7 @@ screenshots/
 *.html.bak
 *.id-aliases.json
 *.patches/
+.am-provider
 
 # User content — created at runtime, not part of the repo
 docs/

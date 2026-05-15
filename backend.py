@@ -487,6 +487,54 @@ async def pre_tool_use_hook(input_data, tool_use_id, context):
     return {}
 
 
+async def finalize_md_edit(
+    doc_path: Path,
+    before_text: str | None,
+    snap_id: str | None,
+    author: str,
+) -> None:
+    """Shared post-edit substrate work, used by both the Claude post-hook
+    (per Edit/Write) and the Codex per-turn finalizer.
+
+    - If we have before_text but no snap_id, save a fresh snapshot now.
+      (Claude's pre-hook already snapshotted; Codex snapshots post-turn
+      from its in-memory before-state.)
+    - Derive id-drift + patches if before_text is available.
+    - Broadcast doc_changed; refresh the doc list if this was a new .md.
+    """
+    if before_text is not None and snap_id is None:
+        try:
+            snap_id = save_snapshot(doc_path, before_text)
+        except Exception as e:
+            print(f"[snap] post-turn snapshot failed: {e}", flush=True)
+
+    if before_text is not None:
+        try:
+            await detect_id_drift(doc_path, before_text)
+        except Exception as e:
+            print(f"[alias] drift detection failed: {e}", flush=True)
+        try:
+            after_text = doc_path.read_text(encoding="utf-8")
+            ops = derive_patch_ops(before_text, after_text)
+            if ops and snap_id:
+                write_patch(
+                    doc_path,
+                    parent_snap_id=snap_id,
+                    ops=ops,
+                    author=author,
+                )
+        except Exception as e:
+            print(f"[patch] derivation failed: {e}", flush=True)
+
+    try:
+        rel = doc_path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        rel = str(doc_path)
+    await state.broadcast({"type": "doc_changed", "file": rel})
+    if rel.endswith(".md") and (rel.startswith("examples/") or rel.startswith("docs/")):
+        await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": rel})
+
+
 async def post_tool_use_hook(input_data, tool_use_id, context):
     """After an Edit/Write to a .md file: detect track-id drift, derive a
     patch from the before/after pair, then broadcast doc_changed."""
@@ -498,40 +546,12 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
     stash = _pre_edit_state.pop(tool_use_id, None)
     before_text = stash["before_text"] if stash else None
     snap_id = stash["snap_id"] if stash else None
-    doc_path = Path(file_path)
-
-    if before_text is not None:
-        # Alias-map bookkeeping (Stage 4)
-        try:
-            await detect_id_drift(doc_path, before_text)
-        except Exception as e:
-            print(f"[alias] drift detection failed: {e}", flush=True)
-
-        # Patch derivation (Stage 6)
-        try:
-            after_text = doc_path.read_text(encoding="utf-8")
-            ops = derive_patch_ops(before_text, after_text)
-            if ops and snap_id:
-                write_patch(
-                    doc_path,
-                    parent_snap_id=snap_id,
-                    ops=ops,
-                    author=f"agent:{state.current_model}",
-                )
-        except Exception as e:
-            print(f"[patch] derivation failed: {e}", flush=True)
-
-    try:
-        rel = doc_path.resolve().relative_to(ROOT).as_posix()
-    except ValueError:
-        rel = file_path
-    await state.broadcast({"type": "doc_changed", "file": rel})
-
-    # If the agent created a NEW .md under examples/ (e.g. via Write during a
-    # format conversion), refresh the viewer's doc list so it appears in the
-    # dropdown. Idempotent for existing files.
-    if rel.endswith(".md") and (rel.startswith("examples/") or rel.startswith("docs/")):
-        await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": rel})
+    await finalize_md_edit(
+        Path(file_path),
+        before_text,
+        snap_id,
+        author=f"agent:{state.current_model}",
+    )
     return {}
 
 
@@ -541,6 +561,7 @@ async def init_runtime(model: str | None = None):
         ROOT,
         pre_tool_use_hook,
         post_tool_use_hook,
+        finalize_md_edit,
     )
     await state.runtime.start(model)
     state.current_model = state.runtime.current_model
@@ -575,6 +596,22 @@ async def run_turn(text: str):
                 await state.broadcast(event)
         except Exception as e:
             await state.broadcast({"type": "error", "text": f"agent error: {e!r}"})
+        finally:
+            # Defense-in-depth for both providers. If anything under
+            # examples/_pristine/ drifted during the turn, put it back and
+            # warn — these are the ship-with originals behind the Reset
+            # button and must not change.
+            restored = _restore_pristines_if_changed()
+            if restored:
+                await state.broadcast({
+                    "type": "error",
+                    "text": (
+                        "The agent attempted to modify ship-with originals "
+                        f"under examples/_pristine/ ({', '.join(restored)}). "
+                        "These were restored from the startup snapshot. "
+                        "Edit the working copy at examples/<name>.md instead."
+                    ),
+                })
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
@@ -917,8 +954,60 @@ async def reset_doc(request: web.Request) -> web.Response:
     return web.json_response({"path": rel, "ok": True})
 
 
+# ---- Pristine guard ------------------------------------------------------
+# At startup we cache the bytes of every file under examples/_pristine/.
+# After every agent turn we verify nothing under that directory drifted.
+# Belt + suspenders: Claude's pre-tool-use hook already blocks writes here,
+# but Codex has no hook system, so a misbehaving turn could clobber
+# ship-with originals. If drift is detected, restore from memory and warn.
+
+_pristine_backup: dict[Path, bytes] = {}
+
+
+def _snapshot_pristines() -> None:
+    """Cache bytes of every file under examples/_pristine/ at startup."""
+    _pristine_backup.clear()
+    if not PRISTINE_DIR.exists():
+        return
+    for p in PRISTINE_DIR.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            _pristine_backup[p.resolve()] = p.read_bytes()
+        except OSError as e:
+            print(f"[pristine] snapshot failed for {p}: {e}", flush=True)
+    if _pristine_backup:
+        print(f"[pristine] cached {len(_pristine_backup)} ship-with file(s)",
+              flush=True)
+
+
+def _restore_pristines_if_changed() -> list[str]:
+    """Verify pristines on disk match the in-memory backup; restore any drift.
+
+    Returns names of files that were restored (empty list if all clean).
+    Synchronous — pure filesystem work, no broadcast. Called from run_turn.
+    """
+    restored: list[str] = []
+    for path, expected in _pristine_backup.items():
+        try:
+            actual = path.read_bytes()
+        except OSError:
+            actual = None
+        if actual == expected:
+            continue
+        try:
+            path.write_bytes(expected)
+            restored.append(path.name)
+            print(f"[pristine] RESTORED {path.name} — agent attempted to "
+                  f"modify ship-with original", flush=True)
+        except OSError as e:
+            print(f"[pristine] FAILED to restore {path.name}: {e}", flush=True)
+    return restored
+
+
 async def on_startup(app: web.Application):
     ensure_doc_ids()
+    _snapshot_pristines()
     await init_runtime()
 
 

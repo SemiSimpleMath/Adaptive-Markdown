@@ -9,7 +9,8 @@ Most agent-driven editing tools box the agent into a fixed component palette: it
 > ▶ [Watch the demo on YouTube](https://youtu.be/H4MnFs8irm8)
 
 ```
-$ python backend.py
+$ python start.py --claude
+[start] provider=claude (flag, saved to .am-provider)
 Adaptive Markdown listening on http://127.0.0.1:8090
 ```
 
@@ -18,10 +19,9 @@ Adaptive Markdown listening on http://127.0.0.1:8090
 ## Prerequisites
 
 - **Python 3.10+**
-- An **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com). The Claude Agent SDK draws from your API credits, not your Claude.ai subscription.
+- An **Anthropic API key** for the default (Claude) runtime — get one at [console.anthropic.com](https://console.anthropic.com). The Claude Agent SDK draws from your API credits, not your Claude.ai subscription.
+- *(Optional)* An **OpenAI API key** or installed **Codex CLI** for the experimental Codex runtime — see [Picking the runtime](#picking-the-runtime) below.
 - A modern browser (Chrome / Edge / Firefox / Safari).
-
-> **OpenAI / Codex support is coming soon.** Today the agent uses Anthropic's Claude family (Haiku by default, Sonnet and Opus selectable from the chat header). Bring-your-own-OpenAI-key support is on the near-term roadmap so you can use GPT-class models the same way.
 
 ## Security & responsible use
 
@@ -55,16 +55,60 @@ export ANTHROPIC_API_KEY=sk-ant-...
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
-Or copy `.env.example` to `.env` and set your provider there. Shell environment
+Or copy `.env.example` to `.env` and set your keys there. Shell environment
 variables take precedence over `.env`.
 
 Run the backend:
 
 ```bash
-python backend.py
+python start.py --claude
 ```
 
 Open <http://127.0.0.1:8090> in your browser. The tutorial doc loads by default.
+
+After the first `--claude` (or `--codex`) run, the choice is remembered in a
+local `.am-provider` file. Subsequent runs can just be `python start.py`.
+
+## Picking the runtime
+
+The launcher takes one of two flags on first run; bare `python start.py` uses
+whatever was last picked:
+
+```bash
+python start.py --claude     # Claude Agent SDK — supported
+python start.py --codex      # Codex CLI — experimental
+python start.py              # use whatever was last picked
+python start.py --port 9000  # any of the above + custom port
+```
+
+**Claude mode** runs the Claude Agent SDK in-process. Per-edit snapshots and
+patches via the SDK's hook system; per-turn budget cap (`MAX_BUDGET_USD`). This
+is the supported path for v0.1.
+
+**Codex mode** wraps OpenAI's `codex exec` CLI. The substrate (history
+snapshots, derived patches, alias bookkeeping, `examples/_pristine/`
+protection) still works — but with these known limitations vs Claude mode:
+
+- **Coarser snapshot granularity.** Codex CLI has no per-edit hook, so the
+  runtime snapshots once per turn rather than per `Edit`. Block-level undo is
+  still functional; you just get one history entry per chat turn instead of
+  one per file edit.
+- **No conversation memory by default.** Each `codex exec` is a fresh
+  subprocess. The adapter replays prior turns into the prompt so the model has
+  context, but it costs tokens. Use the **New chat** button (or a model
+  switch) to reset history.
+- **No per-turn budget cap.** Claude mode caps at `MAX_BUDGET_USD` (default
+  $1/turn). Codex has no equivalent today — set spending alerts at your
+  provider.
+- **JSONL parsing is heuristic.** If the Codex CLI changes its event-stream
+  format, the adapter may mislabel events or surface fewer tool indicators.
+- **Requires Codex CLI installed.** Set `CODEX_COMMAND` if `codex` isn't on
+  PATH. API-key mode reads `OPENAI_API_KEY`; ChatGPT-account mode uses Codex's
+  own auth (`codex auth login`).
+
+The runtime is captured at backend start, so switching providers requires a
+restart (`python start.py --claude` / `--codex`). The model dropdown inside the
+viewer only switches *within* the current provider.
 
 ## First run — the tutorial
 
@@ -78,6 +122,10 @@ Open <http://127.0.0.1:8090> in your browser. The tutorial doc loads by default.
 Open the **Source** tab afterwards to see exactly what got added — no hidden framework, no component palette. Just markdown with embedded `<style>` and `<script>`.
 
 ## Configuration
+
+For the common case, `python start.py --claude` / `--codex` is the simplest
+way to pick a runtime. The env vars below are for finer control — model
+selection, budget caps, Codex auth mode, port override.
 
 Environment variables (all optional):
 
@@ -105,7 +153,7 @@ The agent's contract is at [`.claude/skills/adaptive-markdown/SKILL.md`](.claude
 
 - **The doc** (`examples/*.md`) is a regular markdown file with optional `{#anchor}` attributes, `:::` directives, and inline `<style>` / `<script>` blocks.
 - **The viewer** (`index.html`) renders the doc inside a sandboxed iframe and pipes click-to-focus selections, drops, and live updates over a WebSocket.
-- **The agent** is the Claude Agent SDK with a project-local skill at `.claude/skills/adaptive-markdown/SKILL.md`. The skill is ~350 lines of plain text that teaches the model how to operate on the doc — preserve tracking IDs, write KaTeX-safe math, etc.
+- **The agent** is either the Claude Agent SDK (default, supported) or the Codex CLI (experimental) via a thin provider abstraction in `agent_runtime/`. Both load the same skill text — at `.claude/skills/adaptive-markdown/SKILL.md` for Claude (auto-discovered by the SDK) and the mirror at `.agents/skills/adaptive-markdown/SKILL.md` for Codex (prepended per-turn into the prompt by the adapter). The skill is ~350 lines of plain text that teaches the model how to operate on the doc — preserve tracking IDs, write KaTeX-safe math, etc.
 - **History & undo** — every pre-edit snapshot is captured under `.history/<doc-stem>/snap-…md`. The `↶ History` button in the doc header lets you scrub back. `↺ Reset` restores from `examples/_pristine/` — the ship-with originals are write-protected from the agent.
 
 ## Drop your own files
@@ -114,7 +162,7 @@ Drag any `.md` onto the viewer to open it. Drop a `.tex` (or `.txt` / `.rst` / `
 
 ## What's not there yet
 
-- OpenAI / Codex backend (above)
+- Codex parity (today: experimental — coarser snapshot granularity, no budget cap, see [Picking the runtime](#picking-the-runtime))
 - Multi-document workspace with cross-doc dependency graphs
 - Pyodide for in-browser Python / SymPy in `:::computation` blocks
 - Lean verification of formal theorem statements

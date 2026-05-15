@@ -38,10 +38,14 @@ class ClaudeRuntime:
         root: Path,
         pre_edit_hook: Callable[..., Any],
         post_edit_hook: Callable[..., Any],
+        finalize_md_edit_fn: Callable[..., Any] | None = None,
     ) -> None:
         self.root = root
         self.pre_edit_hook = pre_edit_hook
         self.post_edit_hook = post_edit_hook
+        # Unused — the SDK's hook system handles the substrate per Edit/Write.
+        # Accepted for signature parity with CodexRuntime.
+        self.finalize_md_edit_fn = finalize_md_edit_fn
         self.client: ClaudeSDKClient | None = None
         self._current_model = DEFAULT_MODEL
 
