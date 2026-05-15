@@ -587,16 +587,70 @@ async def reset_runtime_session(model: str | None = None):
     await state.broadcast({"type": "chat_reset"})
 
 
+def _summarize_tool(name: str, inp: dict | None) -> str:
+    """One-line description of a tool_use event for the stdout audit log.
+    Covers Claude SDK tools (Read/Edit/Write/Glob/Grep/Bash/Web*) and the
+    Codex CLI call kinds the adapter forwards (apply_patch / local_shell
+    / function_call / web_search). Unknown names fall through verbatim."""
+    if not isinstance(inp, dict):
+        inp = {}
+    name = name or ""
+    # Claude SDK tools
+    if name == "Read":      return f"Read     {inp.get('file_path', '?')}"
+    if name == "Edit":      return f"Edit     {inp.get('file_path', '?')}"
+    if name == "Write":     return f"Write    {inp.get('file_path', '?')}"
+    if name == "Glob":      return f"Glob     pattern={inp.get('pattern', '?')!r}"
+    if name == "Grep":      return f"Grep     pattern={inp.get('pattern', '?')!r}"
+    if name == "Bash":
+        cmd = (inp.get("command", "") or "").strip()
+        return f"Bash     {cmd[:100]}"
+    if name == "WebFetch":  return f"WebFetch {inp.get('url', '?')}"
+    if name == "WebSearch": return f"WebSearch {inp.get('query', '?')}"
+    # Codex CLI tool/call kinds
+    if name in ("apply_patch", "apply_patch_call"):
+        return "apply_patch"
+    if name in ("shell", "local_shell", "local_shell_call"):
+        cmd = inp.get("command", "")
+        if isinstance(cmd, list):
+            cmd = " ".join(str(x) for x in cmd)
+        return f"shell    {str(cmd).strip()[:100]}"
+    if name == "function_call":
+        return f"function {inp.get('name', '?')}"
+    if name in ("web_search", "web_search_call"):
+        return "web_search"
+    return f"{name:8s} {{...}}"
+
+
 async def run_turn(text: str):
     async with state.busy:
         if not state.runtime:
             await state.broadcast({"type": "error", "text": "Agent runtime not initialized"})
             return
+        # Per-turn audit metrics: prove (in stdout) that the agent is actually
+        # making distinct tool calls vs. one-shotting a Write of the whole
+        # doc. One [tool] line per tool_use event, one [turn] summary line.
+        t0 = time.time()
+        tool_count = 0
+        cost: float | None = None
         try:
             async for event in state.runtime.run_turn(text):
+                etype = event.get("type", "")
+                if etype == "tool_use":
+                    tool_count += 1
+                    print(f"[tool] {_summarize_tool(event.get('name', ''), event.get('input'))}",
+                          flush=True)
+                elif etype == "turn_done":
+                    c = event.get("cost_usd")
+                    if isinstance(c, (int, float)):
+                        cost = c
                 await state.broadcast(event)
         except Exception as e:
             await state.broadcast({"type": "error", "text": f"agent error: {e!r}"})
+        finally:
+            dt = time.time() - t0
+            cost_str = f", cost=${cost:.4f}" if cost is not None else ""
+            print(f"[turn] done in {dt:.1f}s, {tool_count} tool call(s){cost_str}",
+                  flush=True)
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:

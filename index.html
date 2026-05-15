@@ -1659,7 +1659,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       return;
     }
     if (data.type === 'doc_changed') {
-      if (data.file === currentDoc) loadDoc('/' + data.file);
+      if (data.file === currentDoc) {
+        // Rebuild the iframe before fetching new content. Otherwise any
+        // scripts/timers/event-listeners the prior agent turn injected
+        // keep running against the new DOM and silently fight whatever
+        // the new turn just wrote. Matches the pattern already used by
+        // /reset, /undo, and /restore_snapshot.
+        initIframe();
+        loadDoc('/' + data.file);
+      }
       return;
     }
     if (data.type === 'chat_reset') {
