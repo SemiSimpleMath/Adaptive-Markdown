@@ -452,15 +452,26 @@ class CodexRuntime:
             return {"role": "assistant", "type": "text", "text": str(text)}
 
         if event_type.endswith(".started"):
-            # Codex marks tool/shell/patch calls with `.started` events. Emit
-            # tool_use so the viewer's activity strip can show something
-            # specific instead of staying on "Working...". Pull the best-
-            # available identifier and pass the raw payload through as
-            # `input` for `friendlyToolStatus` to mine.
-            raw_name = data.get("name") or data.get("command")
-            if not raw_name:
-                # Derive from event_type, e.g. "function_call.started" -> "function_call"
-                raw_name = event_type.rsplit(".started", 1)[0]
+            stem = event_type.rsplit(".started", 1)[0]
+            # Codex CLI emits conversation bookkeeping (thread, turn,
+            # response, reasoning) as `*.started` events too. These aren't
+            # tool calls — skip them so the audit log and viewer activity
+            # strip stay focused on actual work.
+            if stem in ("thread", "turn", "response", "reasoning"):
+                return None
+            # Codex wraps actual tool invocations in `item.started` events
+            # whose payload describes the real operation. Try to lift the
+            # specific name out of common fields; fall back to the stem.
+            raw_name = (
+                data.get("name")
+                or data.get("command")
+                or data.get("tool")
+                or data.get("kind")
+                or (data.get("item") or {}).get("kind")
+                or (data.get("item") or {}).get("type")
+                or (data.get("item") or {}).get("name")
+                or stem
+            )
             return {
                 "role": "assistant",
                 "type": "tool_use",

@@ -636,7 +636,15 @@ def _summarize_tool(name: str, inp: dict | None) -> str:
         return f"function {inp.get('name', '?')}"
     if name in ("web_search", "web_search_call"):
         return "web_search"
-    return f"{name:8s} {{...}}"
+    # Unknown tool — surface distinguishing keys from the payload so the
+    # audit log isn't useless. Helpful while we're still learning what
+    # Codex CLI's JSONL events look like in the wild.
+    interesting = [k for k in ("name", "command", "tool", "kind", "path",
+                                "file_path", "type", "id") if inp.get(k)]
+    if interesting:
+        extras = ", ".join(f"{k}={str(inp[k])[:40]!r}" for k in interesting[:3])
+        return f"{name:<8s} {extras}"
+    return f"{name:<8s} {{...}}"
 
 
 async def run_turn(text: str):
