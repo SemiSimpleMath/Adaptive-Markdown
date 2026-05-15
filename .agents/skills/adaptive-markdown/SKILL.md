@@ -310,10 +310,6 @@ When NOT to parallelize:
 - Operations where one section's outcome affects another (renumbering, cross-ref rewrites).
 - Operations needing global consistency (whole-doc translation — better as one pass for terminology).
 
-## Read-only paths
-
-`examples/_pristine/` holds the ship-with original docs used by the viewer's Reset button. Treat them as read-only — never `Edit` or `Write` anything under that directory. The pre-tool-use hook will block such attempts; if your tool call is blocked with that reason, edit the working copy at `examples/<name>.md` instead.
-
 ## Importing other formats
 
 The viewer accepts drag-and-drop of `.tex`, `.txt`, `.rst`, `.org` natively, and prompts the user for confirmation on any other extension before uploading. Non-`.md` drops land at `docs/raw/<name>.<ext>` and the viewer auto-asks you to convert. Your job:

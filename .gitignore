@@ -37,6 +37,10 @@ examples/raw/
 # Local scratch
 scratch folder/
 
+# Saved "keeper" doc versions — agent outputs worth holding onto outside
+# of .history/'s autosave churn. Local-only by convention.
+keepers/
+
 # Local-only helpers (not part of the published artifact)
 convert.py
 scripts/

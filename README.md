@@ -115,8 +115,8 @@ snapshots and patches via the SDK's hook system; per-turn budget cap
 (`MAX_BUDGET_USD`). This is the supported path for v0.1.
 
 **Codex mode** (`--codex`) wraps OpenAI's `codex exec` CLI. The substrate
-(history snapshots, derived patches, alias bookkeeping, `examples/_pristine/`
-protection) still works — but with these known limitations vs Claude mode:
+(history snapshots, derived patches, alias bookkeeping) still works — but
+with these known limitations vs Claude mode:
 
 - **Coarser snapshot granularity.** Codex CLI has no per-edit hook, so the
   runtime snapshots once per changed file per turn rather than once per `Edit`
@@ -189,7 +189,7 @@ The agent's contract is the skill text under [`.claude/skills/adaptive-markdown/
 - **The doc** (`examples/*.md`) is a regular markdown file with optional `{#anchor}` attributes, `:::` directives, and inline `<style>` / `<script>` blocks.
 - **The viewer** (`index.html`) renders the doc inside a sandboxed iframe and pipes click-to-focus selections, drops, and live updates over a WebSocket.
 - **The agent** is either the Claude Agent SDK (default, supported) or the Codex CLI (experimental) via a thin provider abstraction in `agent_runtime/`. Both load the same skill text — at `.claude/skills/adaptive-markdown/SKILL.md` for Claude (auto-discovered by the SDK) and the mirror at `.agents/skills/adaptive-markdown/SKILL.md` for Codex (prepended per-turn into the prompt by the adapter). The skill is ~350 lines of plain text that teaches the model how to operate on the doc — preserve tracking IDs, write KaTeX-safe math, etc.
-- **History & undo** — every pre-edit snapshot is captured under `.history/<doc-stem>/snap-…md`. The `↶ History` button in the doc header lets you scrub back. `↺ Reset` restores from `examples/_pristine/` — the ship-with originals are write-protected from the agent.
+- **History & undo** — every pre-edit snapshot is captured under `.history/<doc-stem>/snap-…md`, plus a history-0 snapshot at backend startup for any doc that doesn't already have one. The `↶ History` button in the doc header lets you scrub back through every snapshot; `↺ Reset` jumps to the oldest one (history-0). To go further back than that — to the version that shipped in this clone — use `git checkout examples/<name>.md`.
 
 ## Drop your own files
 

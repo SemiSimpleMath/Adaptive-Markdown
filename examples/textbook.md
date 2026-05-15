@@ -13,11 +13,11 @@ language: en
 
 ## Learning Objectives
 
-- Explain the meaning of Rolle's theorem.
-- Describe the significance of the Mean Value Theorem.
-- State three important consequences of the Mean Value Theorem.
+- Selitä Rollen lauseen merkitys.
+- اوصف الأهمية متاع مبرهنة القيمة المتوسطة.
+- Énoncer trois conséquences importantes du théorème des accroissements finis.
 
-The Mean Value Theorem is one of the most important theorems in differential calculus. We begin by examining a special case, called Rolle's theorem, then generalize it.
+Le théorème des accroissements finis est l'un des théorèmes les plus importants du calcul différentiel. Nous commençons par étudier un cas particulier, appelé théorème de Rolle, puis nous le généralisons.
 
 ## Theorem (Rolle's Theorem) {#rolle}
 
@@ -136,11 +136,11 @@ The Mean Value Theorem is one of the most important theorems in differential cal
 
 Think about it like throwing a ball straight up. It starts at your hand and ends back at your hand — same height. While it's in the air, it has to slow down, stop for a split second at the top, and come back down. That split second when it's not moving — that's the "flat" point Rolle's theorem promises.
 
-Meaning of the technical words:
-- **continuous** = no breaks in the curve (you can draw it without lifting your pen),
-- **differentiable** = no sharp corners in the curve (it's smooth),
-- **$f(a) = f(b)$** = same height at the start and the end,
-- **$f'(c) = 0$** = the curve is horizontal at point $c$ (its tangent is horizontal).
+Hienojen sanojen merkitys:
+- **jatkuva** = käyrässä ei ole katkoja (voit piirtää sen nostamatta kynää paperista),
+- **derivoituva** = käyrässä ei ole teräviä kulmia (se on sileä),
+- **$f(a) = f(b)$** = sama korkeus alussa ja lopussa,
+- **$f'(c) = 0$** = käyrä on vaakasuorassa pisteessä $c$ (sen tangentti on vaakasuora).
 
 **Proof.** Let $k = f(a) = f(b)$. We consider three cases:
 
@@ -151,10 +151,6 @@ Meaning of the technical words:
 *Case 1.* If $f(x) = k$ for all $x \in (a,b)$, then $f'(x) = 0$ for all $x \in (a,b)$.
 
 *Case 2.* Since $f$ is a continuous function over the closed, bounded interval $[a,b]$, by the Extreme Value Theorem it attains an absolute maximum. Also, since there is a point $x \in (a,b)$ such that $f(x) > k$, the absolute maximum is greater than $k$. Therefore, the absolute maximum does not occur at either endpoint. As a result, the absolute maximum must occur at an interior point $c \in (a,b)$. Because $f$ has a maximum at an interior point $c$ and $f$ is differentiable at $c$, by Fermat's theorem, $f'(c) = 0$.
-
-::: note { intent="Reminder: Extreme Value Theorem" }
-**The Extreme Value Theorem** states that if a function $f$ is continuous on a closed, bounded interval $[a,b]$, then $f$ must attain both an absolute maximum and an absolute minimum value somewhere on that interval. In Case 2, this guarantees that the maximum exists — and since $f(x) > k$ somewhere in the interior, we know the maximum can't be at an endpoint.
-:::
 
 *Case 3.* The case when there exists a point $x \in (a,b)$ such that $f(x) < k$ is analogous to Case 2, with maximum replaced by minimum. $\square$
 

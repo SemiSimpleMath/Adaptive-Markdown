@@ -214,12 +214,11 @@ There is no `--strict` linter today. The format is deliberately loose at v0.1 to
 
 ## Sidecar files
 
-The viewer maintains four sidecars next to each doc. None are part of the source — they're system state. All are gitignorable.
+The viewer maintains three sidecars next to each doc. None are part of the source — they're system state. All are gitignorable.
 
 | Path | Purpose |
 |---|---|
-| `examples/_pristine/<name>.md` | Ship-with original. The `↺ Reset` button restores from here. Write-protected from the agent (pre-tool-use hook). |
-| `.history/<stem>/snap-{id}.md` | Pre-edit snapshots. Captured automatically by the pre-tool-use hook before any `Edit`/`Write`. Browse-and-restore via the `↶ History` button. |
+| `.history/<stem>/snap-{id}.md` | Pre-edit snapshots. Captured automatically by the pre-tool-use hook before any `Edit`/`Write`, plus a history-0 snapshot at backend startup for any doc that doesn't already have one. Browse-and-restore via the `↶ History` button; `↺ Reset` restores from the oldest snap-* (i.e. history-0). |
 | `<doc>.id-aliases.json` | Union-find map of dropped/merged tracking IDs → their current surviving ID. Maintained on block merge / delete. Format: `{ "b-OLD": "b-NEW", "b-OLDER": "b-OLD" }`. Path-compressed on traversal. |
 | `<doc>.patches/p-{id}.json` | Derived patches — each captures `{ts, parent, author, ops}` where ops are block-level `replace`/`insert`/`delete` with `before_hash` and `after_hash`. Lets us do granular conflict detection and future 3-way merges. |
 
@@ -228,10 +227,10 @@ The viewer maintains four sidecars next to each doc. None are part of the source
 A few invariants the backend hooks maintain. Worth knowing if you're building tooling against the substrate:
 
 - Every `.md` under `examples/` has a `doc_id` in its frontmatter (minted at first sight if missing).
+- Every `.md` under `examples/` and `docs/` has at least one snapshot under `.history/<stem>/` (history-0 minted at first sight if missing).
 - Every `Edit`/`Write` to a `.md` is preceded by a snapshot to `.history/`.
 - Every `Edit`/`Write` to a `.md` produces a derived patch under `<doc>.patches/` if any tracking-ID-anchored blocks changed.
 - Tracking IDs that disappear from a doc are recorded as tombstones in the alias map.
-- Writes under `examples/_pristine/` are blocked.
 
 ## Skill — the agent's contract
 

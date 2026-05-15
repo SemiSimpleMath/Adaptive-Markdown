@@ -67,6 +67,7 @@ Decisions to make when the relevant feature lands. Captured here so contributors
 
 For context on pace.
 
-- **Codex provider parity work** — skill injection, chat history replay, substrate parity (snapshots + patches + alias bookkeeping at per-turn granularity), `examples/_pristine/` guard for both providers, `start.py` launcher with persistence, model-not-supported auto-retry, activity strip mapping.
+- **Codex provider parity work** — skill injection, chat history replay, substrate parity (snapshots + patches + alias bookkeeping at per-turn granularity), `start.py` launcher with persistence, model-not-supported auto-retry, activity strip mapping.
+- **Pristine unification** — removed the separate `examples/_pristine/` directory; the ship-with-vs-current model is now collapsed to a single canonical `.md` per doc plus `.history/` (oldest snap = history-0). `↺ Reset` restores from history-0 instead of a sibling pristine file.
 - **Provider runtime abstraction** — `agent_runtime/` registry, Protocol-based seam, Codex CLI adapter (experimental).
 - **v0.1 public release** — adaptive reading (translate / restyle / expand); live in-place DOM patching; click-to-focus + multi-select; version history with restore; multi-view tabs (Doc / Graph / Source / LaTeX / Print); figure programs (canvas / SVG / Desmos); KaTeX math with `\begin{aligned}` rule; AMS-TeX importer; single-file browser deployment; per-doc model selector.

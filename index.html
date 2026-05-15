@@ -977,6 +977,18 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   });
 
+  // Stable dedup key for a selection. When the block has no id yet
+  // (unlabeled paragraph, no anchor, no track-id minted), falling back to
+  // bare `(s.id || '')` collapses all unlabeled blocks to the same empty
+  // key — additive clicks then incorrectly toggle each other off. Fall
+  // back to label+excerpt instead.
+  function selKey(s) {
+    if (s && s.id) return s.id;
+    const label = (s && s.label) || '';
+    const excerpt = (s && s.excerpt) || '';
+    return `_unlabeled:${label.slice(0, 80)}|${excerpt.slice(0, 200)}`;
+  }
+
   function handleFrameSelection(info, additive) {
     if (!info) {
       if (currentSelections.length > 0) setSelections([]);
@@ -990,7 +1002,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     if (!additive) {
       newList = [newSel];
     } else {
-      const dupIdx = currentSelections.findIndex(s => (s.id || '') === (newSel.id || ''));
+      const newKey = selKey(newSel);
+      const dupIdx = currentSelections.findIndex(s => selKey(s) === newKey);
       if (dupIdx >= 0) {
         newList = currentSelections.filter((_, i) => i !== dupIdx);
       } else {

@@ -83,7 +83,7 @@ def _doc_path_for(doc_param: str) -> Path | None:
     """Resolve a 'examples/X.md' or 'docs/X.md' path param to an absolute Path.
 
     Returns None if the param is malformed, escapes the doc roots, or points
-    into a subdirectory like raw/ or _pristine/."""
+    into a subdirectory like docs/raw/."""
     if not doc_param.endswith(".md"):
         return None
     if not (doc_param.startswith("examples/") or doc_param.startswith("docs/")):
@@ -458,20 +458,10 @@ _pre_edit_state: dict[str, dict] = {}
 
 async def pre_tool_use_hook(input_data, tool_use_id, context):
     """Capture the .md file's content before an Edit/Write. Snapshots it under
-    .history/ so we can reference the parent state in derived patches.
-
-    Also blocks any agent write/edit that targets `examples/_pristine/`, since
-    that directory holds the ship-with originals used by /reset."""
+    .history/ so we can reference the parent state in derived patches and so
+    the user can roll back via the History button or Reset."""
     tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
-    # Guard: pristines are read-only from the agent's perspective.
-    if file_path and "_pristine" in Path(file_path).as_posix().split("/"):
-        return {
-            "decision": "block",
-            "reason": "examples/_pristine/ holds the ship-with original docs; "
-                      "edit the working copy at examples/<name>.md instead. "
-                      "Readers can roll back via the viewer's Reset button.",
-        }
     if file_path and file_path.endswith(".md"):
         try:
             p = Path(file_path)
@@ -573,11 +563,22 @@ async def init_runtime(model: str | None = None):
 
 
 async def shutdown_runtime():
-    if state.runtime:
-        try:
-            await state.runtime.shutdown()
-        finally:
-            state.runtime = None
+    """Tear down the active runtime. Wrapped in a wait_for timeout so a
+    misbehaving SDK that won't unwind (e.g., Claude SDK __aexit__ blocking
+    on MCP cleanup, or a Codex subprocess still alive) doesn't hang Ctrl+C
+    indefinitely. After the timeout we drop the reference and let the
+    process exit anyway."""
+    if not state.runtime:
+        return
+    try:
+        await asyncio.wait_for(state.runtime.shutdown(), timeout=5.0)
+    except asyncio.TimeoutError:
+        print("[shutdown] runtime didn't unwind in 5s; exiting anyway",
+              flush=True)
+    except Exception as e:
+        print(f"[shutdown] error during runtime shutdown: {e!r}", flush=True)
+    finally:
+        state.runtime = None
 
 
 async def reset_runtime_session(model: str | None = None):
@@ -596,22 +597,6 @@ async def run_turn(text: str):
                 await state.broadcast(event)
         except Exception as e:
             await state.broadcast({"type": "error", "text": f"agent error: {e!r}"})
-        finally:
-            # Defense-in-depth for both providers. If anything under
-            # examples/_pristine/ drifted during the turn, put it back and
-            # warn — these are the ship-with originals behind the Reset
-            # button and must not change.
-            restored = _restore_pristines_if_changed()
-            if restored:
-                await state.broadcast({
-                    "type": "error",
-                    "text": (
-                        "The agent attempted to modify ship-with originals "
-                        f"under examples/_pristine/ ({', '.join(restored)}). "
-                        "These were restored from the startup snapshot. "
-                        "Edit the working copy at examples/<name>.md instead."
-                    ),
-                })
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
@@ -862,10 +847,13 @@ async def upload_md(request: web.Request) -> web.Response:
     return web.json_response({"path": rel, "name": target.name})
 
 
-# ---- Reset to pristine --------------------------------------------------
+# ---- Reset to history-0 -------------------------------------------------
 # POST /reset?doc=examples/<name>.md restores the working copy from the
-# matching ship-with pristine at examples/_pristine/<name>.md.
-PRISTINE_DIR = EXAMPLES_DIR / "_pristine"
+# oldest snapshot under .history/<stem>/snap-*.md. ULID-prefixed names sort
+# by mint time, so the lexicographic minimum is the earliest snap — i.e.,
+# the state of the doc before any agent ever touched it (or before the
+# backend first served it, whichever came first). For the truly-shipped
+# version of a doc, `git checkout examples/<name>.md` is the answer.
 
 
 async def list_history(request: web.Request) -> web.Response:
@@ -935,79 +923,60 @@ async def reset_doc(request: web.Request) -> web.Response:
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
         return web.json_response({"error": "bad doc path"}, status=400)
-    # Pristines only exist for ship-with examples/ docs. User-uploaded docs/
-    # have no pristine — return a clear 404 so the viewer can explain.
-    if doc_path.parent != EXAMPLES_DIR:
+    hist = _history_dir_for(doc_path)
+    snaps = sorted(hist.glob("snap-*.md")) if hist.exists() else []
+    if not snaps:
         return web.json_response(
-            {"error": f"no pristine for {doc_path.name} (only ship-with examples/ docs have one)"},
+            {"error": (
+                f"no history snapshot for {doc_path.name} yet — Reset "
+                "restores to the state before the first agent edit, but no "
+                "agent has touched this doc. For the shipped version, run "
+                f"`git checkout {doc_path.relative_to(ROOT).as_posix()}`."
+            )},
             status=404,
         )
-    pristine = PRISTINE_DIR / doc_path.name
-    if not pristine.exists():
-        return web.json_response(
-            {"error": f"no pristine for {doc_path.name}"}, status=404,
-        )
-    doc_path.write_bytes(pristine.read_bytes())
+    history_zero = snaps[0]  # ULID-prefixed; lex-min = earliest mint
+    doc_path.write_bytes(history_zero.read_bytes())
     rel = doc_path.relative_to(ROOT).as_posix()
     await state.broadcast({"type": "doc_changed", "file": rel})
-    print(f"[reset] {rel} <- _pristine/{doc_path.name}", flush=True)
-    return web.json_response({"path": rel, "ok": True})
+    print(f"[reset] {rel} <- .history/{doc_path.stem}/{history_zero.name}",
+          flush=True)
+    return web.json_response({
+        "path": rel,
+        "snap_id": history_zero.stem.replace("snap-", ""),
+        "ok": True,
+    })
 
 
-# ---- Pristine guard ------------------------------------------------------
-# At startup we cache the bytes of every file under examples/_pristine/.
-# After every agent turn we verify nothing under that directory drifted.
-# Belt + suspenders: Claude's pre-tool-use hook already blocks writes here,
-# but Codex has no hook system, so a misbehaving turn could clobber
-# ship-with originals. If drift is detected, restore from memory and warn.
-
-_pristine_backup: dict[Path, bytes] = {}
-
-
-def _snapshot_pristines() -> None:
-    """Cache bytes of every file under examples/_pristine/ at startup."""
-    _pristine_backup.clear()
-    if not PRISTINE_DIR.exists():
-        return
-    for p in PRISTINE_DIR.rglob("*"):
-        if not p.is_file():
-            continue
-        try:
-            _pristine_backup[p.resolve()] = p.read_bytes()
-        except OSError as e:
-            print(f"[pristine] snapshot failed for {p}: {e}", flush=True)
-    if _pristine_backup:
-        print(f"[pristine] cached {len(_pristine_backup)} ship-with file(s)",
-              flush=True)
-
-
-def _restore_pristines_if_changed() -> list[str]:
-    """Verify pristines on disk match the in-memory backup; restore any drift.
-
-    Returns names of files that were restored (empty list if all clean).
-    Synchronous — pure filesystem work, no broadcast. Called from run_turn.
-    """
-    restored: list[str] = []
-    for path, expected in _pristine_backup.items():
-        try:
-            actual = path.read_bytes()
-        except OSError:
-            actual = None
-        if actual == expected:
-            continue
-        try:
-            path.write_bytes(expected)
-            restored.append(path.name)
-            print(f"[pristine] RESTORED {path.name} — agent attempted to "
-                  f"modify ship-with original", flush=True)
-        except OSError as e:
-            print(f"[pristine] FAILED to restore {path.name}: {e}", flush=True)
-    return restored
+def ensure_history_zero() -> None:
+    """For every .md under examples/ + docs/, capture a history-0 snapshot
+    if no .history/<stem>/snap-*.md exists yet. Guarantees the Reset button
+    always has something to restore to, even for docs the agent hasn't
+    touched in this clone."""
+    minted = 0
+    bases = [d for d in (EXAMPLES_DIR, DOCS_DIR) if d.exists()]
+    for d in bases:
+        for md in d.glob("*.md"):
+            hist = _history_dir_for(md)
+            if hist.exists() and any(hist.glob("snap-*.md")):
+                continue
+            try:
+                text = md.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                print(f"[history] cannot read {md.name} for history-0: {e}",
+                      flush=True)
+                continue
+            snap_id = save_snapshot(md, text)
+            print(f"[history] minted history-0 for {md.name} -> snap-{snap_id}",
+                  flush=True)
+            minted += 1
+    if minted:
+        print(f"ensured history-0 ({minted} new)", flush=True)
 
 
 async def on_startup(app: web.Application):
     ensure_doc_ids()
-    _snapshot_pristines()
+    ensure_history_zero()
     await init_runtime()
 
 
