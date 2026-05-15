@@ -104,6 +104,17 @@ def main() -> None:
         # aiohttp's `_cancel_tasks` re-enters the event loop, and a SIGINT
         # mid-IOCP-poll otherwise dumps a wall of Windows asyncio internals.
         print("[start] interrupted; shutting down", flush=True)
+        # Hard-exit instead of falling off the end of main(). The Claude
+        # Agent SDK can leave non-daemon background threads (or pending
+        # subprocess waiters) alive after __aexit__ returns, and Python's
+        # interpreter blocks at process-exit waiting for them to die.
+        # Result: the user sees the "interrupted; shutting down" line but
+        # the prompt never returns. os._exit bypasses that wait and exits
+        # immediately. We've already gotten past aiohttp's cleanup (which
+        # closed WS connections + shut down the runtime), so there's no
+        # owned resource left to flush. Codex's runtime doesn't hit this
+        # because each turn was a child subprocess that already exited.
+        os._exit(0)
 
 
 if __name__ == "__main__":
