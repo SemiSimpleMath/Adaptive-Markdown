@@ -800,6 +800,34 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       return open ? `<div class="directive pinned">\n` : `</div>\n`;
     });
 
+    // Catch-all: any directive whose name isn't one of the specific names
+    // above must still render as a plain `<div class="directive NAME">`,
+    // never leak its `:::` markers into the rendered DOM. Matches the
+    // contract FORMAT.md states ("any other directive name renders as a
+    // div with that class"). Registered last so specific handlers take
+    // precedence on their own names.
+    const KNOWN_DIRECTIVES = new Set([
+      'theorem', 'lemma', 'proposition', 'corollary',
+      'definition', 'example', 'remark', 'note', 'aside',
+      'proof', 'solution', 'abstract',
+      'figure', 'pinned',
+    ]);
+    md.use(window.markdownitContainer, 'directive_unknown', {
+      validate(params) {
+        const p = parseDirectiveInfo(params);
+        return !!p.name && !KNOWN_DIRECTIVES.has(p.name);
+      },
+      render(tokens, idx) {
+        const t = tokens[idx];
+        if (t.nesting === 1) {
+          const { name, attrs } = parseDirectiveInfo(t.info);
+          const id = attrs && attrs.id ? ` id="${escapeAttr(attrs.id)}"` : '';
+          return `<div class="directive ${escapeAttr(name)}"${id}>\n`;
+        }
+        return `</div>\n`;
+      },
+    });
+
     return md;
   }
   const md = buildMd();
@@ -886,33 +914,60 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       '<html lang="en"><head><meta charset="utf-8">',
       '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">',
       '<style>',
+      '/* Baseline CSS custom properties. Override these on :root in your',
+      '   doc-local <style> block to re-theme the whole page in one place,',
+      '   without re-deriving every per-element rule. */',
+      ':root {',
+      '  --am-bg: #fff;',
+      '  --am-text: #1a1a1a;',
+      '  --am-muted: #888;',
+      '  --am-link: #2a4d7a;',
+      '  --am-code-bg: #f4f3ee;',
+      '  --am-pre-bg: #f4f3ee;',
+      '  --am-blockquote-border: #d0d0c8;',
+      '  --am-blockquote-text: #555;',
+      '  --am-theorem-color: #2a4d7a;',
+      '  --am-definition-color: #c39548;',
+      '  --am-example-color: #6a9255;',
+      '  --am-figure-placeholder-border: #c8c8c0;',
+      '  --am-figure-caption: #555;',
+      '  --am-note-bg: #fafaf6;',
+      '  --am-note-border: #888;',
+      '  --am-pinned-bg: #f3f6fa;',
+      '  --am-pinned-border: #4a6db5;',
+      '  --am-error-bg: #fdecec;',
+      '  --am-error-border: #d4a4a4;',
+      '  --am-error-text: #8a2a2a;',
+      '  --am-selection-outline: #2a4d7a;',
+      '  --am-hover-outline: #b8b8b0;',
+      '}',
       'html, body { margin: 0; padding: 0; min-height: 100%; box-sizing: border-box; }',
-      'body { font-family: ui-serif, Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.6; color: #1a1a1a; background: #fff; padding: 32px 56px; }',
-      '.meta { color: #888; font-size: 13px; margin: 0 auto 24px; max-width: 760px; font-family: ui-sans-serif, system-ui, sans-serif; }',
+      'body { font-family: ui-serif, Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.6; color: var(--am-text); background: var(--am-bg); padding: 32px 56px; }',
+      '.meta { color: var(--am-muted); font-size: 13px; margin: 0 auto 24px; max-width: 760px; font-family: ui-sans-serif, system-ui, sans-serif; }',
       'article#body { max-width: 760px; margin: 0 auto; }',
       'article#body h1 { font-size: 1.8rem; margin: 0 0 1rem; font-family: ui-sans-serif, system-ui, sans-serif; }',
       'article#body h2 { font-size: 1.3rem; margin: 1.8em 0 0.5em; font-family: ui-sans-serif, system-ui, sans-serif; }',
       'article#body h3 { font-size: 1.1rem; margin: 1.4em 0 0.4em; font-family: ui-sans-serif, system-ui, sans-serif; }',
       'article#body p { margin: 1em 0; }',
-      'article#body blockquote { margin: 1em 0; padding: 0.6em 1em; border-left: 3px solid #d0d0c8; color: #555; }',
-      'article#body code { background: #f4f3ee; padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.92em; }',
-      'article#body pre { background: #f4f3ee; padding: 0.8em; border-radius: 3px; overflow-x: auto; }',
+      'article#body blockquote { margin: 1em 0; padding: 0.6em 1em; border-left: 3px solid var(--am-blockquote-border); color: var(--am-blockquote-text); }',
+      'article#body code { background: var(--am-code-bg); padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.92em; }',
+      'article#body pre { background: var(--am-pre-bg); padding: 0.8em; border-radius: 3px; overflow-x: auto; }',
       'article#body pre code { background: transparent; padding: 0; }',
-      'article#body a { color: #2a4d7a; }',
+      'article#body a { color: var(--am-link); }',
       'article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,article,section,div.directive) { cursor: pointer; }',
-      'article#body .hover-block { outline: 1px dashed #b8b8b0; outline-offset: 6px; }',
-      'article#body .selected-block, article#body .selected-block.hover-block { outline: 2px solid #2a4d7a; outline-offset: 6px; border-radius: 2px; }',
-      'article#body [data-kind="theorem"], article#body [data-kind="lemma"], article#body [data-kind="proposition"], article#body [data-kind="corollary"] { color: #2a4d7a; font-style: italic; }',
-      'article#body [data-kind="definition"] { color: #c39548; font-style: italic; }',
-      'article#body [data-kind="example"], article#body [data-kind="solution"], article#body [data-kind="proof"] { color: #6a9255; font-style: italic; }',
+      'article#body .hover-block { outline: 1px dashed var(--am-hover-outline); outline-offset: 6px; }',
+      'article#body .selected-block, article#body .selected-block.hover-block { outline: 2px solid var(--am-selection-outline); outline-offset: 6px; border-radius: 2px; }',
+      'article#body [data-kind="theorem"], article#body [data-kind="lemma"], article#body [data-kind="proposition"], article#body [data-kind="corollary"] { color: var(--am-theorem-color); font-style: italic; }',
+      'article#body [data-kind="definition"] { color: var(--am-definition-color); font-style: italic; }',
+      'article#body [data-kind="example"], article#body [data-kind="solution"], article#body [data-kind="proof"] { color: var(--am-example-color); font-style: italic; }',
       '.directive { padding: 0.8em 1.2em; margin: 1em 0; border-left: 3px solid; }',
-      '.directive.note, .directive.aside { border-color: #888; background: #fafaf6; }',
-      '.directive.pinned { border-color: #4a6db5; background: #f3f6fa; }',
+      '.directive.note, .directive.aside { border-color: var(--am-note-border); background: var(--am-note-bg); }',
+      '.directive.pinned { border-color: var(--am-pinned-border); background: var(--am-pinned-bg); }',
       '.directive.figure { padding: 0.6em; text-align: center; }',
       '/* Only empty / intent-only figures get the dashed placeholder border; ',
       '   real figures with rendered content render cleanly. */',
       '.directive.figure:not(:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table)) {',
-      '  border: 1px dashed #c8c8c0;',
+      '  border: 1px dashed var(--am-figure-placeholder-border);',
       '}',
       '/* Show the intent caption only on placeholder figures. Once the figure ',
       '   has rendered content the caption becomes noise — the figure speaks ',
@@ -920,8 +975,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       '.directive.figure:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table) .figure-intent {',
       '  display: none;',
       '}',
-      '.directive.figure .figure-intent { font-style: italic; color: #555; padding: 0.3em 0; }',
-      '.error-banner { background: #fdecec; border: 1px solid #d4a4a4; border-radius: 4px; padding: 0.75rem 1rem; color: #8a2a2a; font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }',
+      '.directive.figure .figure-intent { font-style: italic; color: var(--am-figure-caption); padding: 0.3em 0; }',
+      '.error-banner { background: var(--am-error-bg); border: 1px solid var(--am-error-border); border-radius: 4px; padding: 0.75rem 1rem; color: var(--am-error-text); font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }',
       '</style></head><body>',
       '<div class="meta" id="meta"></div>',
       '<article id="body"></article>',

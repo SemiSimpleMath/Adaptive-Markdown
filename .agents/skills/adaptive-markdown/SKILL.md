@@ -130,6 +130,68 @@ Let $f$ be continuous on $[a,b]$ ...
 
 Heading form and directive form are equivalent. Mix freely. Heading form reads better in plain markdown viewers; directive form is unambiguous about boundaries.
 
+## CSS reference
+
+The doc renders inside a sandboxed iframe with its own CSS context. Your embedded `<style>` rules cascade against the iframe's baseline stylesheet. To write CSS that affects what you intend, you need to know what classes the viewer emits and what theming primitives the baseline exposes.
+
+### DOM the source produces
+
+| Source | Rendered DOM |
+|---|---|
+| `## Theorem (...)` (or Lemma / Proposition / Corollary) | `<h2>` with `data-kind="theorem"` (italic blue by default) |
+| `## Definition (...)` | `<h2>` with `data-kind="definition"` (italic gold) |
+| `## Example (...)`, `## Solution (...)`, `## Proof (...)` | `<h2>` with `data-kind="example"` (italic green) |
+| `## Note/Remark/Aside (...)` | `<h2>` with `data-kind="note"` (italic muted) |
+| `:::theorem (...) ... :::` (etc.) | `<section class="kind-theorem kind-block">` |
+| `:::figure { ... } ... :::` | `<div class="directive figure" data-renderer="...">` |
+| `:::pinned ... :::` | `<div class="directive pinned">` |
+| `:::note`, `:::aside`, `:::remark` | `<div class="directive note">` etc. |
+| `:::anything-else ... :::` | `<div class="directive anything-else">` (no built-in styling) |
+| `{#anchor}` on heading | `id="anchor"` on the element |
+| `<!-- id:b-... -->` preceding block | sibling element gets `data-track-id="b-..."` |
+
+Standard markdown elements (`<p>`, `<ul>`, `<code>`, `<pre>`, `<blockquote>`, `<a>`, etc.) render as themselves and have baseline styling.
+
+### Which directive names are themed
+
+Only these names ship with built-in CSS styling: `figure`, `pinned`, `note`, `aside`. Any other directive name still renders as a `<div class="directive NAME">` — the viewer guarantees it won't leak `:::` markers into the page — but the box has no border, background, or padding by default. **If you want a styled callout the format doesn't already provide, use an existing themed directive (`:::note`, `:::aside`) plus a `<style>` override, or add CSS targeting `.directive.your-name` for a custom name.** Don't assume a directive name like `:::info` or `:::warning` exists with its own color; nothing does beyond the four above.
+
+### Theming primitives
+
+The iframe baseline uses CSS custom properties on `:root` for all colors. Override them in a doc-local `<style>` to change the whole page's appearance without re-writing every per-element rule:
+
+```css
+:root {
+  --am-bg:                            /* page background */
+  --am-text:                          /* body text */
+  --am-muted:                         /* meta line, secondary text */
+  --am-link:                          /* anchor color */
+  --am-code-bg:                       /* inline <code> and <pre> background */
+  --am-pre-bg:                        /* same; separate so they can diverge */
+  --am-blockquote-border:             /* left border on <blockquote> */
+  --am-blockquote-text:               /* text color inside <blockquote> */
+  --am-theorem-color:                 /* theorem / lemma / proposition / corollary heading text */
+  --am-definition-color:              /* definition heading text */
+  --am-example-color:                 /* example / solution / proof heading text */
+  --am-note-bg:                       /* :::note / :::aside box background */
+  --am-note-border:                   /* :::note / :::aside left border */
+  --am-pinned-bg:                     /* :::pinned box background */
+  --am-pinned-border:                 /* :::pinned left border */
+  --am-figure-placeholder-border:     /* dashed border on empty :::figure */
+  --am-figure-caption:                /* italic intent text under placeholder figures */
+  --am-error-bg, --am-error-border, --am-error-text:   /* .error-banner */
+}
+```
+
+Reading a doc's current `:root` rules via the viewer's Source tab tells you exactly what's already overridden. Adding new override values in a `<style>` block changes those primitives everywhere they're referenced.
+
+### Cascade
+
+- The iframe baseline has lower specificity than your `<style>` rules. Plain element selectors in your style block override baseline element selectors.
+- `:root { --am-X: ... }` in your style block overrides baseline variable values everywhere the variable is referenced.
+- `position: fixed` is fixed to the iframe viewport, not the parent page.
+- `localStorage`, event listeners, and CSS variables are all doc-local (per-iframe-document).
+
 ## Author intent
 
 - **`::: pinned`** — preserve content verbatim. Agent may restyle the surroundings but not the wrapped text.
