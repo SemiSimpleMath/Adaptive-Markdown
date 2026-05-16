@@ -236,8 +236,6 @@ A few invariants the backend hooks maintain. Worth knowing if you're building to
 
 Everything above is the format. The agent's behaviour on top of the format is specified in [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) — ~350 lines of plain text the agent loads at the start of every session. The skill is the format's *normative* document for agent implementations; this file is the *descriptive* one for humans.
 
-The skill text is licensed CC BY-SA 4.0 so that derivatives — extensions, alternative agents, translations — stay in the open.
-
 ## Versioning
 
 This document describes the format as of `v0.1`. Breaking changes will bump a `format_version` key in frontmatter (not yet present). For now, treat the format as evolving — pin to a specific git tag if you're building tooling against it.

@@ -211,8 +211,7 @@ Feature requests and ideas welcome via GitHub issues.
 
 ## License
 
-- Code: [MIT](LICENSE)
-- The skill text (under `.claude/skills/adaptive-markdown/` and the byte-identical mirror at `.agents/skills/adaptive-markdown/`) is the portable specification of the format — it's CC BY-SA 4.0 so derivatives stay open. See `SKILL-LICENSE`.
+All code and content under [MIT](LICENSE).
 
 ---
 
