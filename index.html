@@ -290,7 +290,11 @@ article h4 { font-size: 1rem;    }
   border-left: 3px solid var(--example-bd);
   padding: .5rem .75rem;
 }
-.kind-remark, .kind-note, .kind-aside { font-style: italic; color: var(--muted); }
+.directive.note, .directive.aside, .directive.remark {
+  font-style: italic; color: var(--muted);
+  background: #fafaf6; border-left: 3px solid #999;
+  padding: 0.5em 0.9em; margin: 1em 0;
+}
 .kind-proof, .kind-solution { color: #444; margin-top: 1rem !important; }
 .kind-abstract {
   background: var(--remark-bg);
@@ -770,8 +774,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       html: true, linkify: true, breaks: false, typographer: false,
     }).use(window.markdownItAttrs);
 
+    // Kind-blocks: structured statements (theorem, definition, example,
+    // proof, abstract...). Render as <section class="kind-X kind-block">
+    // because they semantically wrap a numbered/named statement, not a
+    // styled callout.
     for (const kind of ['theorem', 'lemma', 'proposition', 'corollary',
-                        'definition', 'example', 'remark', 'note', 'aside',
+                        'definition', 'example',
                         'proof', 'solution', 'abstract']) {
       registerContainer(md, kind, (attrs, open) => {
         if (open) {
@@ -780,6 +788,19 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           return `<section class="kind-${kind} kind-block"${id}${name}>\n`;
         }
         return `</section>\n`;
+      });
+    }
+
+    // Note-family directives: callouts, not structured statements. Render
+    // as <div class="directive note"> alongside figure / pinned, so the
+    // .directive.X CSS rules actually target what the renderer emits.
+    for (const name of ['note', 'aside', 'remark']) {
+      registerContainer(md, name, (attrs, open) => {
+        if (open) {
+          const id = attrs && attrs.id ? ` id="${escapeAttr(attrs.id)}"` : '';
+          return `<div class="directive ${name}"${id}>\n`;
+        }
+        return `</div>\n`;
       });
     }
 
@@ -966,15 +987,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       'article#body [data-kind="definition"] { color: var(--am-definition-color); font-style: italic; }',
       'article#body [data-kind="example"], article#body [data-kind="solution"], article#body [data-kind="proof"] { color: var(--am-example-color); font-style: italic; }',
       '.directive { padding: 0.8em 1.2em; margin: 1em 0; border-left: 3px solid; }',
-      '/* Note-style callouts: both rendering paths target the same vars. */',
-      '/*   :::note / :::aside / :::remark ->  <section class="kind-note kind-block">  */',
-      '/*   ## Note (...) / etc.            ->  h2 with data-kind="note" (heading-only) */',
-      '.directive.note, .directive.aside,',
-      '.kind-note, .kind-aside, .kind-remark {',
-      '  padding: 0.8em 1.2em; margin: 1em 0;',
-      '  border-left: 3px solid var(--am-note-border);',
-      '  background: var(--am-note-bg);',
-      '}',
+      '.directive.note, .directive.aside, .directive.remark { border-color: var(--am-note-border); background: var(--am-note-bg); }',
       '.directive.pinned { border-color: var(--am-pinned-border); background: var(--am-pinned-bg); }',
       '.directive.figure { padding: 0.6em; text-align: center; }',
       '/* Only empty / intent-only figures get the dashed placeholder border; ',
