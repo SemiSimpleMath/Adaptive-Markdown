@@ -684,6 +684,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentAssistantMsg = null;
   let currentSelections = [];      // array of {id, label, excerpt, element}
   let selectedEls = new Set();     // DOM nodes currently selected
+  let lastDocHadScripts = false;   // tracks whether the most-recently-loaded
+                                    // doc contains <script> tags; controls
+                                    // whether the next load triggers an iframe
+                                    // rebuild (to flush leftover JS state) or
+                                    // a fast in-place DOM patch
 
   // ---- View tabs ----------------------------------------------------------
   const VIEW_TYPES = [
@@ -1150,6 +1155,18 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       const resp = await fetch(path, { cache: 'no-store' });
       if (!resp.ok) throw new Error(`fetch ${path} -> ${resp.status}`);
       currentText = await resp.text();
+      // Iframe rebuild policy: only rebuild when scripts are involved, so
+      // pure text edits go through as fast in-place DOM patches (the whole
+      // point of the iframe-postMessage architecture). Rebuild fires when
+      // either the previous doc had scripts (lingering timers/listeners
+      // could now interfere with new content) or the new doc has scripts
+      // (need a fresh JS context for clean execution). Plain markdown
+      // edits with no <script> on either side: just patch the DOM.
+      const newHasScripts = /<script[\s>]/i.test(currentText);
+      if (lastDocHadScripts || newHasScripts) {
+        initIframe();
+      }
+      lastDocHadScripts = newHasScripts;
       const { frontmatter, body: bodyText } = splitFrontmatter(currentText);
       currentFm = frontmatter;
       currentBody = bodyText;
@@ -1714,15 +1731,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       return;
     }
     if (data.type === 'doc_changed') {
-      if (data.file === currentDoc) {
-        // Rebuild the iframe before fetching new content. Otherwise any
-        // scripts/timers/event-listeners the prior agent turn injected
-        // keep running against the new DOM and silently fight whatever
-        // the new turn just wrote. Matches the pattern already used by
-        // /reset, /undo, and /restore_snapshot.
-        initIframe();
-        loadDoc('/' + data.file);
-      }
+      if (data.file === currentDoc) loadDoc('/' + data.file);
       return;
     }
     if (data.type === 'chat_reset') {
