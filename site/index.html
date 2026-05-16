@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adaptive Markdown — markdown that runs</title>
+<meta name="description" content="Plain markdown a coding agent can rewrite, restyle, illustrate, animate, or extend in place — including arbitrary HTML, CSS, and JavaScript that ships inside the doc.">
+
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
+<meta property="og:title" content="Adaptive Markdown — markdown that runs">
+<meta property="og:description" content="Plain markdown a coding agent can rewrite, restyle, illustrate, animate, or extend in place. The page you see is the file, executing.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://adaptivemarkdown.dev">
+
+<style>
+:root {
+  --bg: #fafaf7;
+  --paper: #ffffff;
+  --text: #1a1a1a;
+  --muted: #666;
+  --navy: #1f2d4e;
+  --navy-soft: #eef1f7;
+  --border: #d8d8d0;
+  --code-bg: #f4f3ee;
+  --serif: 'Charter', 'Iowan Old Style', 'Georgia', serif;
+  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+}
+a { color: var(--navy); text-decoration: none; border-bottom: 1px solid currentColor; }
+a:hover { color: #000; }
+
+.wrap { max-width: 760px; margin: 0 auto; padding: 0 1.5rem; }
+
+/* ---- Header ---- */
+header.top {
+  padding: 1.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+header.top .wrap {
+  display: flex; align-items: center; gap: 0.75rem;
+}
+header.top .mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px;
+  background: #1a1a1a; border-radius: 8px;
+  color: #fff; font-family: 'Arial Black', sans-serif; font-weight: 900;
+  font-size: 14px; letter-spacing: -0.5px;
+}
+header.top .name {
+  font-family: var(--sans); font-weight: 600; font-size: 1rem;
+  color: var(--text);
+}
+header.top nav { margin-left: auto; display: flex; gap: 1.25rem; }
+header.top nav a {
+  font-family: var(--sans); font-size: 0.9rem; border: 0; color: var(--muted);
+}
+header.top nav a:hover { color: var(--text); }
+
+/* ---- Hero ---- */
+.hero { padding: 4rem 0 2rem; }
+.hero h1 {
+  font-family: var(--sans);
+  font-weight: 800;
+  font-size: clamp(2.25rem, 5vw, 3.5rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0 0 1rem;
+  color: var(--navy);
+}
+.hero p.lede {
+  font-size: 1.25rem;
+  line-height: 1.45;
+  color: var(--text);
+  margin: 0 0 1.75rem;
+  max-width: 620px;
+}
+.cta {
+  display: inline-flex; gap: 0.5rem; align-items: center;
+  background: var(--navy); color: #fff;
+  font-family: var(--sans); font-weight: 600; font-size: 0.95rem;
+  padding: 0.6rem 1.1rem; border-radius: 6px;
+  border: 0;
+}
+.cta:hover { background: #15203a; color: #fff; }
+.cta-secondary {
+  display: inline-flex; gap: 0.5rem; align-items: center;
+  font-family: var(--sans); font-size: 0.95rem;
+  padding: 0.6rem 0.75rem;
+  border: 0; color: var(--muted);
+  margin-left: 0.5rem;
+}
+.cta-secondary:hover { color: var(--text); }
+
+/* ---- Try-it inline demo (hover-letters) ---- */
+.tryit {
+  margin: 2rem 0 0;
+  padding: 1.25rem 1.5rem;
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  position: relative;
+}
+.tryit .tag {
+  position: absolute; top: -0.6rem; left: 1rem;
+  background: var(--bg); padding: 0 0.4rem;
+  font-family: var(--sans); font-size: 0.7rem; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.tryit .text {
+  font-size: 1.05rem; line-height: 1.55; margin: 0;
+}
+.fall-letter { display: inline-block; transform-origin: 50% 100%; will-change: transform, opacity; }
+.fall-letter.is-falling { animation: letter-fall 600ms cubic-bezier(.2,.7,.2,1) forwards; }
+@keyframes letter-fall {
+  0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+  60%  { transform: translateY(16px) rotate(10deg); opacity: 0.9; }
+  100% { transform: translateY(34px) rotate(20deg); opacity: 0; }
+}
+
+/* ---- Video ---- */
+.video {
+  margin: 3rem 0 0;
+  position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;
+  border-radius: 8px; border: 1px solid var(--border);
+  background: #000;
+}
+.video iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+/* ---- Sections ---- */
+section { padding: 3rem 0; border-top: 1px solid var(--border); }
+section h2 {
+  font-family: var(--sans); font-weight: 700; font-size: 1.5rem;
+  margin: 0 0 1rem; letter-spacing: -0.01em;
+}
+section p { margin: 0 0 1rem; }
+section p:last-child { margin-bottom: 0; }
+
+/* ---- Install ---- */
+pre {
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.85rem 1rem;
+  overflow-x: auto;
+  font-family: var(--mono); font-size: 0.9rem; line-height: 1.55;
+  margin: 0.5rem 0;
+}
+code { font-family: var(--mono); font-size: 0.92em; }
+:not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+
+/* ---- Prompts grid ---- */
+.prompts { display: grid; gap: 1rem; margin-top: 1rem; }
+@media (min-width: 600px) {
+  .prompts { grid-template-columns: 1fr 1fr; }
+}
+.prompt-card {
+  background: var(--paper); border: 1px solid var(--border);
+  border-radius: 8px; padding: 1rem 1.1rem;
+}
+.prompt-card .quote {
+  font-family: var(--sans); font-weight: 600; color: var(--navy);
+  margin: 0 0 0.5rem; font-size: 0.95rem;
+}
+.prompt-card .quote::before { content: '"'; }
+.prompt-card .quote::after { content: '"'; }
+.prompt-card .what { font-size: 0.93rem; color: var(--muted); margin: 0; line-height: 1.5; }
+
+/* ---- Footer ---- */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 2.5rem 0 4rem;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 0.85rem;
+}
+footer .row { display: flex; flex-wrap: wrap; gap: 1.25rem; align-items: center; }
+footer a { color: var(--muted); border: 0; }
+footer a:hover { color: var(--text); }
+footer .copy { margin-left: auto; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <span class="mark">AM</span>
+    <span class="name">Adaptive Markdown</span>
+    <nav>
+      <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown">GitHub</a>
+      <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown/blob/main/FORMAT.md">Format</a>
+      <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown/blob/main/ROADMAP.md">Roadmap</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero" style="border-top: 0; padding-top: 4rem;">
+    <div class="wrap">
+      <h1>Markdown that runs.</h1>
+      <p class="lede">Plain <code>.md</code> files a coding agent can rewrite, restyle, illustrate, animate, or extend in place — including arbitrary HTML, CSS, and JavaScript that ships <em>inside</em> the doc. The page you see is the file, executing.</p>
+      <a class="cta" href="https://github.com/SemiSimpleMath/Adaptive-Markdown">Get it on GitHub →</a>
+      <a class="cta-secondary" href="#videos">Watch the demos</a>
+
+      <div class="tryit">
+        <span class="tag">Try it</span>
+        <p class="text" id="hover-target">Hover the letters of this paragraph. They fall — because this page ships a small <code>&lt;script&gt;</code> that wraps each character in a span and listens for mouseover. The same kind of script an agent writes into a markdown source when you ask for an effect.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="videos">
+    <div class="wrap">
+      <h2>See it in action</h2>
+      <p>A reader clicks any block — paragraph, theorem, figure — and asks the agent to translate, expand, animate, illustrate, or replace it. The agent edits the source <code>.md</code> file in place; the page re-renders live.</p>
+      <div class="video">
+        <iframe src="https://www.youtube.com/embed/H4MnFs8irm8" title="Adaptive Markdown — demo 1" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+      </div>
+      <p style="margin-top: 0.75rem; font-family: var(--sans); font-size: 0.9rem; color: var(--muted);">
+        Also: <a href="https://youtu.be/H4MnFs8irm8">demo 1 on YouTube</a> · <a href="https://youtu.be/xf6jxf-hyP4">demo 2</a>
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>What this is</h2>
+      <p><strong>An open format.</strong> Plain CommonMark markdown plus a small set of conventions — pandoc-style heading attributes, <code>:::</code> directives for figures and asides, embedded <code>&lt;style&gt;</code> / <code>&lt;script&gt;</code> blocks. Renders cleanly in any markdown viewer; the format invariant is "the file works everywhere."</p>
+      <p><strong>An agent skill.</strong> A ~350-line text file (<code>SKILL.md</code>) that teaches a coding agent how to operate on this format predictably — preserve tracking IDs, write KaTeX-safe math, write self-contained figure programs, etc. The skill is the contract; the agent is replaceable. Today: Claude Agent SDK as the supported runtime; experimental Codex CLI adapter alongside.</p>
+      <p><strong>A local viewer.</strong> A 2000-line single-file HTML/JS app that renders the doc in a sandboxed iframe, pipes click-to-focus selections over a WebSocket to the agent, and applies edits live. Math via KaTeX. History snapshots, derived per-block patches, the works.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Get it</h2>
+      <p>Requires Python 3.10+ and an Anthropic API key (or an OpenAI / ChatGPT-account login for the experimental Codex runtime). Runs entirely on your machine.</p>
+<pre><code>git clone https://github.com/SemiSimpleMath/Adaptive-Markdown
+cd Adaptive-Markdown
+pip install -r requirements.txt
+python start.py --claude       # or --codex (experimental)</code></pre>
+      <p>Open <code>http://127.0.0.1:8090</code>. The tutorial doc loads by default.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Things to try</h2>
+      <p>The tutorial doc walks through these — but the prompts work on any block in any doc.</p>
+      <div class="prompts">
+        <div class="prompt-card">
+          <p class="quote">Rewrite this for a 10-year-old.</p>
+          <p class="what">Click an ε-δ continuity definition; the agent rewrites it in place. Source updates; render re-flows.</p>
+        </div>
+        <div class="prompt-card">
+          <p class="quote">Translate this paragraph to French.</p>
+          <p class="what">Click the focused block, give an instruction. The agent edits exactly that block, preserving tracking IDs and surrounding content.</p>
+        </div>
+        <div class="prompt-card">
+          <p class="quote">Add a figure that animates the unit circle.</p>
+          <p class="what">The agent writes a <code>:::figure</code> directive with an inline <code>&lt;canvas&gt;</code> and the JavaScript that draws it — into your markdown source.</p>
+        </div>
+        <div class="prompt-card">
+          <p class="quote">Add a dark-mode toggle and put a small game in the corner.</p>
+          <p class="what">Page-level effects work the same way: the agent appends <code>&lt;style&gt;</code> and <code>&lt;script&gt;</code> blocks to the markdown. The doc is its own webpage.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>For the curious</h2>
+      <p>The <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown/blob/main/FORMAT.md">format spec</a> covers file shape, the two-tier identity model (anchor IDs and tracking IDs), directive vocabulary, math conventions, and the sidecar files (<code>.history/</code>, <code>.patches/</code>, alias maps). The <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown/blob/main/.claude/skills/adaptive-markdown/SKILL.md">skill text</a> is the agent's normative contract — read it if you want to write an alternative agent. The <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown/blob/main/ROADMAP.md">roadmap</a> covers what's coming (component / resource libraries, Pyodide for in-browser Python, Lean verification, multi-document workspace).</p>
+      <p>It's v0.1. Things work; rough edges exist. Issues and PRs welcome.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="row">
+      <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown">GitHub</a>
+      <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown/blob/main/LICENSE">MIT</a>
+      <a href="https://github.com/SemiSimpleMath/Adaptive-Markdown/blob/main/SKILL-LICENSE">Skill: CC BY-SA</a>
+      <span class="copy">© 2026 Jukka Virtanen and contributors</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function() {
+  // Hover-letters effect, scoped to the "Try it" callout's paragraph.
+  // Same kind of script the agent writes into adaptive-markdown sources
+  // when you ask for an interactive page effect — runs in this page for
+  // the same reason it would run in a doc: it's just a <script> tag.
+  const target = document.getElementById('hover-target');
+  if (!target) return;
+
+  const SKIP = new Set(['SCRIPT', 'STYLE', 'CODE']);
+  function shouldSkip(node) {
+    let el = node.parentElement;
+    while (el && el !== target) {
+      if (SKIP.has(el.tagName)) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+  function wrapTextNode(node) {
+    const text = node.nodeValue;
+    if (!text || !text.trim()) return;
+    const frag = document.createDocumentFragment();
+    for (const ch of text) {
+      if (/\s/.test(ch)) {
+        frag.appendChild(document.createTextNode(ch));
+      } else {
+        const span = document.createElement('span');
+        span.className = 'fall-letter';
+        span.textContent = ch;
+        frag.appendChild(span);
+      }
+    }
+    node.parentNode.replaceChild(frag, node);
+  }
+  function prepareLetters() {
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!shouldSkip(node)) nodes.push(node);
+    }
+    for (const node of nodes) wrapTextNode(node);
+  }
+  document.addEventListener('mouseover', function(e) {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    if (!t.classList.contains('fall-letter')) return;
+    if (t.classList.contains('is-falling')) return;
+    t.classList.add('is-falling');
+    t.addEventListener('animationend', function onEnd() {
+      t.classList.remove('is-falling');
+      t.removeEventListener('animationend', onEnd);
+    });
+  });
+  prepareLetters();
+})();
+</script>
+
+</body>
+</html>
