@@ -121,10 +121,17 @@ snapshots and patches via the SDK's hook system; per-turn budget cap
 (history snapshots, derived patches, alias bookkeeping) still works — but
 with these known limitations vs Claude mode:
 
-- **Coarser snapshot granularity.** Codex CLI has no per-edit hook, so the
-  runtime snapshots once per changed file per turn rather than once per `Edit`
-  tool call. Block-level undo is still functional; you just get one history
-  entry per file per turn instead of one per Edit.
+- **Coarser snapshot granularity.** Codex CLI's hooks don't fire on file
+  edits (only on Bash), so the runtime snapshots once per changed file per
+  turn rather than once per `Edit` tool call. Block-level undo is still
+  functional; you just get one history entry per file per turn instead of
+  one per Edit.
+- **Wider in-project blast radius.** Codex's `workspace-write` sandbox makes
+  the whole project root writable; we can't gate writes at edit time the
+  way Claude's pre-edit hook does. Instead, the runtime runs a post-turn
+  validator that snapshots protected files before the turn and reverts any
+  modifications outside `examples/*.md` / `docs/*.md` after. The reverted
+  bytes briefly hit disk; you'll see a warning in chat if this fires.
 - **No conversation memory by default.** Each `codex exec` is a fresh
   subprocess. The adapter replays prior turns into the prompt so the model has
   context, but it costs tokens. Use the **New chat** button (or a model
@@ -134,6 +141,9 @@ with these known limitations vs Claude mode:
   provider.
 - **JSONL parsing is heuristic.** If the Codex CLI changes its event-stream
   format, the adapter may mislabel events or surface fewer tool indicators.
+- **Network egress off by default.** The adapter passes
+  `-c sandbox_workspace_write.network_access=false` regardless of your
+  global Codex config. Override per-session with `CODEX_WORKSPACE_NETWORK=true`.
 - **Requires Codex CLI installed.** Set `CODEX_COMMAND` if `codex` isn't on
   PATH (usually only needed on Windows). API-key mode reads `OPENAI_API_KEY`;
   ChatGPT-account mode uses Codex's own auth (`codex auth login`).
@@ -178,6 +188,7 @@ Environment variables (all optional):
 | `CODEX_MODELS` | Codex | mode-specific (see code) | Comma-separated list of model ids to populate the in-viewer chat dropdown. |
 | `CODEX_SANDBOX` | Codex | `workspace-write` | Sandbox mode passed to `codex exec`. |
 | `CODEX_APPROVAL_POLICY` | Codex | `never` | Approval policy passed to Codex for non-interactive execution. |
+| `CODEX_WORKSPACE_NETWORK` | Codex | `false` | If `true`, allow network egress from inside the workspace-write sandbox. Off by default — a hostile doc that prompt-injects shouldn't be able to phone home. |
 | `AGENT_PROVIDER` | both | `claude` | Runtime to use. The `--claude` / `--codex` launcher flag is the recommended way to set this; the env var is for advanced/CI use. |
 | `PORT` | both | `8090` | Backend port. |
 
@@ -191,12 +202,12 @@ The agent's contract is the skill text under [`.claude/skills/adaptive-markdown/
 
 - **The doc** (`examples/*.md`) is a regular markdown file with optional `{#anchor}` attributes, `:::` directives, and inline `<style>` / `<script>` blocks.
 - **The viewer** (`index.html`) renders the doc inside a sandboxed iframe and pipes click-to-focus selections, drops, and live updates over a WebSocket.
-- **The agent** is either the Claude Agent SDK (default, supported) or the Codex CLI (experimental) via a thin provider abstraction in `agent_runtime/`. Both load the same skill text — at `.claude/skills/adaptive-markdown/SKILL.md` for Claude (auto-discovered by the SDK) and the mirror at `.agents/skills/adaptive-markdown/SKILL.md` for Codex (prepended per-turn into the prompt by the adapter). The skill is ~350 lines of plain text that teaches the model how to operate on the doc — preserve tracking IDs, write KaTeX-safe math, etc.
+- **The agent** is either the Claude Agent SDK (default, supported) or the Codex CLI (experimental) via a thin provider abstraction in `agent_runtime/`. Both load the same skill text — at `.claude/skills/adaptive-markdown/SKILL.md` for Claude (auto-discovered by the SDK) and the mirror at `.agents/skills/adaptive-markdown/SKILL.md` for Codex (prepended per-turn into the prompt by the adapter; the backend auto-syncs the mirror on startup so the two never drift). The skill is ~420 lines of plain text that teaches the model how to operate on the doc — preserve tracking IDs, write KaTeX-safe math, never write outside `examples/`/`docs/`, etc.
 - **History & undo** — every pre-edit snapshot is captured under `.history/<doc-stem>/snap-…md`, plus a history-0 snapshot at backend startup for any doc that doesn't already have one. The `↶ History` button in the doc header lets you scrub back through every snapshot; `↺ Reset` jumps to the oldest one (history-0). To go further back than that — to the version that shipped in this clone — use `git checkout examples/<name>.md`.
 
 ## Drop your own files
 
-Drag any `.md` onto the viewer to open it. Drop a `.tex` (or `.txt` / `.rst` / `.org`) and the agent auto-converts it to adaptive markdown in place.
+Drag any `.md` onto the viewer to open it. Drop a `.tex` (or `.txt` / `.rst` / `.org`) and the viewer first shows a preview of the file's contents — click **Send to agent** to hand it off for conversion, or **Cancel** to back out (nothing is uploaded). The preview is the safety check: anything inside the dropped file becomes part of the agent's input, including hidden comments, so skim before sending.
 
 ## What's not there yet
 

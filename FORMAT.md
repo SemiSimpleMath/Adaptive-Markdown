@@ -169,14 +169,16 @@ $$
 
 ## Embedded `<style>` and `<script>`
 
-The viewer renders each doc inside a sandboxed `<iframe>`. The iframe has its own `<html>`, `<head>`, `<body>`, JS context, localStorage, and event listeners. Anything you embed in the source — `<style>`, `<script>`, `<canvas>`, `<svg>`, custom HTML — runs inside that sandbox.
+The viewer renders each doc inside a sandboxed `<iframe>` running at a **null origin** (`sandbox="allow-scripts allow-popups"`, no `allow-same-origin`). The iframe has its own `<html>`, `<head>`, `<body>`, JS context, and event listeners. Anything you embed in the source — `<style>`, `<script>`, `<canvas>`, `<svg>`, custom HTML — runs inside that sandbox.
 
 What this means in practice:
 
 - `body { background: black; color: white; }` inside a `<style>` block paints **only this doc**, not the viewer chrome.
 - `document.addEventListener('mousemove', ...)` inside a `<script>` only sees events inside the doc.
 - `position: fixed; top: 0; right: 0;` anchors to the iframe viewport, not the page viewport. Floating UI stays inside the doc.
-- `localStorage`, `sessionStorage`, `fetch`, `requestAnimationFrame` all work as in any web page.
+- `requestAnimationFrame`, `setTimeout`, `MutationObserver`, canvas/SVG drawing APIs, `Web Audio`, etc. all work as in any web page.
+- `localStorage` and `sessionStorage` are **not available** — browsers block storage access from null-origin contexts. Doc-side state survives within a single render only. This is intentional: it stops a hostile `<script>` from reading another doc's saved state or the viewer's preferences.
+- `fetch` works for cross-origin URLs that send CORS headers (CDNs, public APIs). Same-origin fetches to the local backend won't return readable bodies.
 
 The doc is, literally, a self-contained webpage. Hand the `.md` file to someone else and they get your dark mode, your falling letters, your custom UI — all stored *in* the doc.
 
@@ -234,7 +236,7 @@ A few invariants the backend hooks maintain. Worth knowing if you're building to
 
 ## Skill — the agent's contract
 
-Everything above is the format. The agent's behaviour on top of the format is specified in [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) — ~350 lines of plain text the agent loads at the start of every session. The skill is the format's *normative* document for agent implementations; this file is the *descriptive* one for humans.
+Everything above is the format. The agent's behaviour on top of the format is specified in [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) — ~420 lines of plain text the agent loads at the start of every session. The skill is the format's *normative* document for agent implementations; this file is the *descriptive* one for humans.
 
 ## Versioning
 
