@@ -37,6 +37,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from aiohttp import web, WSMsgType
 
@@ -96,6 +97,50 @@ def _doc_path_for(doc_param: str) -> Path | None:
     if p.parent not in (EXAMPLES_DIR, DOCS_DIR):
         return None
     return p
+
+
+# ---- Origin enforcement -------------------------------------------------
+# The viewer is meant to be reached only from a browser tab pointed at this
+# same local backend. A cross-origin page (or another localhost service) can
+# still try to drive our endpoints — WebSockets are not subject to the
+# Same-Origin Policy at the connection level, and POSTs ride CSRF if not
+# checked. Reject any request whose Origin doesn't match the local host.
+
+def _is_localhost_origin(request: web.Request) -> bool:
+    """True iff the Origin header is http://(127.0.0.1|localhost):<port> and
+    matches the request's Host header. Caller decides what to do when Origin
+    is absent (allowed for top-level navigation, rejected for state changes)."""
+    origin = request.headers.get("Origin", "")
+    if not origin:
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    if parsed.scheme != "http":
+        return False
+    if parsed.hostname not in ("127.0.0.1", "localhost"):
+        return False
+    if parsed.netloc != request.host:
+        return False
+    return True
+
+
+def _require_localhost_origin(request: web.Request) -> None:
+    """For state-mutating endpoints and the WebSocket. Reject anything that
+    isn't a same-origin request from the local viewer."""
+    if not _is_localhost_origin(request):
+        raise web.HTTPForbidden(text="origin not allowed")
+
+
+def _check_static_origin(request: web.Request) -> None:
+    """For static resource fetches. Browsers omit Origin for many resource
+    loads (img/link/script/iframe). Allow when absent, reject when present
+    and not localhost — that's a cross-origin fetch we don't want to serve."""
+    if request.headers.get("Origin") and not _is_localhost_origin(request):
+        raise web.HTTPForbidden(text="origin not allowed")
+
+
 DEFAULT_DOC = "examples/intro.md"
 
 # ---- ULID-style sticky identifiers --------------------------------------
@@ -474,24 +519,80 @@ state = State()
 _pre_edit_state: dict[str, dict] = {}
 
 
+def _validate_agent_write_path(file_path: str) -> tuple[bool, str]:
+    """Decide whether the agent is allowed to Edit/Write a given path.
+
+    Allowed writes: direct children of examples/ or docs/, .md suffix only.
+    Anything else — project source files, dotfiles like .env, .history/ (the
+    backend manages snapshots), absolute paths like ~/.ssh, paths outside
+    ROOT — is rejected. This is the root-cause defense against a successful
+    prompt injection convincing the agent to clobber arbitrary files."""
+    if not file_path:
+        return False, "missing file_path"
+    try:
+        p = Path(file_path).resolve()
+    except (OSError, ValueError):
+        return False, f"invalid file_path: {file_path!r}"
+    try:
+        p.relative_to(ROOT)
+    except ValueError:
+        return False, (
+            f"writes outside the project root are not permitted ({file_path!r}). "
+            "The agent may only modify .md files under examples/ or docs/."
+        )
+    if p.suffix.lower() != ".md":
+        return False, (
+            f"only .md files are writable by the agent ({p.name!r}). "
+            "Project source files (backend.py, index.html, etc.) and "
+            "configuration files (.env, .gitignore, SKILL.md) are off-limits."
+        )
+    if p.parent not in (EXAMPLES_DIR, DOCS_DIR):
+        return False, (
+            f"only files directly under examples/ or docs/ are writable "
+            f"({file_path!r}). Subdirectories like docs/raw/ and .history/ "
+            "are managed by the backend, not the agent."
+        )
+    return True, ""
+
+
+def _deny_pre_tool_use(reason: str) -> dict:
+    """Build the PreToolUse hook response that vetoes the tool call."""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
 async def pre_tool_use_hook(input_data, tool_use_id, context):
-    """Capture the .md file's content before an Edit/Write. Snapshots it under
-    .history/ so we can reference the parent state in derived patches and so
-    the user can roll back via the History button or Reset."""
+    """Validate the target path, then capture pre-edit state for the .md
+    snapshot/patch substrate.
+
+    Path validation is the security gate: even though `allowed_tools` excludes
+    Bash and the agent is told via SKILL.md to stay in the doc tree, a
+    successful prompt injection could still try to Edit/Write a sensitive
+    file. The hook is the last line of defense before bytes hit disk."""
     tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
-    if file_path and file_path.endswith(".md"):
-        try:
-            p = Path(file_path)
-            before_text = p.read_text(encoding="utf-8")
-            snap_id = save_snapshot(p, before_text)
-            _pre_edit_state[tool_use_id] = {
-                "file_path": file_path,
-                "before_text": before_text,
-                "snap_id": snap_id,
-            }
-        except Exception as e:
-            print(f"[pre-edit] snapshot failed: {e}", flush=True)
+
+    ok, reason = _validate_agent_write_path(file_path)
+    if not ok:
+        print(f"[pre-edit] REJECTED ({file_path!r}): {reason}", flush=True)
+        return _deny_pre_tool_use(reason)
+
+    try:
+        p = Path(file_path)
+        before_text = p.read_text(encoding="utf-8") if p.exists() else ""
+        snap_id = save_snapshot(p, before_text) if before_text else None
+        _pre_edit_state[tool_use_id] = {
+            "file_path": file_path,
+            "before_text": before_text,
+            "snap_id": snap_id,
+        }
+    except Exception as e:
+        print(f"[pre-edit] snapshot failed: {e}", flush=True)
     return {}
 
 
@@ -732,6 +833,7 @@ async def run_turn(text: str):
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+    _require_localhost_origin(request)
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
 
@@ -863,15 +965,36 @@ async def serve_index(request: web.Request) -> web.Response:
     return web.FileResponse(ROOT / "index.html")
 
 
+# Files outside this allowlist are NOT served — even if they exist under ROOT.
+# Without this gate the catch-all route exposed .env, .history/, sidecar JSON,
+# and every internal file in the project tree. Restrict to what the viewer
+# (and only the viewer) actually fetches from its parent context.
+_STATIC_ROOT_FILES = {"favicon.svg"}
+
+
 async def serve_static(request: web.Request) -> web.Response:
+    _check_static_origin(request)
     rel = request.match_info["path"]
-    # Disallow `..` traversal.
+    # Reject `..`, backslashes, leading slashes, empty segments.
+    if (not rel or rel.startswith("/") or ".." in rel.replace("\\", "/").split("/")
+            or "\\" in rel):
+        raise web.HTTPNotFound()
     target = (ROOT / rel).resolve()
     try:
         target.relative_to(ROOT)
     except ValueError:
-        raise web.HTTPForbidden()
+        raise web.HTTPNotFound()
     if not target.exists() or not target.is_file():
+        raise web.HTTPNotFound()
+    # Allowlist: a small set of root files, plus markdown docs that live
+    # directly under examples/ or docs/ (not docs/raw/ or other subdirs).
+    if target.parent == ROOT:
+        if target.name not in _STATIC_ROOT_FILES:
+            raise web.HTTPNotFound()
+    elif target.parent in (EXAMPLES_DIR, DOCS_DIR):
+        if target.suffix.lower() != ".md":
+            raise web.HTTPNotFound()
+    else:
         raise web.HTTPNotFound()
     return web.FileResponse(target)
 
@@ -884,6 +1007,7 @@ _UPLOAD_MAX_BYTES = 1 * 1024 * 1024  # 1 MB safety cap
 
 
 async def upload_md(request: web.Request) -> web.Response:
+    _require_localhost_origin(request)
     reader = await request.multipart()
     field = None
     async for part in reader:
@@ -899,7 +1023,28 @@ async def upload_md(request: web.Request) -> web.Response:
     # Anything else is allowed when the client passes ?allow_unknown=1 —
     # the agent then attempts a best-effort conversion.
     KNOWN_EXTS = {".md", ".tex", ".txt", ".rst", ".org"}
+    # Hard blocklist: extensions we refuse outright even with allow_unknown=1.
+    # These are either executable (Windows/Linux), DLL-like, archive containers
+    # (the agent can't see inside), or office-with-macros formats. A user can't
+    # consent away this list — there's no legitimate "convert .exe to markdown."
+    BLOCKED_EXTS = {
+        ".exe", ".bat", ".cmd", ".com", ".scr", ".pif",
+        ".ps1", ".psm1", ".psd1", ".sh", ".bash", ".zsh", ".fish",
+        ".vbs", ".vbe", ".jse", ".wsf", ".wsh", ".hta",
+        ".jar", ".class", ".msi", ".msp", ".apk", ".app", ".deb", ".rpm",
+        ".dll", ".so", ".dylib", ".sys", ".drv", ".o", ".a", ".lib",
+        ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+        ".iso", ".dmg", ".img",
+        ".docm", ".xlsm", ".pptm", ".dotm", ".xltm", ".potm",
+        ".lnk", ".url", ".desktop",
+    }
     allow_unknown = request.query.get("allow_unknown") in ("1", "true", "yes")
+    if ext in BLOCKED_EXTS:
+        return web.json_response(
+            {"error": f"refused: {ext} files are not allowed (executable / archive / binary)",
+             "kind": ext, "blocked": True},
+            status=415,
+        )
     if ext not in KNOWN_EXTS and not allow_unknown:
         return web.json_response(
             {"error": f"unsupported file type: {ext or '(no extension)'}",
@@ -947,6 +1092,17 @@ async def upload_md(request: web.Request) -> web.Response:
     elif raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
         # UTF-16 — re-encode as UTF-8
         raw = raw.decode("utf-16").encode("utf-8")
+    # Binary-content guard: text formats don't contain NUL bytes. If the
+    # first chunk has any, this is binary data masquerading as a text format
+    # (a renamed PDF, a corrupted file, a payload). Refuse before saving —
+    # we don't want it on disk and the agent can't usefully read it anyway.
+    if b"\x00" in raw[:4096]:
+        return web.json_response(
+            {"error": "refused: file appears to be binary (NUL bytes in first 4KB). "
+                      "Adaptive-markdown only handles text formats.",
+             "kind": ext or "(no extension)", "binary": True},
+            status=415,
+        )
     text = raw.decode("utf-8", errors="replace")
     # Normalize line endings to LF
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -990,6 +1146,7 @@ async def upload_md(request: web.Request) -> web.Response:
 
 async def list_history(request: web.Request) -> web.Response:
     """GET /history?doc=examples/X.md|docs/X.md — list snapshots captured by pre-edit hook."""
+    _require_localhost_origin(request)
     doc_param = request.query.get("doc", "").strip()
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
@@ -1042,6 +1199,7 @@ async def undo_doc(request: web.Request) -> web.Response:
 
     Convenience over /restore_snapshot when the user just wants "go back one"
     without opening the history panel."""
+    _require_localhost_origin(request)
     doc_param = request.query.get("doc", "").strip()
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
@@ -1065,6 +1223,7 @@ async def undo_doc(request: web.Request) -> web.Response:
 
 async def restore_snapshot(request: web.Request) -> web.Response:
     """POST /restore_snapshot?doc=...&snap_id=... — overwrite working copy with snapshot."""
+    _require_localhost_origin(request)
     doc_param = request.query.get("doc", "").strip()
     snap_id = request.query.get("snap_id", "").strip()
     doc_path = _doc_path_for(doc_param)
@@ -1084,6 +1243,7 @@ async def restore_snapshot(request: web.Request) -> web.Response:
 
 
 async def reset_doc(request: web.Request) -> web.Response:
+    _require_localhost_origin(request)
     doc_param = request.query.get("doc", "").strip()
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
@@ -1146,9 +1306,41 @@ def ensure_history_zero() -> None:
         print(f"ensured history-0 ({minted} new)", flush=True)
 
 
+def ensure_skill_mirror() -> None:
+    """Keep the Codex-discoverable copy of SKILL.md byte-identical to the
+    Claude-discoverable one. The two paths exist because each runtime has its
+    own skill-loading convention (Claude SDK reads `.claude/skills/...`;
+    Codex adapter reads `.agents/skills/...`). Editing one and forgetting the
+    other is the obvious failure mode — and it's a security failure when the
+    drift is on the security-boundaries section. Sync defensively at startup."""
+    src = ROOT / ".claude" / "skills" / "adaptive-markdown" / "SKILL.md"
+    dst = ROOT / ".agents" / "skills" / "adaptive-markdown" / "SKILL.md"
+    if not src.exists():
+        return
+    try:
+        src_bytes = src.read_bytes()
+    except OSError as e:
+        print(f"[skill-mirror] can't read source {src}: {e}", flush=True)
+        return
+    if dst.exists():
+        try:
+            if dst.read_bytes() == src_bytes:
+                return  # already in sync
+        except OSError:
+            pass
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dst.write_bytes(src_bytes)
+        print(f"[skill-mirror] synced {dst.relative_to(ROOT).as_posix()}",
+              flush=True)
+    except OSError as e:
+        print(f"[skill-mirror] write failed for {dst}: {e}", flush=True)
+
+
 async def on_startup(app: web.Application):
     ensure_doc_ids()
     ensure_history_zero()
+    ensure_skill_mirror()
     await init_runtime()
 
 

@@ -40,6 +40,16 @@ CODEX_MODELS = [
 CODEX_COMMAND = os.environ.get("CODEX_COMMAND", "codex")
 CODEX_SANDBOX = os.environ.get("CODEX_SANDBOX", "workspace-write")
 CODEX_APPROVAL_POLICY = os.environ.get("CODEX_APPROVAL_POLICY", "never")
+# Disable network egress from inside the workspace-write sandbox. Codex CLI's
+# Linux/Mac sandboxes (Landlock + Seccomp) honor this; on Windows the OS-level
+# network isolation is weaker, so a hostile prompt could still reach the
+# network via Windows APIs the sandbox doesn't intercept. This is the
+# strongest defense Codex offers — the rest is policy (see SKILL.md security
+# section + path-validated pre-edit hook in backend.py). Set the env var to
+# "true" to re-enable network access if a workflow genuinely needs it.
+CODEX_WORKSPACE_NETWORK = os.environ.get("CODEX_WORKSPACE_NETWORK", "false").lower() in (
+    "1", "true", "yes",
+)
 
 
 class CodexRuntime:
@@ -219,6 +229,11 @@ class CodexRuntime:
         # finalizer to derive .history/ snapshots + .patches/ from the same
         # before/after pairs the Claude pre/post hooks produce.
         before_state = self._read_md_snapshot()
+        # Bytes of every protected file (everything outside the agent's
+        # allowed write scope). The post-turn revert validator compares
+        # against this to detect unauthorized writes — see
+        # _revert_unauthorized_writes for the why and the scope.
+        before_protected = self._protected_snapshot()
         try:
             code, stderr, emitted_text, events = await self._run_codex_process(
                 cmd,
@@ -282,6 +297,28 @@ class CodexRuntime:
                 detail = stderr.strip() or f"codex exec exited with status {code}"
                 yield {"type": "error", "text": detail}
             else:
+                # Revert any unauthorized writes BEFORE the finalize step.
+                # finalize_md_edit_fn writes new snapshots to .history/ which
+                # would otherwise show as "protected files modified" relative
+                # to before_protected. Doing the revert first means finalize
+                # operates on a clean post-codex state and its own writes
+                # don't trip the validator.
+                reverted = self._revert_unauthorized_writes(before_protected)
+                if reverted:
+                    listing = "\n".join(f"- `{r}`" for r in reverted)
+                    yield {
+                        "type": "error",
+                        "text": (
+                            "⚠️ Codex attempted to write outside the allowed "
+                            "scope. The following changes were reverted:\n"
+                            f"{listing}\n\n"
+                            "Only `examples/*.md` and `docs/*.md` may be "
+                            "modified by the agent. This usually means a "
+                            "prompt injection from document content; review "
+                            "the source you opened and consider clearing the "
+                            "current chat."
+                        ),
+                    }
                 changed_paths = self._changed_paths(before_docs)
                 if self.finalize_md_edit_fn:
                     author = f"agent:codex:{self._current_model}"
@@ -329,6 +366,11 @@ class CodexRuntime:
             self.executable,
             "--ask-for-approval",
             CODEX_APPROVAL_POLICY,
+            # Override config.toml to keep network egress off inside the
+            # sandbox by default. Defense-in-depth: a hostile doc that
+            # successfully prompt-injects shouldn't be able to phone home.
+            "-c",
+            f"sandbox_workspace_write.network_access={'true' if CODEX_WORKSPACE_NETWORK else 'false'}",
             "exec",
             "--json",
             "--cd",
@@ -430,6 +472,129 @@ class CodexRuntime:
         after = self._doc_mtimes()
         changed = [p for p, m in after.items() if before.get(p) != m]
         return sorted(changed)
+
+    # ---- Post-turn write-path validator ----------------------------------
+    # Codex CLI's workspace-write sandbox makes the entire project root
+    # writable, and its hook system doesn't fire on file edits (only on Bash
+    # commands). So we can't gate Codex writes at edit time the way the
+    # Claude pre-edit hook does. Instead: snapshot every protected file
+    # before the turn, compare after, and revert anything that changed
+    # outside the allowed scope. The bytes briefly hit disk during the turn,
+    # but they're undone before the next turn — and before the backend's
+    # finalize step runs, so legitimate history-snapshot writes don't get
+    # tangled in the revert.
+
+    # Directories not worth fingerprinting (caches, VCS metadata, virtualenvs).
+    # The agent shouldn't write here; if it does, partial cache reverts would
+    # cause more noise than they prevent. .git in particular is dangerous to
+    # rewrite piecemeal.
+    _PROTECTED_WALK_SKIP_DIRS = frozenset({
+        ".git", "__pycache__", "node_modules", ".venv", "venv", "env",
+    })
+    # Skip files larger than this when building the protected snapshot —
+    # binaries that big are almost certainly not the kind of thing a prompt
+    # injection plausibly wants to rewrite, and snapshotting them on every
+    # turn is expensive. The 1 MB cap also matches the upload-size limit.
+    _PROTECTED_FILE_SIZE_CAP = 1 * 1024 * 1024
+
+    def _is_writable_path(self, path: Path) -> bool:
+        """True if `path` is a legitimate write target. The agent may write
+        to `examples/<name>.md` and `docs/<name>.md`; the backend's upload
+        handler writes to `docs/raw/` in response to user drops. Everything
+        else under the project root is protected."""
+        try:
+            rel = path.resolve().relative_to(self.root)
+        except (ValueError, OSError):
+            return False
+        parts = rel.parts
+        if not parts:
+            return False
+        if (parts[0] in ("examples", "docs")
+                and len(parts) == 2
+                and parts[1].lower().endswith(".md")):
+            return True
+        # docs/raw/ is the user-upload landing zone; the backend (not the
+        # agent) writes here, and an upload can race a turn-in-progress.
+        # Treat as outside the validator's revert scope.
+        if (parts[0] == "docs" and len(parts) >= 2 and parts[1] == "raw"):
+            return True
+        return False
+
+    def _walk_protected_files(self):
+        """Yield Path objects for every file in the project tree worth
+        validating. Prunes noise dirs and size-capped files."""
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            dirnames[:] = [
+                d for d in dirnames if d not in self._PROTECTED_WALK_SKIP_DIRS
+            ]
+            for fn in filenames:
+                full = Path(dirpath) / fn
+                try:
+                    if full.stat().st_size > self._PROTECTED_FILE_SIZE_CAP:
+                        continue
+                except OSError:
+                    continue
+                yield full
+
+    def _protected_snapshot(self) -> dict[Path, bytes]:
+        """Map absolute Path -> bytes for every protected file. Run before
+        each turn; compared against the same walk after the turn."""
+        snap: dict[Path, bytes] = {}
+        for p in self._walk_protected_files():
+            if self._is_writable_path(p):
+                continue
+            try:
+                snap[p.resolve()] = p.read_bytes()
+            except OSError:
+                pass
+        return snap
+
+    def _safe_rel(self, path: Path) -> str:
+        try:
+            return path.relative_to(self.root).as_posix()
+        except ValueError:
+            return str(path)
+
+    def _revert_unauthorized_writes(self, before: dict[Path, bytes]) -> list[str]:
+        """Detect and revert changes to protected files. Modified or
+        deleted files are restored from `before`. New files in protected
+        scope are deleted. Returns relative paths of every change reverted
+        — suitable for surfacing in chat as a security alert."""
+        reverted: list[str] = []
+        # Files that existed before — restore them if modified or deleted.
+        for path, before_bytes in before.items():
+            try:
+                current = path.read_bytes() if path.exists() else None
+            except OSError:
+                continue
+            if current == before_bytes:
+                continue
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(before_bytes)
+                rel = self._safe_rel(path)
+                reverted.append(rel)
+                print(f"[codex-revert] reverted {rel}", flush=True)
+            except OSError as e:
+                print(f"[codex-revert] failed to revert {path}: {e}", flush=True)
+        # New files appearing in protected scope — delete them. (Note: a user
+        # drop landing in docs/raw/ during a turn is in the writable-path
+        # set, so we won't touch those — see _is_writable_path.)
+        before_paths = set(before.keys())
+        for p in self._walk_protected_files():
+            if self._is_writable_path(p):
+                continue
+            resolved = p.resolve()
+            if resolved in before_paths:
+                continue
+            try:
+                p.unlink()
+                rel = self._safe_rel(p)
+                reverted.append(f"{rel} (new file deleted)")
+                print(f"[codex-revert] deleted new {rel}", flush=True)
+            except OSError as e:
+                print(f"[codex-revert] failed to delete {p}: {e}", flush=True)
+        return reverted
 
     def _changed_docs(self, before: dict[Path, int]) -> list[str]:
         out = []

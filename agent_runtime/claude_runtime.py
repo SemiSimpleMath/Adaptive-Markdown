@@ -69,7 +69,11 @@ class ClaudeRuntime:
             cwd=str(self.root),
             setting_sources=["project"],
             skills="all",
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+            # Intentionally no Bash / WebFetch: adaptive-markdown's workflow is
+            # doc-edit-only (Read/Edit/Write on .md files). Shell exec is the
+            # main blast-radius escalation path on a successful prompt injection
+            # from a hostile document — keep it off the tool surface entirely.
+            allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
             permission_mode="acceptEdits",
             model=chosen,
             max_budget_usd=MAX_BUDGET_USD,

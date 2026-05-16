@@ -179,6 +179,60 @@ body {
   font-size: 0.75rem; color: var(--muted); margin-top: 0.6rem;
   letter-spacing: 0.01em;
 }
+/* Conversion preview dialog — shown before any non-.md file is sent to the
+   agent. The agent will read the entire file as context; the user needs a
+   chance to spot hidden instructions before that happens. */
+.convert-preview-dlg {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.1rem 1.2rem 0.9rem;
+  max-width: 640px;
+  width: 90vw;
+  font: inherit;
+  background: white;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.18);
+}
+.convert-preview-dlg::backdrop {
+  background: rgba(0,0,0,0.32);
+}
+.convert-preview-dlg h3 {
+  margin: 0 0 0.4rem; font-size: 1.05rem; color: var(--accent);
+}
+.convert-preview-dlg .convert-meta {
+  font-size: 0.82rem; color: var(--muted); margin-bottom: 0.7rem;
+  font-family: ui-monospace, monospace;
+}
+.convert-preview-dlg .convert-warn {
+  font-size: 0.82rem; color: #8a4d10; background: #fff7ea;
+  border: 1px solid #f2c987; border-radius: 4px;
+  padding: 0.55rem 0.7rem; margin-bottom: 0.7rem; line-height: 1.45;
+}
+.convert-preview-dlg pre.convert-preview-body {
+  font-family: ui-monospace, monospace; font-size: 0.78rem;
+  background: #f6f6f4; border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.65rem 0.8rem; max-height: 260px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+  color: #2a2a28; margin: 0;
+}
+.convert-preview-dlg .convert-preview-truncated {
+  font-size: 0.75rem; color: var(--muted); margin: 0.4rem 0 0;
+  font-style: italic;
+}
+.convert-preview-dlg .convert-actions {
+  display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.9rem;
+}
+.convert-preview-dlg .btn-primary {
+  background: var(--accent); color: white; border: 0;
+  padding: 0.5rem 1.1rem; border-radius: 4px;
+  font: inherit; font-size: 0.92rem; cursor: pointer; font-weight: 600;
+}
+.convert-preview-dlg .btn-primary:hover { filter: brightness(1.1); }
+.convert-preview-dlg .btn-secondary {
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+  padding: 0.5rem 1.1rem; border-radius: 4px;
+  font: inherit; font-size: 0.92rem; cursor: pointer;
+}
+.convert-preview-dlg .btn-secondary:hover { background: #f3f3f1; }
 .history-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -597,7 +651,23 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       </div>
       <button id="reset-doc-btn" class="btn-tiny" title="Restore this document to its ship-with original">↺ Reset</button>
     </div>
-    <iframe id="doc-frame" sandbox="allow-scripts allow-same-origin allow-popups" title="Document"></iframe>
+    <iframe id="doc-frame" sandbox="allow-scripts allow-popups" title="Document"></iframe>
+    <dialog id="convert-preview-dlg" class="convert-preview-dlg">
+      <h3>Send this file to the agent?</h3>
+      <div class="convert-meta" id="convert-preview-meta"></div>
+      <div class="convert-warn">
+        The agent will read the entire file as context and write a new
+        adaptive-markdown version of it. Anything inside the file — including
+        comments and hidden text — becomes part of the agent's input. Review
+        the preview below for unexpected instructions before proceeding.
+      </div>
+      <pre class="convert-preview-body" id="convert-preview-body"></pre>
+      <div class="convert-preview-truncated" id="convert-preview-truncated" hidden></div>
+      <div class="convert-actions">
+        <button type="button" class="btn-secondary" id="convert-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="convert-confirm">Send to agent</button>
+      </div>
+    </dialog>
     <div id="new-doc-overlay" class="new-doc-overlay" hidden>
       <div class="new-doc-card">
         <strong>Drop a file to import</strong>
@@ -1107,9 +1177,71 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     setSelections(newList);
   }
 
+  // Read the first ~2KB of a File as decoded UTF-8 text for the preview pane.
+  // Binary content comes back full of replacement chars — that's the signal
+  // we want to give the reader before they hand it to the agent.
+  const CONVERT_PREVIEW_MAX_BYTES = 2048;
+  function readFilePreview(file) {
+    return new Promise((resolve) => {
+      const slice = file.slice(0, CONVERT_PREVIEW_MAX_BYTES);
+      const reader = new FileReader();
+      reader.onload = () => resolve({
+        text: typeof reader.result === 'string' ? reader.result : '',
+        truncated: file.size > CONVERT_PREVIEW_MAX_BYTES,
+      });
+      reader.onerror = () => resolve({ text: '(could not read file as text)', truncated: false });
+      reader.readAsText(slice);
+    });
+  }
+
+  function formatBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(2) + ' MB';
+  }
+
+  // Show the conversion preview dialog. Returns a Promise<bool> — true if the
+  // reader clicked "Send to agent," false if they cancelled. Cancellation
+  // happens at this gate, before any upload; nothing hits the server until
+  // the reader has seen what's in the file.
+  function showConvertPreview(file, ext, isUnknown) {
+    const dlg = document.getElementById('convert-preview-dlg');
+    const meta = document.getElementById('convert-preview-meta');
+    const bodyEl = document.getElementById('convert-preview-body');
+    const truncEl = document.getElementById('convert-preview-truncated');
+    const confirmBtn = document.getElementById('convert-confirm');
+    const cancelBtn = document.getElementById('convert-cancel');
+    const kindLabel = isUnknown ? (ext || '(no extension)') + ' [unfamiliar format]' : ext;
+    return readFilePreview(file).then(({ text, truncated }) => {
+      meta.textContent = file.name + '  ·  ' + kindLabel + '  ·  ' + formatBytes(file.size);
+      bodyEl.textContent = text || '(empty)';
+      truncEl.hidden = !truncated;
+      truncEl.textContent = truncated
+        ? 'Preview shows first ' + CONVERT_PREVIEW_MAX_BYTES + ' bytes; the agent will read the entire file.'
+        : '';
+      return new Promise((resolve) => {
+        function done(ok) {
+          confirmBtn.removeEventListener('click', onOk);
+          cancelBtn.removeEventListener('click', onCancel);
+          dlg.removeEventListener('cancel', onCancel);
+          dlg.close();
+          resolve(ok);
+        }
+        function onOk() { done(true); }
+        function onCancel(e) { if (e) e.preventDefault(); done(false); }
+        confirmBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        dlg.addEventListener('cancel', onCancel);
+        dlg.showModal();
+        cancelBtn.focus();
+      });
+    });
+  }
+
   // Single import path used by every drop / file-pick site (iframe drop,
-  // + Doc overlay, file input, parent body drop). Prompts the user for
-  // confirmation when the extension isn't in the well-known set.
+  // + Doc overlay, file input, parent body drop). For any file that needs
+  // agent conversion (non-.md), shows the preview dialog first so the
+  // reader can inspect the file content before it becomes agent input.
   async function importFile(file) {
     document.body.classList.remove('dropping');
     if (newDocOverlay && !newDocOverlay.hidden) hideNewDocOverlay();
@@ -1117,8 +1249,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const lower = (file.name || '').toLowerCase();
     const dot = lower.lastIndexOf('.');
     const ext = dot >= 0 ? lower.slice(dot) : '';
+    const isMarkdown = ext === '.md';
+    const isKnown = SUPPORTED_DROP_EXTS.includes(ext);
     let allowUnknown = false;
-    if (!SUPPORTED_DROP_EXTS.includes(ext)) {
+    if (!isKnown) {
       const proceed = confirm(
         '"' + file.name + '" has an unfamiliar extension (' + (ext || 'none') + ').\n\n' +
         'Should the agent try to convert it to adaptive markdown anyway?\n' +
@@ -1127,6 +1261,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       );
       if (!proceed) return;
       allowUnknown = true;
+    }
+    // Non-.md files become agent input — show a preview gate. .md files are
+    // uploaded directly and shown in the viewer; no agent involvement, no
+    // gate needed.
+    if (!isMarkdown) {
+      const ok = await showConvertPreview(file, ext, !isKnown);
+      if (!ok) return;
     }
     const form = new FormData();
     form.append('file', file);
