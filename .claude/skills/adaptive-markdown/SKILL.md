@@ -142,11 +142,11 @@ The doc renders inside a sandboxed iframe with its own CSS context. Your embedde
 | `## Definition (...)` | `<h2>` with `data-kind="definition"` (italic gold) |
 | `## Example (...)`, `## Solution (...)`, `## Proof (...)` | `<h2>` with `data-kind="example"` (italic green) |
 | `## Note/Remark/Aside (...)` | `<h2>` with `data-kind="note"` (italic muted) |
-| `:::theorem (...) ... :::` (etc.) | `<section class="kind-theorem kind-block">` |
+| `:::theorem (...) ... :::` (and `:::lemma` / `:::proposition` / `:::corollary` / `:::definition` / `:::example` / `:::solution` / `:::proof` / `:::abstract`) | `<section class="kind-NAME kind-block">` |
+| `:::note (...) ... :::` (and `:::aside` / `:::remark`) | `<section class="kind-note kind-block">` etc. — styled box via `.kind-note/aside/remark` rules |
 | `:::figure { ... } ... :::` | `<div class="directive figure" data-renderer="...">` |
 | `:::pinned ... :::` | `<div class="directive pinned">` |
-| `:::note`, `:::aside`, `:::remark` | `<div class="directive note">` etc. |
-| `:::anything-else ... :::` | `<div class="directive anything-else">` (no built-in styling) |
+| `:::anything-else ... :::` | `<div class="directive anything-else">` (no built-in styling, but the directive markers don't leak into the rendered DOM) |
 | `{#anchor}` on heading | `id="anchor"` on the element |
 | `<!-- id:b-... -->` preceding block | sibling element gets `data-track-id="b-..."` |
 
