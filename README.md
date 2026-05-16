@@ -5,8 +5,9 @@
 Most agent-driven editing tools box the agent into a fixed component palette: it can rewrite text or fill in a sandboxed widget. **Here it has the full web platform** — every CSS rule, every `<script>` tag, every API the browser exposes — and the output is a normal `.md` file you can share, fork, and check into git. Dark mode toggle, animated headings, falling-letter effect, a snake game in the corner? All by asking, all stored as plain markdown.
 
 [![Adaptive Markdown — demo](https://img.youtube.com/vi/H4MnFs8irm8/maxresdefault.jpg)](https://youtu.be/H4MnFs8irm8)
+[![Adaptive Markdown — demo 2](https://img.youtube.com/vi/xf6jxf-hyP4/maxresdefault.jpg)](https://youtu.be/xf6jxf-hyP4)
 
-> ▶ [Watch the demo on YouTube](https://youtu.be/H4MnFs8irm8)
+> ▶ Demos on YouTube: [demo 1](https://youtu.be/H4MnFs8irm8) · [demo 2](https://youtu.be/xf6jxf-hyP4)
 
 ```text
 $ python start.py --claude
