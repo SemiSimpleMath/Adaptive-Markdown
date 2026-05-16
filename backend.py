@@ -127,18 +127,22 @@ def _is_localhost_origin(request: web.Request) -> bool:
 
 
 def _require_localhost_origin(request: web.Request) -> None:
-    """For state-mutating endpoints and the WebSocket. Reject anything that
-    isn't a same-origin request from the local viewer."""
-    if not _is_localhost_origin(request):
-        raise web.HTTPForbidden(text="origin not allowed")
+    """Reject the request if it carries a non-localhost Origin header.
 
-
-def _check_static_origin(request: web.Request) -> None:
-    """For static resource fetches. Browsers omit Origin for many resource
-    loads (img/link/script/iframe). Allow when absent, reject when present
-    and not localhost — that's a cross-origin fetch we don't want to serve."""
+    Missing Origin is *allowed* — per the Fetch spec, browsers omit the
+    Origin header for same-origin GET/HEAD requests, so a strict "Origin
+    required" check would reject legitimate same-origin viewer fetches
+    (history, doc loads) in Chrome and Firefox. The threat we want to stop
+    is cross-origin and DNS-rebinding requests, which *always* set Origin
+    to a non-localhost value — and those we still reject."""
     if request.headers.get("Origin") and not _is_localhost_origin(request):
         raise web.HTTPForbidden(text="origin not allowed")
+
+
+# Same behavior as _require_localhost_origin; kept as a separate name to
+# document intent at the call sites (static resource serving vs state-
+# mutating endpoints).
+_check_static_origin = _require_localhost_origin
 
 
 DEFAULT_DOC = "examples/intro.md"
