@@ -12,6 +12,13 @@ from typing import AsyncIterator
 from .base import AgentEvent
 
 
+# History cap: how many {user, assistant} pairs to keep when replaying
+# conversation context into each turn's prompt. Each pair averages a few
+# KB; at ~21 KB skill + N pairs * ~5 KB, ten pairs keeps prompts under
+# ~75 KB which is comfortable. Configurable via env for stress tests.
+HISTORY_MAX_PAIRS = int(os.environ.get("CODEX_HISTORY_TURNS", "10"))
+
+
 CODEX_AUTH_MODE = os.environ.get(
     "CODEX_AUTH_MODE",
     "api-key" if os.environ.get("OPENAI_API_KEY") else "chatgpt",
@@ -137,9 +144,25 @@ class CodexRuntime:
                 "=== END SKILL ==="
             )
         if self._history:
+            # Cap replayed history at HISTORY_MAX_PAIRS so the prompt prefix
+            # doesn't grow unboundedly over a long session. We pair-walk
+            # backwards from the end so we always keep the most recent
+            # {user, assistant} pairs intact, even if the list happens to
+            # be unbalanced (e.g. trailing user msg with no reply yet).
+            keep = self._history
+            truncated = False
+            n_pairs = HISTORY_MAX_PAIRS
+            if len(self._history) > n_pairs * 2:
+                keep = self._history[-(n_pairs * 2):]
+                truncated = True
             history_body = "\n\n".join(
-                f"[{turn['role']}]\n{turn['text']}" for turn in self._history
+                f"[{turn['role']}]\n{turn['text']}" for turn in keep
             )
+            if truncated:
+                history_body = (
+                    "[earlier conversation truncated — context preserved for "
+                    f"the last {n_pairs} turn(s) only]\n\n" + history_body
+                )
             blocks.append(
                 "Prior turns in this conversation (oldest first). Use them "
                 "for context; do not re-do work already completed.\n\n"
@@ -236,16 +259,22 @@ class CodexRuntime:
                     output_path,
                     False,
                 )
-                for event in events:
-                    yield event
                 final_text = self._read_output(output_path)
-                # Stick with the fallback for the rest of the session so we
-                # don't pay the retry round-trip on every turn.
                 if code == 0:
+                    # Stick with the fallback for the rest of the session so
+                    # we don't pay the retry round-trip on every turn.
                     self._current_model = "default"
-            else:
-                for event in events:
-                    yield event
+
+            # _jsonl_to_event surfaces turn.completed as its own turn_done so
+            # token usage propagates upward. Don't yield it here — we emit a
+            # single terminal turn_done below, merging usage if present.
+            captured_usage = None
+            for event in events:
+                if event.get("type") == "turn_done":
+                    if event.get("usage") is not None:
+                        captured_usage = event["usage"]
+                    continue
+                yield event
 
             if final_text and not emitted_text:
                 yield {"role": "assistant", "type": "text", "text": final_text}
@@ -281,11 +310,14 @@ class CodexRuntime:
                 self._history.append({"role": "user", "text": text})
                 if final_text:
                     self._history.append({"role": "assistant", "text": final_text})
-                yield {
+                terminal: AgentEvent = {
                     "type": "turn_done",
                     "session_id": None,
                     "cost_usd": None,
                 }
+                if captured_usage is not None:
+                    terminal["usage"] = captured_usage
+                yield terminal
         finally:
             try:
                 output_path.unlink(missing_ok=True)
@@ -427,62 +459,70 @@ class CodexRuntime:
         )
 
     def _jsonl_to_event(self, line: str) -> AgentEvent | None:
+        """Translate one line of `codex exec --json` stdout into a viewer event.
+
+        Schema (per OpenAI Codex CLI docs):
+        - thread.started / turn.started: bookkeeping, dropped.
+        - turn.completed: carries a `usage` block with token counts; we
+          surface it as turn_done so the backend can merge token usage into
+          its own terminal turn_done.
+        - turn.failed: dropped (could become a visible error in future).
+        - error: top-level error message, surfaced as-is.
+        - item.started: a unit of work begins. The real payload is at
+          `item` with `type` in {command_execution, agent_message,
+          reasoning, file_change, mcp_tool_call, web_search, plan,
+          plan_update}. We surface most as tool_use; reasoning is dropped
+          as noise.
+        - item.updated: streaming deltas — not yet surfaced.
+        - item.completed: only useful for `agent_message` (final assistant
+          text). Other completions are no-ops because the started event
+          already showed the tool was invoked.
+        """
         try:
             data = json.loads(line)
         except json.JSONDecodeError:
-            return {"role": "assistant", "type": "thinking", "text": line}
+            return None
 
         event_type = data.get("type") or ""
+        if not event_type:
+            return None
+
         if event_type == "error":
             return {"type": "error", "text": str(data.get("message") or data)}
 
-        text = (
-            data.get("text")
-            or data.get("message")
-            or data.get("delta")
-            or data.get("content")
-        )
-        if text and event_type in {
-            "assistant.message",
-            "assistant.text",
-            "message",
-            "response.output_text.delta",
-            "response.output_text.done",
-        }:
-            return {"role": "assistant", "type": "text", "text": str(text)}
+        if event_type in ("thread.started", "turn.started", "turn.failed"):
+            return None
 
-        if event_type.endswith(".started"):
-            stem = event_type.rsplit(".started", 1)[0]
-            # Codex CLI emits conversation bookkeeping (thread, turn,
-            # response, reasoning) as `*.started` events too. These aren't
-            # tool calls — skip them so the audit log and viewer activity
-            # strip stay focused on actual work.
-            if stem in ("thread", "turn", "response", "reasoning"):
+        if event_type == "turn.completed":
+            out: AgentEvent = {"type": "turn_done"}
+            usage = data.get("usage")
+            if usage is not None:
+                out["usage"] = usage
+            return out
+
+        item = data.get("item") or {}
+        item_type = item.get("type")
+
+        if event_type == "item.started":
+            if not item:
                 return None
-            # Codex wraps actual tool invocations in `item.started` events
-            # whose payload describes the real operation. Try to lift the
-            # specific name out of common fields; fall back to the stem.
-            raw_name = (
-                data.get("name")
-                or data.get("command")
-                or data.get("tool")
-                or data.get("kind")
-                or (data.get("item") or {}).get("kind")
-                or (data.get("item") or {}).get("type")
-                or (data.get("item") or {}).get("name")
-                or stem
-            )
+            if item_type == "reasoning":
+                return None
             return {
                 "role": "assistant",
                 "type": "tool_use",
-                "name": str(raw_name),
-                "input": data,
+                "name": str(item_type or "unknown"),
+                "input": item,
             }
-        if event_type.endswith(".completed") or event_type.endswith(".done"):
+
+        if event_type == "item.completed":
+            if item_type == "agent_message":
+                text = item.get("text") or ""
+                if text:
+                    return {"role": "assistant", "type": "text", "text": str(text)}
             return None
 
-        tool_name = data.get("name") or data.get("command")
-        if tool_name:
-            return {"role": "assistant", "type": "tool_use", "name": str(tool_name), "input": data}
+        if event_type == "item.updated":
+            return None
 
         return None

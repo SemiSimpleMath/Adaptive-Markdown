@@ -607,9 +607,16 @@ async def reset_runtime_session(model: str | None = None):
 
 def _summarize_tool(name: str, inp: dict | None) -> str:
     """One-line description of a tool_use event for the stdout audit log.
-    Covers Claude SDK tools (Read/Edit/Write/Glob/Grep/Bash/Web*) and the
-    Codex CLI call kinds the adapter forwards (apply_patch / local_shell
-    / function_call / web_search). Unknown names fall through verbatim."""
+
+    Covers two distinct event shapes:
+    - Claude SDK tool names (Read, Edit, Write, Glob, Grep, Bash, Web*) with
+      Claude's flat input dict.
+    - Codex CLI item types from `codex exec --json` (command_execution,
+      file_change, mcp_tool_call, web_search, plan, plan_update, agent_message)
+      where `inp` is the item payload itself.
+
+    Unknown names fall through with a generic payload-key hint.
+    """
     if not isinstance(inp, dict):
         inp = {}
     name = name or ""
@@ -624,7 +631,37 @@ def _summarize_tool(name: str, inp: dict | None) -> str:
         return f"Bash     {cmd[:100]}"
     if name == "WebFetch":  return f"WebFetch {inp.get('url', '?')}"
     if name == "WebSearch": return f"WebSearch {inp.get('query', '?')}"
-    # Codex CLI tool/call kinds
+    # Codex CLI item types
+    if name == "command_execution":
+        cmd = inp.get("command", "")
+        if isinstance(cmd, list):
+            cmd = " ".join(str(x) for x in cmd)
+        return f"command_execution {str(cmd).strip()[:100]}"
+    if name == "file_change":
+        changes = inp.get("changes") or []
+        paths = [c.get("path", "?") for c in changes if isinstance(c, dict)]
+        if not paths:
+            return "file_change (no changes)"
+        head = paths[0]
+        more = f" +{len(paths) - 1}" if len(paths) > 1 else ""
+        return f"file_change {head}{more}"
+    if name == "mcp_tool_call":
+        server = inp.get("server", "?")
+        tool = inp.get("tool", "?")
+        return f"mcp_tool_call {server}/{tool}"
+    if name == "web_search":
+        return f"web_search {str(inp.get('query', '')).strip()[:80]}"
+    if name in ("plan", "plan_update"):
+        text = str(inp.get("text", "")).strip().splitlines()
+        head = text[0][:80] if text else ""
+        return f"plan      {head}"
+    if name == "agent_message":
+        # Surfaces in audit log if backend ever logs message items as tools;
+        # normally this path isn't hit because agent_message is yielded as
+        # a text event, not a tool_use.
+        return f"agent_message"
+    # Legacy Codex names from earlier CLI versions — keep them recognizable
+    # so older Codex builds don't fall through to the generic branch.
     if name in ("apply_patch", "apply_patch_call"):
         return "apply_patch"
     if name in ("shell", "local_shell", "local_shell_call"):
@@ -634,13 +671,12 @@ def _summarize_tool(name: str, inp: dict | None) -> str:
         return f"shell    {str(cmd).strip()[:100]}"
     if name == "function_call":
         return f"function {inp.get('name', '?')}"
-    if name in ("web_search", "web_search_call"):
-        return "web_search"
     # Unknown tool — surface distinguishing keys from the payload so the
     # audit log isn't useless. Helpful while we're still learning what
     # Codex CLI's JSONL events look like in the wild.
     interesting = [k for k in ("name", "command", "tool", "kind", "path",
-                                "file_path", "type", "id") if inp.get(k)]
+                                "file_path", "query", "type", "id")
+                   if inp.get(k)]
     if interesting:
         extras = ", ".join(f"{k}={str(inp[k])[:40]!r}" for k in interesting[:3])
         return f"{name:<8s} {extras}"
@@ -663,15 +699,31 @@ async def run_turn(text: str):
                 etype = event.get("type", "")
                 if etype == "tool_use":
                     tool_count += 1
-                    print(f"[tool] {_summarize_tool(event.get('name', ''), event.get('input'))}",
-                          flush=True)
+                    # A malformed payload shouldn't abort the turn — the audit
+                    # log is a diagnostic, not load-bearing.
+                    try:
+                        summary = _summarize_tool(
+                            event.get("name", ""), event.get("input"),
+                        )
+                    except Exception as e:
+                        summary = (
+                            f"{event.get('name', '?')} "
+                            f"(summary failed: {type(e).__name__})"
+                        )
+                    print(f"[tool] {summary}", flush=True)
                 elif etype == "turn_done":
                     c = event.get("cost_usd")
                     if isinstance(c, (int, float)):
                         cost = c
                 await state.broadcast(event)
         except Exception as e:
-            await state.broadcast({"type": "error", "text": f"agent error: {e!r}"})
+            import traceback
+            print(f"[turn] FAILED with {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            await state.broadcast({
+                "type": "error",
+                "text": f"agent error: {type(e).__name__}: {e}",
+            })
         finally:
             dt = time.time() - t0
             cost_str = f", cost=${cost:.4f}" if cost is not None else ""
