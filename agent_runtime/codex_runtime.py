@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import AsyncIterator
 
+import validators
+
 from .base import AgentEvent
 
 
@@ -319,7 +321,71 @@ class CodexRuntime:
                             "current chat."
                         ),
                     }
-                changed_paths = self._changed_paths(before_docs)
+                # Content validators (JS / CSS / SVG / directives) on each
+                # changed .md. On failure: revert to before_state and yield
+                # an error so the user can re-prompt. Codex can't feed the
+                # errors back into its own tool-use loop the way Claude does
+                # via PostToolUse `additionalContext` — see ROADMAP
+                # "Validator retry-loop parity (deferred — has trigger)".
+                raw_changed_paths = self._changed_paths(before_docs)
+                changed_paths: list[Path] = []
+                for path in raw_changed_paths:
+                    try:
+                        new_text = (
+                            path.read_text(encoding="utf-8")
+                            if path.exists() else ""
+                        )
+                    except (OSError, UnicodeDecodeError):
+                        new_text = ""
+                    errors = (
+                        validators.validate_doc(new_text)
+                        if new_text.strip() else []
+                    )
+                    if not errors:
+                        changed_paths.append(path)
+                        continue
+                    before_text = before_state.get(path.resolve())
+                    try:
+                        if before_text:
+                            with path.open(
+                                "w", encoding="utf-8", newline="",
+                            ) as f:
+                                f.write(before_text)
+                            action = "reverted"
+                        else:
+                            path.unlink(missing_ok=True)
+                            action = "deleted new file"
+                        print(
+                            f"[codex-validate] FAILED on {path}, "
+                            f"{action} ({len(errors)} err)",
+                            flush=True,
+                        )
+                        for ve in errors:
+                            print(
+                                f"[codex-validate]   {ve['kind']} @ line "
+                                f"{ve['line']}:",
+                                flush=True,
+                            )
+                            for ln in ve["message"].split("\n"):
+                                print(
+                                    f"[codex-validate]     {ln}",
+                                    flush=True,
+                                )
+                    except OSError as e:
+                        print(
+                            f"[codex-validate] revert failed: {e}",
+                            flush=True,
+                        )
+                    try:
+                        rel = path.resolve().relative_to(
+                            self.root,
+                        ).as_posix()
+                    except ValueError:
+                        rel = str(path)
+                    yield {
+                        "type": "error",
+                        "text": validators.format_for_agent(errors, rel),
+                    }
                 if self.finalize_md_edit_fn:
                     author = f"agent:codex:{self._current_model}"
                     for path in changed_paths:

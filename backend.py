@@ -67,6 +67,7 @@ def load_dotenv(path: Path) -> None:
 
 load_dotenv(ROOT / ".env")
 
+import validators
 from agent_runtime import DEFAULT_PROVIDER, create_runtime
 from agent_runtime.base import AgentRuntime
 
@@ -521,6 +522,32 @@ state = State()
 # Per-tool-call stash so post-edit hook can diff for drift + derive patches.
 # Keyed by tool_use_id; value: {"file_path": str, "before_text": str, "snap_id": str}
 _pre_edit_state: dict[str, dict] = {}
+# Per-file consecutive-revert counter for the validator retry-cap.
+_validate_revert_count: dict[str, int] = {}
+
+
+def _safe_inline_doc_path(rel: str) -> Path | None:
+    """Resolve a chat-context doc path to an absolute Path iff it's safe
+    to inline into the agent's preamble — under examples/ or docs/, .md
+    suffix, exists as a regular file. Otherwise None.
+
+    Read-side counterpart to `_validate_agent_write_path`. The chat
+    context comes from the client, so a malicious or buggy front-end
+    could otherwise coax the backend into reading and inlining arbitrary
+    files (`.env`, `backend.py`, `/etc/passwd`) into agent context."""
+    if not rel or not rel.endswith(".md"):
+        return None
+    try:
+        p = (ROOT / rel).resolve()
+        rel_posix = p.relative_to(ROOT).as_posix()
+    except (ValueError, OSError):
+        return None
+    if not (rel_posix.startswith("examples/")
+            or rel_posix.startswith("docs/")):
+        return None
+    if not p.is_file():
+        return None
+    return p
 
 
 def _validate_agent_write_path(file_path: str) -> tuple[bool, str]:
@@ -649,8 +676,11 @@ async def finalize_md_edit(
 
 
 async def post_tool_use_hook(input_data, tool_use_id, context):
-    """After an Edit/Write to a .md file: detect track-id drift, derive a
-    patch from the before/after pair, then broadcast doc_changed."""
+    """After an Edit/Write to a .md file: validate the post-edit content;
+    on validation failure, revert to the pre-edit snapshot and surface the
+    errors to the agent via `additionalContext` so it retries inside the
+    same turn. On success, detect track-id drift, derive a patch, and
+    broadcast doc_changed (via finalize_md_edit)."""
     tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
     if not file_path or not file_path.endswith(".md"):
@@ -659,8 +689,122 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
     stash = _pre_edit_state.pop(tool_use_id, None)
     before_text = stash["before_text"] if stash else None
     snap_id = stash["snap_id"] if stash else None
+    p = Path(file_path)
+
+    # Validate post-edit content. Empty file (e.g., the edit deleted
+    # everything) skips validation — that's a deliberate-looking action,
+    # not the kind of corruption the validators are meant to catch.
+    try:
+        new_text = p.read_text(encoding="utf-8") if p.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        new_text = ""
+    errors = validators.validate_doc(new_text) if new_text.strip() else []
+
+    # Debug capture: when AM_DEBUG_CAPTURE is set, dump every attempted
+    # post-edit content keyed by tool_use_id so we can autopsy what the
+    # agent actually wrote before the revert. Captured regardless of
+    # validation outcome so we see passing edits too.
+    if os.environ.get("AM_DEBUG_CAPTURE"):
+        try:
+            cap_dir = ROOT / "tests" / "_haiku_capture"
+            cap_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%H%M%S-%f")
+            cap_path = cap_dir / (
+                f"{stamp}-{(tool_use_id or 'unknown')[:8]}-"
+                f"{'FAIL' if errors else 'OK'}.md"
+            )
+            cap_path.write_text(new_text, encoding="utf-8")
+            if errors:
+                err_path = cap_path.with_suffix(".errors.txt")
+                err_path.write_text(
+                    "\n".join(
+                        f"[{e['kind']} @ line {e['line']}] {e['message']}"
+                        for e in errors
+                    ),
+                    encoding="utf-8",
+                )
+        except OSError as e:
+            print(f"[debug-capture] failed: {e}", flush=True)
+
+    if errors:
+        # Revert: restore before_text if the file existed pre-edit, or
+        # delete it if this was a brand-new file. Skip finalize_md_edit
+        # entirely — on-disk state matches what the viewer already has.
+        try:
+            if before_text:
+                with p.open("w", encoding="utf-8", newline="") as f:
+                    f.write(before_text)
+                action = "reverted"
+            else:
+                p.unlink(missing_ok=True)
+                action = "deleted new file"
+            # Log the actual error content so the operator can see what
+            # tripped the validator — not just the count. When the agent
+            # gets stuck in a retry loop, this is the visibility that
+            # tells you whether the validator is catching a real bug or
+            # misfiring on valid code.
+            print(
+                f"[validate] FAILED on {file_path}, {action} "
+                f"({len(errors)} err); telling agent",
+                flush=True,
+            )
+            for e in errors:
+                print(
+                    f"[validate]   {e['kind']} @ line {e['line']}:",
+                    flush=True,
+                )
+                for ln in e["message"].split("\n"):
+                    print(f"[validate]     {ln}", flush=True)
+        except OSError as e:
+            print(f"[validate] revert failed: {e}", flush=True)
+        # Retry-cap: track consecutive reverts on this file. After 3 in a
+        # row, every further failure tells the agent the loop is stopped
+        # — durable until a clean edit lands. Without durability the
+        # counter would reset on the cap-fire turn and the agent could
+        # burn three more turns before the next cap.
+        revert_count = _validate_revert_count.get(file_path, 0) + 1
+        _validate_revert_count[file_path] = revert_count
+        agent_msg = validators.format_for_agent(errors, file_path)
+        if revert_count == 3:
+            # First time at the cap — surface to the reader so they know
+            # something's going sideways with the agent.
+            await state.broadcast({
+                "role": "assistant", "type": "text",
+                "text": (
+                    f"_Validator rejected 3 consecutive edits to "
+                    f"`{file_path}`. The retry loop is now paused — the "
+                    "agent has been told to stop and report. Most recent "
+                    "error:_\n\n```\n" + agent_msg + "\n```"
+                ),
+            })
+        if revert_count >= 3:
+            # Tell the agent unambiguously to stop trying and report.
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": (
+                        f"RETRY LOOP STOPPED. This is failure #{revert_count} "
+                        f"on {file_path} in a row. Do NOT attempt another "
+                        "Edit on this file in this turn. Reply to the "
+                        "reader: explain what you tried to do, paste the "
+                        "validator error verbatim, and ask them to "
+                        "intervene (clear chat, restore from history, or "
+                        "rephrase the request). The next clean edit on "
+                        "this file resets the counter.\n\n" + agent_msg
+                    ),
+                }
+            }
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": agent_msg,
+            }
+        }
+    # Clean edit — reset the consecutive-revert counter for this file.
+    _validate_revert_count.pop(file_path, None)
+
     await finalize_md_edit(
-        Path(file_path),
+        p,
         before_text,
         snap_id,
         author=f"agent:{state.current_model}",
@@ -908,13 +1052,49 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 # Echo user's text verbatim.
                 await state.broadcast({"role": "user", "type": "text", "text": text})
 
-                # Augment prompt with doc path + focused blocks.
+                # Augment prompt with doc contents (inlined) + focused blocks.
+                # Pre-loading the active doc into context spares the agent a
+                # Read tool round-trip every turn — for AM, the doc IS the
+                # subject of the conversation, so the agent will Read it
+                # almost always. Inlining is amortized by prompt caching
+                # across turns where the doc doesn't change. Soft cap of
+                # 50 KB; above that, fall back to Read-on-demand.
+                INLINE_DOC_CAP = 50 * 1024
                 preamble = []
+                doc_inlined = False
                 if doc:
-                    preamble.append(
-                        f'The reader is viewing the document at "{doc}". When you '
-                        "need to edit, this is the file."
-                    )
+                    safe_path = _safe_inline_doc_path(doc)
+                    doc_text: str | None = None
+                    if safe_path is not None:
+                        try:
+                            doc_text = safe_path.read_text(encoding="utf-8")
+                        except (OSError, UnicodeDecodeError):
+                            doc_text = None
+                    if doc_text is not None and len(doc_text) <= INLINE_DOC_CAP:
+                        lines = doc_text.count("\n") + 1
+                        preamble.append(
+                            f'The reader is viewing "{doc}" ({lines} lines, '
+                            f"{len(doc_text)} bytes). When you need to edit, "
+                            "this is the file. The current contents are "
+                            "inlined below — do NOT call Read on this file "
+                            "unless YOU have edited it since this preamble "
+                            "(your own edits invalidate the inlined copy):\n\n"
+                            f"=== doc:{doc} ===\n{doc_text}\n=== end doc ==="
+                        )
+                        doc_inlined = True
+                    elif doc_text is not None:
+                        preamble.append(
+                            f'The reader is viewing "{doc}" ('
+                            f"{len(doc_text)} bytes — too large to inline). "
+                            "When you need to edit, this is the file. Use "
+                            "`Read` with `offset`/`limit` to load specific "
+                            "ranges rather than the whole file."
+                        )
+                    else:
+                        preamble.append(
+                            f'The reader is viewing the document at "{doc}". '
+                            "When you need to edit, this is the file."
+                        )
                 if len(selections) == 1:
                     s = selections[0]
                     info = []
@@ -927,12 +1107,18 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         f"```\n{excerpt}\n```"
                         if excerpt else ""
                     )
+                    surrounding_note = (
+                        "Surrounding context is in the inlined doc above — "
+                        "no need to Read."
+                        if doc_inlined else
+                        "If you need surrounding context, Read the source file."
+                    )
                     preamble.append(
                         f"The reader has clicked on a specific block, giving it "
                         f"focus ({info_str}).{excerpt_block}\n\n"
                         "When they say 'this', 'here', 'it', 'this section', "
-                        "'under it', 'above it' — they mean this focused block. "
-                        "If you need surrounding context, Read the source file."
+                        "'under it', 'above it' — they mean this focused "
+                        f"block. {surrounding_note}"
                     )
                 elif len(selections) > 1:
                     blocks_str = "\n\n".join(

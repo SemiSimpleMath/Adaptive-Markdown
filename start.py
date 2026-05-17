@@ -17,8 +17,89 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
+import subprocess
 import sys
+import threading
 from pathlib import Path
+
+
+def _ensure_utf8_mode() -> None:
+    """Ensure Python is running with UTF-8 mode active.
+
+    Python's I/O encoding is fixed at interpreter startup based on the
+    environment AT THAT MOMENT. Setting `PYTHONUTF8=1` inside the program
+    is too late — it only affects child processes, not this one.
+
+    On Windows, the default locale encoding (cp1252) causes the Claude
+    Agent SDK's subprocess pipes to choke on characters like `⟹` / `→` /
+    `π` flowing through the agent context. The reliable fix is to detect
+    we're not in UTF-8 mode and re-exec Python with `PYTHONUTF8=1` set.
+
+    The first call to start.py respawns once; the relaunched interpreter
+    has UTF-8 enabled everywhere (sys.stdin/out/err, locale.getpreferred-
+    encoding(), and crucially the subprocess pipe defaults).
+    """
+    if sys.platform != "win32":
+        return  # Linux/macOS terminals are already UTF-8
+
+    already_utf8 = (
+        getattr(sys.flags, "utf8_mode", 0) == 1
+        or os.environ.get("PYTHONUTF8") == "1"
+        or os.environ.get("AM_UTF8_RESPAWNED") == "1"
+    )
+    if already_utf8:
+        # Belt-and-suspenders: also set the Windows console to UTF-8 so
+        # subprocesses we spawn (the Claude Code CLI under Bun, the Codex
+        # CLI) inherit a UTF-8 console too.
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+        except Exception:
+            os.system("chcp 65001 > nul 2>&1")
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+        return
+
+    # Not in UTF-8 mode — respawn with the right env. Loop guard via
+    # AM_UTF8_RESPAWNED prevents infinite restart if PYTHONUTF8 somehow
+    # doesn't stick.
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["AM_UTF8_RESPAWNED"] = "1"
+    rc = subprocess.call([sys.executable] + sys.argv, env=env)
+    sys.exit(rc)
+
+
+_ensure_utf8_mode()
+
+
+def _install_sigint_watchdog(grace_seconds: float = 3.0) -> None:
+    """Ctrl+C on Windows can block in aiohttp's task cancellation while the
+    IOCP event loop waits for pending overlapped reads (open WebSocket, idle
+    HTTP keep-alive). Give the normal cleanup `grace_seconds` to finish;
+    after that, force-exit so the user isn't stuck staring at a hung shell.
+
+    The signal handler still raises KeyboardInterrupt so the loop's cleanup
+    path runs (and main()'s existing `os._exit(0)` fires when it returns).
+    The thread-based timer is a safety net for the case where cleanup
+    itself hangs — main() never gets a chance to call `os._exit(0)`."""
+    def handler(signum, frame):
+        sys.stderr.write(
+            f"\n[shutdown] Ctrl+C received; force-exit in {grace_seconds}s "
+            f"if cleanup hangs (Windows IOCP quirk).\n"
+        )
+        sys.stderr.flush()
+        timer = threading.Timer(grace_seconds, lambda: os._exit(130))
+        timer.daemon = True
+        timer.start()
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGINT, handler)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -87,6 +168,8 @@ def main() -> None:
 
     if args.port is not None:
         os.environ["PORT"] = str(args.port)
+
+    _install_sigint_watchdog(3.0)
 
     # Import backend AFTER setting env vars — DEFAULT_PROVIDER is captured at
     # agent_runtime import time, which happens during backend import.
