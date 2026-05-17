@@ -1205,12 +1205,101 @@ _UPLOAD_MAX_BYTES = 1 * 1024 * 1024  # 1 MB safety cap for text imports
 _ASSET_MAX_BYTES = 25 * 1024 * 1024  # 25 MB cap for asset drops (images, audio, etc.)
 _BINARY_CONVERT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB cap for PDF/DOCX/... imports
 
-# Binary doc formats we convert server-side via markitdown. These don't go
-# through the text-flow's NUL-byte guard / UTF-8 decode; they're saved as
-# `original.<ext>` and the converter writes the resulting markdown to
-# `current.md` + `baseline.md`. Reader gets a fully-converted doc back —
-# the agent is not in the loop for the conversion itself.
+# Binary doc formats we convert server-side. These don't go through the
+# text-flow's NUL-byte guard / UTF-8 decode; they're saved as `original.<ext>`
+# and the converter writes the resulting markdown to `current.md` +
+# `baseline.md`. Reader gets a fully-converted doc back — the agent is not
+# in the loop for the conversion itself.
 _BINARY_CONVERT_EXTS = {".pdf", ".docx", ".pptx", ".xlsx"}
+
+# PDF conversion: Claude vision is the default (dramatically better at
+# preserving headings, lists, math). Markitdown is the offline fallback.
+# AM_PDF_BACKEND env var: "auto" (default — Claude, fall back to markitdown),
+# "claude" (Claude only, fail loud), "markitdown" (skip Claude entirely).
+_PDF_CLAUDE_MAX_BYTES = 30 * 1024 * 1024  # margin under Anthropic's 32MB limit
+_PDF_CLAUDE_MODEL = "claude-sonnet-4-5"
+_PDF_CLAUDE_MAX_TOKENS = 16384
+
+_PDF_CONVERT_PROMPT = (
+    "Convert this PDF to adaptive-markdown. Strict rules:\n"
+    "- Use `#` for the document title, `##` for top-level sections, "
+    "`###` for subsections.\n"
+    "- Use markdown bullet lists (`- `) for any list of items in the source.\n"
+    "- Preserve inline emphasis: bold becomes `**...**`, italic becomes "
+    "`_..._`.\n"
+    "- Preserve math: inline as `$...$`, display as `$$...$$`. If the source "
+    "has expressions written as plain text (e.g. `x(t+1) = f(x(t))`), render "
+    "them as math.\n"
+    "- Tables become GitHub-flavored markdown tables.\n"
+    "- Do NOT add commentary, summary, or any preamble. Output ONLY the "
+    "markdown body of the document.\n"
+    "- Preserve all paragraphs verbatim where possible; do not paraphrase."
+)
+
+
+async def _convert_pdf_via_claude(pdf_bytes: bytes) -> str | None:
+    """Send a PDF to Claude and ask for adaptive-markdown back. Returns the
+    converted text on success, or None if Claude is unavailable / failed
+    (caller should fall back to markitdown)."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("[upload:pdf:claude] no ANTHROPIC_API_KEY — skipping Claude path",
+              flush=True)
+        return None
+    if len(pdf_bytes) > _PDF_CLAUDE_MAX_BYTES:
+        print(f"[upload:pdf:claude] PDF too large ({len(pdf_bytes)}B > "
+              f"{_PDF_CLAUDE_MAX_BYTES}B) — skipping Claude path", flush=True)
+        return None
+
+    def _call() -> str | None:
+        import base64
+        import json as _json
+        import urllib.request
+        import urllib.error
+        body = {
+            "model": _PDF_CLAUDE_MODEL,
+            "max_tokens": _PDF_CLAUDE_MAX_TOKENS,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": base64.b64encode(pdf_bytes).decode("ascii"),
+                        },
+                    },
+                    {"type": "text", "text": _PDF_CONVERT_PROMPT},
+                ],
+            }],
+        }
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=_json.dumps(body).encode("utf-8"),
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                payload = _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", errors="replace")[:500]
+            print(f"[upload:pdf:claude] HTTP {e.code}: {err}", flush=True)
+            return None
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print(f"[upload:pdf:claude] network error: {e!r}", flush=True)
+            return None
+        parts = payload.get("content", []) or []
+        text = "\n".join(
+            p.get("text", "") for p in parts if p.get("type") == "text"
+        ).strip()
+        return text or None
+
+    return await asyncio.to_thread(_call)
 
 # Extensions that the doc-area drop UX treats as "asset" (lands under
 # docs/<slug>/assets/) rather than as a new-doc candidate. Anything not in
@@ -1238,14 +1327,6 @@ async def _upload_binary_doc(
     Saves the upload as `docs/<slug>/original.<ext>`, runs markitdown to
     produce markdown, and writes the result to `current.md` + `baseline.md`.
     The agent is not involved — the reader gets a fully-converted doc back."""
-    if _MARKITDOWN is None:
-        return web.json_response(
-            {"error": "markitdown is not installed on this server. "
-                      "Install with `pip install \"markitdown[pdf]\"` to enable "
-                      "PDF / DOCX / XLSX / PPTX import."},
-            status=501,
-        )
-
     # Stream-read with a 25 MB cap. We accept binary bytes verbatim — no
     # NUL guard, no decode. The blocklist check earlier in the path already
     # rejected dangerous types; PDF/DOCX/etc. are inert document containers.
@@ -1266,6 +1347,24 @@ async def _upload_binary_doc(
     if total == 0:
         return web.json_response({"error": "empty file"}, status=400)
 
+    # Decide which converter(s) to try. For PDFs the default is Claude
+    # vision with a markitdown fallback; non-PDFs go straight to markitdown.
+    backend_pref = os.environ.get("AM_PDF_BACKEND", "auto").lower()
+    if ext == ".pdf":
+        try_claude = backend_pref in ("auto", "claude")
+        try_markitdown_fallback = backend_pref != "claude"
+    else:
+        try_claude = False
+        try_markitdown_fallback = True
+    if not try_claude and _MARKITDOWN is None:
+        return web.json_response(
+            {"error": "markitdown is not installed on this server. "
+                      "Install with `pip install \"markitdown[pdf]\"` to enable "
+                      "DOCX / XLSX / PPTX import, or set ANTHROPIC_API_KEY for "
+                      "Claude-based PDF conversion."},
+            status=501,
+        )
+
     # Slug derivation matches upload_md's text path so the resulting doc
     # looks identical to a plain .md upload from the outside.
     raw_stem = Path(raw_name).stem
@@ -1282,28 +1381,48 @@ async def _upload_binary_doc(
     original_path = doc_dir / f"original{ext}"
     original_path.write_bytes(raw)
 
-    # Convert via markitdown. markitdown is synchronous and can be slow on
-    # large PDFs; run in a thread so we don't block the event loop.
-    try:
-        result = await asyncio.to_thread(_MARKITDOWN.convert, str(original_path))
-        md_text = (result.text_content or "").strip()
-    except Exception as e:
-        # Conversion failed — roll back the doc dir so we don't leave an
+    md_text: str | None = None
+    converter_used = ""
+
+    # Path A: Claude vision (PDF only, env permitting, API key present).
+    if try_claude:
+        md_text = await _convert_pdf_via_claude(raw)
+        if md_text:
+            converter_used = "claude"
+
+    # Path B: markitdown (fallback for PDF, primary for DOCX/XLSX/PPTX).
+    if not md_text and try_markitdown_fallback and _MARKITDOWN is not None:
+        try:
+            result = await asyncio.to_thread(
+                _MARKITDOWN.convert, str(original_path),
+            )
+            md_text = (result.text_content or "").strip()
+            if md_text:
+                converter_used = "markitdown"
+        except Exception as e:
+            print(
+                f"[upload:binary] markitdown failed: {type(e).__name__}: {e}",
+                flush=True,
+            )
+
+    if not md_text:
+        # Both converters declined / failed — roll back so we don't leave an
         # orphan original.<ext> with no markdown beside it.
         import shutil
         shutil.rmtree(doc_dir, ignore_errors=True)
-        return web.json_response(
-            {"error": f"conversion failed: {type(e).__name__}: {e}"},
-            status=500,
-        )
-    if not md_text:
-        import shutil
-        shutil.rmtree(doc_dir, ignore_errors=True)
+        if backend_pref == "claude" and ext == ".pdf":
+            return web.json_response(
+                {"error": "Claude PDF conversion failed and fallback is "
+                          "disabled (AM_PDF_BACKEND=claude). Check the server "
+                          "log for the API error."},
+                status=502,
+            )
         return web.json_response(
             {"error": "conversion produced empty markdown — the file may be "
-                      "image-only or unreadable"},
+                      "image-only, unreadable, or all converters failed"},
             status=422,
         )
+
     md_text = md_text.replace("\r\n", "\n").replace("\r", "\n") + "\n"
 
     current_md = doc_dir / "current.md"
@@ -1318,7 +1437,7 @@ async def _upload_binary_doc(
     await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": slug})
     print(
         f"[upload:binary] docs/{slug}/current.md "
-        f"({len(md_text)} chars from {total}B {ext})",
+        f"({len(md_text)} chars from {total}B {ext} via {converter_used})",
         flush=True,
     )
     return web.json_response({
@@ -1327,6 +1446,7 @@ async def _upload_binary_doc(
         "name": current_md.name,
         "kind": ext,
         "converted": True,
+        "converter": converter_used,
     })
 
 

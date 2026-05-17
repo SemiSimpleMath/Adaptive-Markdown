@@ -1379,7 +1379,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // instead so the reader knows something is happening during conversion.
     const isBinaryConvert = BINARY_CONVERT_EXTS.has(ext);
     if (isBinaryConvert) {
-      appendMessage('user', 'Converting `' + file.name + '`…');
+      appendMessage(
+        'user',
+        'Converting `' + file.name + '`… for PDFs this can take a couple of minutes — Claude is reading the rendered pages.'
+      );
     } else if (!isMarkdown) {
       const ok = await showConvertPreview(file, ext, !isKnown);
       if (!ok) return;
