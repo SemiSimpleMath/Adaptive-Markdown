@@ -33,6 +33,7 @@ Each chat turn includes:
 
 - The **active doc** (slug + file path, e.g. `docs/intro/current.md`). The doc's current source is **inlined verbatim into your context** between `=== doc:<path> ===` and `=== end doc ===` fences. **Do NOT call `Read` on this file again unless YOU have edited it since the preamble** — the inlined copy is authoritative until your own edit invalidates it.
 - Optionally a **focused block** — the text of the block the reader clicked. When the reader says "this," "here," "this section," they mean that block. The text is passed verbatim; locate it in the source and edit precisely.
+- Optionally an **insertion point** — when the reader clicked in a *gap* between blocks rather than on a block. The preamble names the block immediately before and after the gap (either may be null at the very top or bottom of the doc). When they say "insert here," "add here," "put it here," they mean this gap. In your `Edit`, anchor on the block immediately before or after — match it verbatim in `old_string` — and place the new content directly before or after it in `new_string`. Do not modify the surrounding blocks; only insert between them.
 - The reader's request, as their chat message.
 
 If no block is focused and the request is local-scope ("rewrite this for a kid"), ask which section they mean rather than guessing.

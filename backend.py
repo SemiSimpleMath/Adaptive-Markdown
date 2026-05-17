@@ -958,6 +958,11 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 selections = ctx.get("selections") or []
                 if not isinstance(selections, list):
                     selections = []
+                # Insertion is the "click in a gap between blocks" affordance.
+                # Mutually exclusive with selections client-side.
+                insertion = ctx.get("insertion")
+                if not isinstance(insertion, dict):
+                    insertion = None
 
                 # Lazy-mint track_ids for any focused selections that lack one.
                 # The block becomes stably-identifiable from this point on.
@@ -1056,6 +1061,40 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         "'under it', 'above it' — they mean this focused "
                         f"block. {surrounding_note}"
                     )
+                elif insertion is not None:
+                    before = insertion.get("before") if isinstance(insertion.get("before"), dict) else None
+                    after = insertion.get("after") if isinstance(insertion.get("after"), dict) else None
+
+                    def _fmt(b: dict | None, role: str) -> str:
+                        if not b:
+                            return f"  - {role}: (none — {'top' if role == 'block-before' else 'end'} of doc)"
+                        bits = []
+                        if b.get("id"):    bits.append(f'id="{b["id"]}"')
+                        if b.get("label"): bits.append(f'label="{b["label"]}"')
+                        ex = (b.get("excerpt") or "").strip()
+                        if len(ex) > 240:
+                            ex = ex[:240] + "…"
+                        info = ", ".join(bits) if bits else "(unlabeled block)"
+                        ex_line = f"\n    excerpt: ```{ex}```" if ex else ""
+                        return f"  - {role}: {info}{ex_line}"
+
+                    preamble.append(
+                        "The reader has chosen an INSERTION POINT (not a "
+                        "block selection). New content should be inserted "
+                        "into the doc at this gap:\n\n"
+                        + _fmt(before, "block-before") + "\n"
+                        + _fmt(after, "block-after") + "\n\n"
+                        "When they say 'insert here', 'add here', 'put it "
+                        "here', they mean this gap. In your Edit, use the "
+                        "block immediately before OR after as the "
+                        "`old_string` anchor — match that block verbatim, "
+                        "then put the new content directly before or after "
+                        "it in `new_string`. Do not modify the surrounding "
+                        "blocks; only insert between them. If the request "
+                        "is also for content that conceptually belongs "
+                        "elsewhere (e.g. 'add it at the top of the doc'), "
+                        "honor the explicit instruction over this gap."
+                    )
                 elif len(selections) > 1:
                     blocks_str = "\n\n".join(
                         f"Block {i+1}: id={s.get('id') or '(none)'!r}, "
@@ -1073,7 +1112,8 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
                 prompt = ("[" + "\n\n".join(preamble) + "]\n\n" + text
                           if preamble else text)
-                print(f"[ws] chat doc={doc!r} selections={len(selections)}",
+                print(f"[ws] chat doc={doc!r} selections={len(selections)}"
+                      f"{' insertion' if insertion else ''}",
                       flush=True)
                 asyncio.create_task(run_turn(prompt))
 

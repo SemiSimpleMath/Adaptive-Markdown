@@ -758,6 +758,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentAssistantMsg = null;
   let currentSelections = [];      // array of {id, label, excerpt, element}
   let selectedEls = new Set();     // DOM nodes currently selected
+  // Insertion mode: when the reader clicks in a gap between blocks instead
+  // of on a block. Mutually exclusive with currentSelections. Shape:
+  //   { before: blockInfo|null, after: blockInfo|null }
+  // where null means "at the top/bottom of the doc."
+  let currentInsertion = null;
 
   // ---- View tabs ----------------------------------------------------------
   const VIEW_TYPES = [
@@ -1048,6 +1053,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       'article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,article,section,div.directive) { cursor: pointer; }',
       'article#body .hover-block { outline: 1px dashed var(--am-hover-outline); outline-offset: 6px; }',
       'article#body .selected-block, article#body .selected-block.hover-block { outline: 2px solid var(--am-selection-outline); outline-offset: 6px; border-radius: 2px; }',
+      // Insertion marker — appears when the reader clicks in a gap between
+      // blocks. A slim horizontal line at the chosen insertion point.
+      'article#body .insertion-marker { height: 2px; background: var(--am-selection-outline); margin: 6px 0; border-radius: 1px; pointer-events: none; opacity: 0.85; }',
       'article#body [data-kind="theorem"], article#body [data-kind="lemma"], article#body [data-kind="proposition"], article#body [data-kind="corollary"] { color: var(--am-theorem-color); font-style: italic; }',
       'article#body [data-kind="definition"] { color: var(--am-definition-color); font-style: italic; }',
       'article#body [data-kind="example"], article#body [data-kind="solution"], article#body [data-kind="proof"] { color: var(--am-example-color); font-style: italic; }',
@@ -1104,7 +1112,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       'function keyOf(el){const t=el.dataset.trackId;if(t)return "t:"+t;const a=el.id;if(a)return "a:"+a;const x=el.textContent.replace(/\\s+/g," ").trim().slice(0,200);return "x:"+x;}',
       'const selectedKeys=new Set();',
       'function applySelection(){for(const ch of body.children){if(selectedKeys.has(keyOf(ch)))ch.classList.add("selected-block");else ch.classList.remove("selected-block");}}',
-      'document.addEventListener("click",e=>{if(e.target.closest("a"))return;const b=findBlock(e.target);const add=e.shiftKey||e.metaKey||e.ctrlKey;e.preventDefault();try{const s=document.getSelection();if(s)s.removeAllRanges();}catch(_){}if(b)b.classList.remove("hover-block");if(!b){selectedKeys.clear();}else if(!add){selectedKeys.clear();selectedKeys.add(keyOf(b));}else{const k=keyOf(b);if(selectedKeys.has(k))selectedKeys.delete(k);else selectedKeys.add(k);}applySelection();parent.postMessage({type:"selection",block:b?blockInfo(b):null,additive:add},"*");});',
+      // Insertion marker: clicking in a gap between blocks chooses an
+      // insertion point (rather than selecting a block). The marker is a
+      // direct child of body so it sits at the chosen gap.
+      'let insertionMarker=null;',
+      'function clearInsertionMarker(){if(insertionMarker){insertionMarker.remove();insertionMarker=null;}}',
+      'function findInsertionPosition(y){let before=null,after=null;for(const ch of body.children){if(ch===insertionMarker)continue;const r=ch.getBoundingClientRect();if(r.bottom<=y)before=ch;else if(r.top>=y){after=ch;break;}}return{before:before,after:after};}',
+      'function setInsertionMarker(beforeEl,afterEl){clearInsertionMarker();insertionMarker=document.createElement("div");insertionMarker.className="insertion-marker";if(afterEl)body.insertBefore(insertionMarker,afterEl);else if(beforeEl){if(beforeEl.nextSibling)body.insertBefore(insertionMarker,beforeEl.nextSibling);else body.appendChild(insertionMarker);}else body.appendChild(insertionMarker);}',
+      'document.addEventListener("click",e=>{if(e.target.closest("a"))return;const b=findBlock(e.target);const add=e.shiftKey||e.metaKey||e.ctrlKey;e.preventDefault();try{const s=document.getSelection();if(s)s.removeAllRanges();}catch(_){}if(b)b.classList.remove("hover-block");if(b){clearInsertionMarker();if(!add){selectedKeys.clear();selectedKeys.add(keyOf(b));}else{const k=keyOf(b);if(selectedKeys.has(k))selectedKeys.delete(k);else selectedKeys.add(k);}applySelection();parent.postMessage({type:"selection",block:blockInfo(b),additive:add},"*");return;}if(e.target.closest("article#body")){selectedKeys.clear();applySelection();const pos=findInsertionPosition(e.clientY);setInsertionMarker(pos.before,pos.after);parent.postMessage({type:"insert_click",before:pos.before?blockInfo(pos.before):null,after:pos.after?blockInfo(pos.after):null},"*");return;}selectedKeys.clear();clearInsertionMarker();applySelection();parent.postMessage({type:"selection",block:null,additive:add},"*");});',
       'body.addEventListener("mouseover",e=>{const b=findBlock(e.target);if(b&&!selectedKeys.has(keyOf(b)))b.classList.add("hover-block");});',
       'body.addEventListener("mouseout",e=>{const b=findBlock(e.target);if(b)b.classList.remove("hover-block");});',
       'document.addEventListener("dragover",e=>{e.preventDefault();if(e.dataTransfer)e.dataTransfer.dropEffect="copy";});',
@@ -1116,6 +1131,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // canvas animations, and event listeners survive the edit.
       'function setContent(html,metaTxt){',
       'const se=document.scrollingElement||document.documentElement;const sy=se.scrollTop;',
+      // The marker is iframe-only state; the new HTML doesn't include it.
+      // Drop it before morphdom diffs so it doesn't show up as a "removed"
+      // node it has to discard mid-frame.
+      'clearInsertionMarker();',
       'const oldScripts=new Map();body.querySelectorAll("script").forEach(s=>oldScripts.set(scriptKey(s),s));',
       'const tmp=document.createElement("article");tmp.id="body";tmp.innerHTML=html||"";',
       'if(window.morphdom){window.morphdom(body,tmp,{childrenOnly:true,onBeforeElUpdated(f,t){if(f.isEqualNode(t))return false;return true;}});}else{body.innerHTML=html||"";}',
@@ -1128,7 +1147,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       'renderMath();',
       'se.scrollTop=sy;',
       '}',
-      'window.addEventListener("message",e=>{const d=e.data||{};if(d.type==="setContent"){setContent(d.html,d.meta);}else if(d.type==="setSelections"){selectedKeys.clear();for(const sel of(d.selections||[])){if(!sel)continue;if(sel.track_id)selectedKeys.add("t:"+sel.track_id);else if(sel.anchor_id)selectedKeys.add("a:"+sel.anchor_id);else if(sel.excerpt)selectedKeys.add("x:"+String(sel.excerpt).replace(/\\s+/g," ").trim().slice(0,200));}applySelection();}else if(d.type==="scrollToAnchor"){const el=document.getElementById(d.id);if(el)el.scrollIntoView({behavior:"smooth",block:"start"});}});',
+      'window.addEventListener("message",e=>{const d=e.data||{};if(d.type==="setContent"){setContent(d.html,d.meta);}else if(d.type==="setSelections"){selectedKeys.clear();for(const sel of(d.selections||[])){if(!sel)continue;if(sel.track_id)selectedKeys.add("t:"+sel.track_id);else if(sel.anchor_id)selectedKeys.add("a:"+sel.anchor_id);else if(sel.excerpt)selectedKeys.add("x:"+String(sel.excerpt).replace(/\\s+/g," ").trim().slice(0,200));}applySelection();}else if(d.type==="clearInsertion"){clearInsertionMarker();}else if(d.type==="scrollToAnchor"){const el=document.getElementById(d.id);if(el)el.scrollIntoView({behavior:"smooth",block:"start"});}});',
       'parent.postMessage({type:"iframeReady"},"*");',
       '})();',
       '<\/script></body></html>',
@@ -1165,6 +1184,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // A click inside the iframe — also treat as "click outside the panel".
       if (historyPanel && !historyPanel.hidden) historyPanel.hidden = true;
       handleFrameSelection(data.block, !!data.additive);
+    } else if (data.type === 'insert_click') {
+      if (historyPanel && !historyPanel.hidden) historyPanel.hidden = true;
+      handleFrameInsert(data.before || null, data.after || null);
     } else if (data.type === 'fileDropped') {
       handleFrameDrop(data.files);
     } else if (data.type === 'dragenter') {
@@ -1186,8 +1208,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
 
   function handleFrameSelection(info, additive) {
+    // Any selection event implicitly cancels an insertion point.
+    if (currentInsertion) clearInsertion({ updateChip: false });
     if (!info) {
       if (currentSelections.length > 0) setSelections([]);
+      else updateSelectionChip();
       return;
     }
     const newSel = {
@@ -1207,6 +1232,53 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       }
     }
     setSelections(newList);
+  }
+
+  function handleFrameInsert(before, after) {
+    // Insertion is mutually exclusive with block-selection.
+    if (currentSelections.length > 0) setSelections([], { skipChip: true });
+    currentInsertion = { before: before, after: after };
+    updateSelectionChip();
+  }
+
+  function clearInsertion(opts) {
+    if (!currentInsertion) return;
+    currentInsertion = null;
+    // Also tell the iframe to drop its visual marker.
+    sendToFrame({ type: 'clearInsertion' });
+    if (!opts || opts.updateChip !== false) updateSelectionChip();
+  }
+
+  function describeInsertion() {
+    if (!currentInsertion) return '';
+    const b = currentInsertion.before, a = currentInsertion.after;
+    const bl = b && (b.label || b.id) ? (b.label || b.id) : null;
+    const al = a && (a.label || a.id) ? (a.label || a.id) : null;
+    if (bl && al) return `Insert between "${bl}" and "${al}"`;
+    if (bl) return `Insert after "${bl}" (end of doc)`;
+    if (al) return `Insert before "${al}" (top of doc)`;
+    return 'Insert into empty doc';
+  }
+
+  function updateSelectionChip() {
+    if (currentInsertion) {
+      selectionLabel.textContent = describeInsertion();
+      selectionBar.classList.add('visible');
+      return;
+    }
+    if (currentSelections.length > 0) {
+      const labels = currentSelections.map(s => s.label || s.id || 'block');
+      if (labels.length === 1) {
+        selectionLabel.textContent = labels[0];
+      } else {
+        const head = labels.slice(0, 2).join(', ');
+        const tail = labels.length > 2 ? `, +${labels.length - 2} more` : '';
+        selectionLabel.textContent = `${labels.length} blocks: ${head}${tail}`;
+      }
+      selectionBar.classList.add('visible');
+      return;
+    }
+    selectionBar.classList.remove('visible');
   }
 
   // Read the first ~2KB of a File as decoded UTF-8 text for the preview pane.
@@ -1719,37 +1791,31 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return { id, track_id: trackId, anchor_id: anchorId, label, excerpt, element: el };
   }
 
-  function setSelections(list) {
+  function setSelections(list, opts) {
     const wasNonEmpty = currentSelections.length > 0;
+    const filtered = (list || []).filter(s => s && (s.id || s.label || s.excerpt));
+    // Non-empty selection clears insertion (mutually exclusive). Use the
+    // skipChip path so we don't double-render the chip.
+    if (filtered.length > 0 && currentInsertion) {
+      clearInsertion({ updateChip: false });
+    }
     // Clear visual outlines from previous selections (alt views only — the
     // iframe manages its own outline based on the actual element clicked).
     selectedEls.forEach(el => el.classList.remove('selected-block'));
     selectedEls.clear();
-    currentSelections = (list || []).filter(s => s && (s.id || s.label || s.excerpt));
+    currentSelections = filtered;
     for (const s of currentSelections) {
       if (s.element) {
         s.element.classList.add('selected-block');
         selectedEls.add(s.element);
       }
     }
-    if (currentSelections.length > 0) {
-      const labels = currentSelections.map(s => s.label || s.id || 'block');
-      if (labels.length === 1) {
-        selectionLabel.textContent = labels[0];
-      } else {
-        const head = labels.slice(0, 2).join(', ');
-        const tail = labels.length > 2 ? `, +${labels.length - 2} more` : '';
-        selectionLabel.textContent = `${labels.length} blocks: ${head}${tail}`;
-      }
-      selectionBar.classList.add('visible');
-    } else {
-      selectionBar.classList.remove('visible');
-      // Only mirror to the iframe when *clearing* — for additions, the
-      // iframe already applied the outline locally on click. Re-sending
-      // the new list back to the iframe would clear blocks whose ID we
-      // don't know (plain paragraphs without {#anchor} / track_id).
-      if (wasNonEmpty) sendToFrame({ type: 'setSelections', selections: [] });
+    if (currentSelections.length === 0 && wasNonEmpty) {
+      // Tell the iframe to drop its outlines. (Re-sending the list on
+      // adds would clear blocks whose ID we don't know.)
+      sendToFrame({ type: 'setSelections', selections: [] });
     }
+    if (!opts || opts.skipChip !== true) updateSelectionChip();
   }
 
   body.addEventListener('mouseover', (e) => {
@@ -1790,7 +1856,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     setSelections(newList);
   });
 
-  selectionClear.addEventListener('click', () => setSelections([]));
+  selectionClear.addEventListener('click', () => {
+    clearInsertion({ updateChip: false });
+    setSelections([]);
+  });
 
   // ---- WebSocket ----------------------------------------------------------
   function connect() {
@@ -1918,6 +1987,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       return;
     }
     if (data.type === 'doc_changed') {
+      // Insertion is one-shot; once the doc has changed, the gap is stale.
+      if (currentInsertion) clearInsertion();
       if (data.doc === currentDoc) loadDoc(docUrl(data.doc));
       return;
     }
@@ -2067,7 +2138,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const text = input.value.trim();
     if (!text || sendBtn.disabled) return;
     const payload = { type: 'chat', text, model: currentModel };
-    if (currentDoc || currentSelections.length > 0) {
+    if (currentDoc || currentSelections.length > 0 || currentInsertion) {
       payload.context = {
         doc: currentDoc || null,
         selections: currentSelections.map(s => ({
@@ -2078,6 +2149,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           excerpt: s.excerpt,
         })),
       };
+      if (currentInsertion) {
+        payload.context.insertion = {
+          before: currentInsertion.before || null,
+          after: currentInsertion.after || null,
+        };
+      }
     }
     ws.send(JSON.stringify(payload));
     input.value = '';
