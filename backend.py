@@ -73,6 +73,16 @@ import validators
 from agent_runtime import DEFAULT_PROVIDER, create_runtime
 from agent_runtime.base import AgentRuntime
 
+# Optional: markitdown is used for server-side conversion of binary docs
+# (PDF, DOCX, XLSX, PPTX). If it isn't installed, the import endpoint for
+# those formats returns 501 rather than crashing the whole backend.
+try:
+    from markitdown import MarkItDown  # type: ignore
+    _MARKITDOWN = MarkItDown()
+except Exception:  # pragma: no cover - optional dep
+    MarkItDown = None  # type: ignore
+    _MARKITDOWN = None
+
 
 def list_all_docs() -> list[str]:
     """Slugs of every doc — one per docs/<slug>/ folder that has a current.md
@@ -1193,6 +1203,14 @@ async def serve_static(request: web.Request) -> web.Response:
 # relative path the client should switch to.
 _UPLOAD_MAX_BYTES = 1 * 1024 * 1024  # 1 MB safety cap for text imports
 _ASSET_MAX_BYTES = 25 * 1024 * 1024  # 25 MB cap for asset drops (images, audio, etc.)
+_BINARY_CONVERT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB cap for PDF/DOCX/... imports
+
+# Binary doc formats we convert server-side via markitdown. These don't go
+# through the text-flow's NUL-byte guard / UTF-8 decode; they're saved as
+# `original.<ext>` and the converter writes the resulting markdown to
+# `current.md` + `baseline.md`. Reader gets a fully-converted doc back —
+# the agent is not in the loop for the conversion itself.
+_BINARY_CONVERT_EXTS = {".pdf", ".docx", ".pptx", ".xlsx"}
 
 # Extensions that the doc-area drop UX treats as "asset" (lands under
 # docs/<slug>/assets/) rather than as a new-doc candidate. Anything not in
@@ -1209,6 +1227,109 @@ _ASSET_EXTS = {
 }
 
 
+async def _upload_binary_doc(
+    request: web.Request,
+    field: "web.BodyPartReader",
+    raw_name: str,
+    ext: str,
+) -> web.Response:
+    """Server-side conversion path for binary doc formats (PDF, DOCX, ...).
+
+    Saves the upload as `docs/<slug>/original.<ext>`, runs markitdown to
+    produce markdown, and writes the result to `current.md` + `baseline.md`.
+    The agent is not involved — the reader gets a fully-converted doc back."""
+    if _MARKITDOWN is None:
+        return web.json_response(
+            {"error": "markitdown is not installed on this server. "
+                      "Install with `pip install \"markitdown[pdf]\"` to enable "
+                      "PDF / DOCX / XLSX / PPTX import."},
+            status=501,
+        )
+
+    # Stream-read with a 25 MB cap. We accept binary bytes verbatim — no
+    # NUL guard, no decode. The blocklist check earlier in the path already
+    # rejected dangerous types; PDF/DOCX/etc. are inert document containers.
+    total = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = await field.read_chunk(size=64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _BINARY_CONVERT_MAX_BYTES:
+            return web.json_response(
+                {"error": "file too large (max 25MB for binary imports)"},
+                status=413,
+            )
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    if total == 0:
+        return web.json_response({"error": "empty file"}, status=400)
+
+    # Slug derivation matches upload_md's text path so the resulting doc
+    # looks identical to a plain .md upload from the outside.
+    raw_stem = Path(raw_name).stem
+    slug_base = re.sub(r"[^a-z0-9-]+", "-", raw_stem.lower()).strip("-")
+    if not slug_base or not _DOC_SLUG_RE.match(slug_base):
+        slug_base = "uploaded"
+    slug = slug_base
+    counter = 1
+    while (DOCS_ROOT / slug).exists():
+        counter += 1
+        slug = f"{slug_base}-{counter}"
+    doc_dir = DOCS_ROOT / slug
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    original_path = doc_dir / f"original{ext}"
+    original_path.write_bytes(raw)
+
+    # Convert via markitdown. markitdown is synchronous and can be slow on
+    # large PDFs; run in a thread so we don't block the event loop.
+    try:
+        result = await asyncio.to_thread(_MARKITDOWN.convert, str(original_path))
+        md_text = (result.text_content or "").strip()
+    except Exception as e:
+        # Conversion failed — roll back the doc dir so we don't leave an
+        # orphan original.<ext> with no markdown beside it.
+        import shutil
+        shutil.rmtree(doc_dir, ignore_errors=True)
+        return web.json_response(
+            {"error": f"conversion failed: {type(e).__name__}: {e}"},
+            status=500,
+        )
+    if not md_text:
+        import shutil
+        shutil.rmtree(doc_dir, ignore_errors=True)
+        return web.json_response(
+            {"error": "conversion produced empty markdown — the file may be "
+                      "image-only or unreadable"},
+            status=422,
+        )
+    md_text = md_text.replace("\r\n", "\n").replace("\r", "\n") + "\n"
+
+    current_md = doc_dir / "current.md"
+    baseline_md = doc_dir / "baseline.md"
+    # newline="" prevents Python's text-mode CRLF translation on Windows
+    with current_md.open("w", encoding="utf-8", newline="") as f:
+        f.write(md_text)
+    with baseline_md.open("w", encoding="utf-8", newline="") as f:
+        f.write(md_text)
+
+    ensure_doc_ids()
+    await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": slug})
+    print(
+        f"[upload:binary] docs/{slug}/current.md "
+        f"({len(md_text)} chars from {total}B {ext})",
+        flush=True,
+    )
+    return web.json_response({
+        "path": f"docs/{slug}/current.md",
+        "slug": slug,
+        "name": current_md.name,
+        "kind": ext,
+        "converted": True,
+    })
+
+
 async def upload_md(request: web.Request) -> web.Response:
     _require_localhost_origin(request)
     reader = await request.multipart()
@@ -1222,6 +1343,13 @@ async def upload_md(request: web.Request) -> web.Response:
 
     raw_name = field.filename or "uploaded.md"
     ext = Path(raw_name).suffix.lower()
+
+    # Binary-doc imports (PDF, DOCX, XLSX, PPTX) go through markitdown
+    # server-side. They're not text and would fail the NUL-byte guard below;
+    # branch out before any of the text-handling.
+    if ext in _BINARY_CONVERT_EXTS:
+        return await _upload_binary_doc(request, field, raw_name, ext)
+
     # Well-known text-ish formats route through the conversion path directly.
     # Anything else is allowed when the client passes ?allow_unknown=1 —
     # the agent then attempts a best-effort conversion.

@@ -1373,10 +1373,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (!proceed) return;
       allowUnknown = true;
     }
-    // Non-.md files become agent input — show a preview gate. .md files are
-    // uploaded directly and shown in the viewer; no agent involvement, no
-    // gate needed.
-    if (!isMarkdown) {
+    // Binary doc formats (PDF, DOCX, etc.) skip the preview gate because
+    // markitdown converts them server-side; the agent isn't in the loop and
+    // a raw-bytes preview would just show gibberish. Show a chat status
+    // instead so the reader knows something is happening during conversion.
+    const isBinaryConvert = BINARY_CONVERT_EXTS.has(ext);
+    if (isBinaryConvert) {
+      appendMessage('user', 'Converting `' + file.name + '`…');
+    } else if (!isMarkdown) {
       const ok = await showConvertPreview(file, ext, !isKnown);
       if (!ok) return;
     }
@@ -2413,7 +2417,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // Drop a .md and it loads directly. Drop a .tex/.txt/.rst/.org and the agent
   // is auto-prompted to convert it to adaptive markdown; the viewer switches
   // when the new file lands.
-  const SUPPORTED_DROP_EXTS = ['.md', '.tex', '.txt', '.rst', '.org'];
+  const SUPPORTED_DROP_EXTS = ['.md', '.tex', '.txt', '.rst', '.org', '.pdf', '.docx', '.xlsx', '.pptx'];
+  // These get converted to markdown server-side via markitdown — no preview
+  // dialog (the raw bytes are binary; preview-as-text shows gibberish), no
+  // agent in the loop.
+  const BINARY_CONVERT_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx']);
   // Asset drop: when one of these lands on the doc area (NOT the + Doc
   // overlay), it goes to docs/<currentDoc>/assets/ rather than creating
   // a new doc. Mirror of _ASSET_EXTS in backend.py.
