@@ -48,6 +48,8 @@ Try one of these (you don't need to click anything first — these are page-wide
 - **"Make every letter on the page fall to the bottom when my mouse touches it."**
 - **"Add a small game in the corner that I can play while I read."**
 
+> **Tip:** Haiku is fast and usually fine for small visual touches. For bigger coding jobs (a working game, a non-trivial animation, anything with state machines or careful layout) switch the model dropdown to **Sonnet** or **Opus** — the larger models produce cleaner code on the first try, which more than offsets their per-turn cost. You can swap mid-conversation; it just starts a fresh chat.
+
 When the agent is done, open the **Source** tab and scroll to the bottom. You'll see a literal `<script>` block (or `<style>`) that the agent wrote. This page isn't a render of a doc — it *is* the doc, executing.
 
 <div class="pinned">
