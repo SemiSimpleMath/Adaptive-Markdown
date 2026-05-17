@@ -1809,12 +1809,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     };
   }
 
+  // Resolve a doc slug ("intro") to its fetchable URL.
+  function docUrl(slug) { return '/docs/' + slug + '/current.md'; }
+
   function populateDocs(docs) {
     docSelect.innerHTML = '';
-    for (const d of docs) {
+    for (const slug of docs) {
       const opt = document.createElement('option');
-      opt.value = d;
-      opt.textContent = d;
+      opt.value = slug;
+      opt.textContent = slug;
       docSelect.appendChild(opt);
     }
     if (currentDoc) docSelect.value = currentDoc;
@@ -1824,7 +1827,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const newDoc = docSelect.value;
     if (!newDoc || newDoc === currentDoc) return;
     currentDoc = newDoc;
-    loadDoc('/' + newDoc);
+    loadDoc(docUrl(newDoc));
     const url = new URL(window.location);
     url.searchParams.set('doc', newDoc);
     history.replaceState(null, '', url);
@@ -1883,7 +1886,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       currentDoc = urlDoc || data.doc;
       if (Array.isArray(data.docs)) populateDocs(data.docs);
       if (Array.isArray(data.models)) populateModels(data.models, data.model);
-      loadDoc('/' + currentDoc);
+      loadDoc(docUrl(currentDoc));
       return;
     }
     if (data.type === 'docs') {
@@ -1897,7 +1900,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (data.doc && data.doc !== currentDoc) {
         currentDoc = data.doc;
         docSelect.value = data.doc;
-        loadDoc('/' + data.doc);
+        loadDoc(docUrl(data.doc));
         const url = new URL(window.location);
         url.searchParams.set('doc', data.doc);
         history.replaceState(null, '', url);
@@ -1915,7 +1918,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       return;
     }
     if (data.type === 'doc_changed') {
-      if (data.file === currentDoc) loadDoc('/' + data.file);
+      if (data.doc === currentDoc) loadDoc(docUrl(data.doc));
       return;
     }
     if (data.type === 'chat_reset') {

@@ -1,20 +1,20 @@
 """Adaptive Markdown backend: aiohttp WS server.
 
-Differences from v1:
-- No on-disk compile step. The browser renders markdown live.
-- doc_changed events carry the file path the agent modified; the viewer
-  fetches and DOM-patches in place.
-- Single skill: adaptive-markdown.
+Filesystem layout (doc-as-folder):
+  docs/<slug>/baseline.md   — immutable history-0 (tracked in git for examples)
+  docs/<slug>/current.md    — working copy the agent edits (gitignored)
+  docs/<slug>/snaps/        — pre-edit snapshots (gitignored)
+  docs/<slug>/original.<ext> — optional provenance, e.g. the .tex source
 
 Routes:
   GET  /                       -> index.html
-  GET  /<file path>            -> static files (examples/*.md, *.html)
+  GET  /docs/<slug>/current.md -> static doc fetch (also baseline.md)
   WS   /ws                     -> chat protocol
 
-WS protocol:
+WS protocol — `doc` fields are SLUGS (e.g. "intro"), not paths:
   server -> client:
-    {type:"ready", doc:"examples/intro.md", docs:["examples/intro.md",...]}
-    {type:"doc_changed", file:"examples/intro.md"}
+    {type:"ready", doc:"intro", docs:["intro","paper","textbook"]}
+    {type:"doc_changed", doc:"intro"}
     {role:"user", type:"text", text:"..."}
     {role:"assistant", type:"text"|"thinking", text:"..."}
     {role:"assistant", type:"tool_use", name:"...", input:{...}}
@@ -23,7 +23,7 @@ WS protocol:
     {type:"error", text:"..."}
 
   client -> server:
-    {type:"chat", text:"...", context:{doc, selections:[...]}}
+    {type:"chat", text:"...", context:{doc:"<slug>", selections:[...]}}
     {type:"new_chat"}
 """
 from __future__ import annotations
@@ -43,8 +43,10 @@ from aiohttp import web, WSMsgType
 
 
 ROOT = Path(__file__).resolve().parent
-EXAMPLES_DIR = ROOT / "examples"   # ship-with sample docs (intro/paper/textbook)
-DOCS_DIR = ROOT / "docs"            # user-imported / agent-created docs
+DOCS_ROOT = ROOT / "docs"            # all docs live under docs/<slug>/
+# Pre-tool-use writes are restricted to `docs/<slug>/current.md`; baseline.md
+# is the immutable history-0 and stays untouchable by the agent.
+_DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$", re.IGNORECASE)
 
 
 def load_dotenv(path: Path) -> None:
@@ -73,31 +75,54 @@ from agent_runtime.base import AgentRuntime
 
 
 def list_all_docs() -> list[str]:
-    """All .md docs across examples/ and docs/, sorted, as ROOT-relative POSIX paths."""
-    paths: list[str] = []
-    for d in (EXAMPLES_DIR, DOCS_DIR):
-        if d.exists():
-            paths.extend(p.relative_to(ROOT).as_posix() for p in d.glob("*.md"))
-    return sorted(paths)
+    """Slugs of every doc — one per docs/<slug>/ folder that has a current.md
+    (or a baseline.md awaiting first-run init). Sorted."""
+    if not DOCS_ROOT.exists():
+        return []
+    slugs: list[str] = []
+    for sub in DOCS_ROOT.iterdir():
+        if not sub.is_dir():
+            continue
+        if not _DOC_SLUG_RE.match(sub.name):
+            continue  # ignore weird names; agents never create them
+        if (sub / "current.md").exists() or (sub / "baseline.md").exists():
+            slugs.append(sub.name)
+    return sorted(slugs)
 
 
 def _doc_path_for(doc_param: str) -> Path | None:
-    """Resolve a 'examples/X.md' or 'docs/X.md' path param to an absolute Path.
+    """Resolve a doc slug (e.g. 'intro') to its current.md absolute Path.
 
-    Returns None if the param is malformed, escapes the doc roots, or points
-    into a subdirectory like docs/raw/."""
-    if not doc_param.endswith(".md"):
+    Returns None if the slug is malformed or the doc folder doesn't exist.
+    The agent only ever writes to current.md; baseline.md is immutable."""
+    if not doc_param or not _DOC_SLUG_RE.match(doc_param):
         return None
-    if not (doc_param.startswith("examples/") or doc_param.startswith("docs/")):
-        return None
-    p = (ROOT / doc_param).resolve()
+    p = (DOCS_ROOT / doc_param / "current.md").resolve()
     try:
-        p.relative_to(ROOT)
+        p.relative_to(DOCS_ROOT)
     except ValueError:
         return None
-    if p.parent not in (EXAMPLES_DIR, DOCS_DIR):
+    if p.parent.parent != DOCS_ROOT:
         return None
+    # current.md may not exist yet on a fresh clone; the boot init creates it
+    # from baseline.md. Either way, return the canonical path.
     return p
+
+
+def _doc_slug_from_path(file_path: str | Path) -> str | None:
+    """Inverse of _doc_path_for: given an absolute or ROOT-relative path that
+    points at docs/<slug>/current.md, return the slug. Otherwise None."""
+    try:
+        p = Path(file_path).resolve()
+        rel = p.relative_to(DOCS_ROOT)
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if len(parts) != 2 or parts[1] != "current.md":
+        return None
+    if not _DOC_SLUG_RE.match(parts[0]):
+        return None
+    return parts[0]
 
 
 # ---- Origin enforcement -------------------------------------------------
@@ -146,7 +171,7 @@ def _require_localhost_origin(request: web.Request) -> None:
 _check_static_origin = _require_localhost_origin
 
 
-DEFAULT_DOC = "examples/intro.md"
+DEFAULT_DOC = "intro"  # slug; resolves to docs/intro/current.md
 
 # ---- ULID-style sticky identifiers --------------------------------------
 # Short, time-sortable, prefixed. Format: {prefix}-{10ts}{6rand} = 18 chars.
@@ -178,11 +203,16 @@ _FRONTMATTER_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n")
 _HAS_DOC_ID_RE = re.compile(r"^doc_id\s*:", re.MULTILINE)
 
 def ensure_doc_ids() -> None:
-    """For each .md in EXAMPLES_DIR and DOCS_DIR, ensure its frontmatter has a doc_id."""
+    """Ensure every docs/<slug>/current.md has a `doc_id` in its frontmatter."""
+    if not DOCS_ROOT.exists():
+        return
     minted = 0
-    bases = [d for d in (EXAMPLES_DIR, DOCS_DIR) if d.exists()]
-    mds = sorted(md for d in bases for md in d.glob("*.md"))
-    for md in mds:
+    for sub in sorted(DOCS_ROOT.iterdir()):
+        if not sub.is_dir() or not _DOC_SLUG_RE.match(sub.name):
+            continue
+        md = sub / "current.md"
+        if not md.exists():
+            continue
         try:
             text = md.read_text(encoding="utf-8")
         except Exception:
@@ -200,9 +230,31 @@ def ensure_doc_ids() -> None:
         new_text = f"---\n{new_fm_body}\n---\n" + text[m.end():]
         md.write_text(new_text, encoding="utf-8")
         minted += 1
-        print(f"  minted doc_id={new_id} for {md.name}", flush=True)
+        print(f"  minted doc_id={new_id} for {sub.name}/current.md", flush=True)
     if minted:
         print(f"ensured doc_ids ({minted} new)", flush=True)
+
+
+def ensure_working_copies() -> None:
+    """First-run / fresh-clone init: for every docs/<slug>/baseline.md that
+    lacks a sibling current.md, copy baseline.md -> current.md. Ensures the
+    viewer always has something to render and the agent always has a file
+    to Edit, even on a freshly cloned repo where only baselines are in git."""
+    if not DOCS_ROOT.exists():
+        return
+    created = 0
+    for sub in sorted(DOCS_ROOT.iterdir()):
+        if not sub.is_dir() or not _DOC_SLUG_RE.match(sub.name):
+            continue
+        baseline = sub / "baseline.md"
+        current = sub / "current.md"
+        if baseline.exists() and not current.exists():
+            current.write_bytes(baseline.read_bytes())
+            created += 1
+            print(f"  initialised current.md for {sub.name} from baseline",
+                  flush=True)
+    if created:
+        print(f"ensured working copies ({created} new)", flush=True)
 
 
 # ---- Block-level tracking IDs (lazy mint on intent-to-reference) --------
@@ -302,141 +354,39 @@ def extract_track_ids(text: str) -> set[str]:
     return set(m.group(1) for m in _TRACK_ID_PATTERN.finditer(text))
 
 
-# ---- Patches: derived from before/after diffs ---------------------------
-# After each agent edit, we compute a structured patch by diffing the source
-# at block-level (using tracking IDs as block boundaries). Each changed
-# tracked block becomes one op. Untracked content changes are skipped from
-# the patch (they're agent-discretion before-IDs-existed work).
-
-_HISTORY_ROOT = ROOT  # `.history/<doc-stem>/<snap-id>.md` lives in here
+# ---- Snapshot store ------------------------------------------------------
+# Every doc folder owns its history: docs/<slug>/baseline.md is the immutable
+# history-0 (tracked in git for ship-with docs), docs/<slug>/snaps/snap-*.md
+# holds pre-edit captures. The structured "patches" sidecar that earlier
+# versions wrote has been retired — diffs can be recomputed from snapshots
+# if a review pipeline ever needs them.
 
 
 def _history_dir_for(doc_path: Path) -> Path:
-    return _HISTORY_ROOT / ".history" / doc_path.stem
+    """Per-doc snap directory: docs/<slug>/snaps/.
+
+    Caller passes the .../current.md (or .../baseline.md) — we use parent."""
+    return doc_path.parent / "snaps"
 
 
 def _history_zero_path(doc_path: Path) -> Path | None:
-    """Locate the history-0 snapshot for this doc.
+    """Locate the history-0 snapshot — always docs/<slug>/baseline.md.
 
-    Prefers a stable-named baseline.md (tracked in git for ship-with example
-    docs, so a fresh clone has an authoritative Reset target) over an
-    arbitrary ULID-prefixed snap. Falls back to the oldest snap-*.md if no
-    baseline.md exists — keeps user-uploaded docs/ working the same way."""
-    hist = _history_dir_for(doc_path)
-    baseline = hist / "baseline.md"
-    if baseline.exists():
-        return baseline
-    if hist.exists():
-        snaps = sorted(hist.glob("snap-*.md"))
-        if snaps:
-            return snaps[0]
-    return None
-
-
-def _patches_dir_for(doc_path: Path) -> Path:
-    return doc_path.with_suffix(doc_path.suffix + ".patches")
+    No more fallback to oldest snap: baseline.md is the canonical Reset
+    target. If it's missing on a user-created doc, the user needs to
+    explicitly establish a baseline (future "save as baseline" action)."""
+    baseline = doc_path.parent / "baseline.md"
+    return baseline if baseline.exists() else None
 
 
 def save_snapshot(doc_path: Path, text: str) -> str:
-    """Save text as a snapshot under .history/<stem>/, returning the snapshot id."""
+    """Save text as a snapshot under docs/<slug>/snaps/, returning the id."""
     d = _history_dir_for(doc_path)
     d.mkdir(parents=True, exist_ok=True)
+    # gen_id("snap") already prefixes "snap-" — don't double-prefix.
     snap_id = gen_id("snap")
     (d / f"{snap_id}.md").write_text(text, encoding="utf-8")
     return snap_id
-
-
-def _norm_block(text: str) -> str:
-    """Normalize block text for hashing: strip outer whitespace, collapse line endings."""
-    return text.replace("\r\n", "\n").strip()
-
-
-def _sha256(s: str) -> str:
-    return "sha256:" + hashlib.sha256(s.encode("utf-8")).hexdigest()
-
-
-def parse_tracked_blocks(text: str) -> dict[str, str]:
-    """Walk source; return {track_id: block_text} for every tracked block.
-
-    A "block" starts at the line containing `<!-- id:b-... -->` and continues
-    until the next tracking comment OR end of file. The tracking comment
-    itself is included as the first line of the block text.
-    """
-    blocks: dict[str, str] = {}
-    lines = text.split("\n")
-    cur_id: str | None = None
-    cur_start: int = 0
-    for i, line in enumerate(lines):
-        m = _TRACK_ID_PATTERN.match(line.strip())
-        if m:
-            if cur_id is not None:
-                blocks[cur_id] = "\n".join(lines[cur_start:i])
-            cur_id = m.group(1)
-            cur_start = i
-    if cur_id is not None:
-        blocks[cur_id] = "\n".join(lines[cur_start:])
-    return blocks
-
-
-def derive_patch_ops(before: str, after: str) -> list[dict]:
-    """Compare tracked blocks in before vs after; emit replace/insert/delete ops."""
-    before_blocks = parse_tracked_blocks(before)
-    after_blocks = parse_tracked_blocks(after)
-    ops: list[dict] = []
-    # Replaced or unchanged
-    for bid, before_text in before_blocks.items():
-        if bid in after_blocks:
-            after_text = after_blocks[bid]
-            if _norm_block(before_text) == _norm_block(after_text):
-                continue
-            ops.append({
-                "op": "replace",
-                "block_id": bid,
-                "before_hash": _sha256(_norm_block(before_text)),
-                "after_text": after_text,
-                "after_hash": _sha256(_norm_block(after_text)),
-            })
-        else:
-            # Block disappeared — alias map records the tombstone separately.
-            ops.append({
-                "op": "delete",
-                "block_id": bid,
-                "before_hash": _sha256(_norm_block(before_text)),
-            })
-    # Newly-appeared tracked IDs (rare in our model since the agent doesn't
-    # mint IDs — these typically come from lazy-mint or copy-paste).
-    for bid, after_text in after_blocks.items():
-        if bid not in before_blocks:
-            ops.append({
-                "op": "insert",
-                "block_id": bid,
-                "after_text": after_text,
-                "after_hash": _sha256(_norm_block(after_text)),
-            })
-    return ops
-
-
-def write_patch(doc_path: Path, parent_snap_id: str, ops: list[dict],
-                author: str = "agent") -> str | None:
-    """Write a patch JSON if there's at least one op; return its filename or None."""
-    if not ops:
-        return None
-    pdir = _patches_dir_for(doc_path)
-    pdir.mkdir(parents=True, exist_ok=True)
-    patch_id = gen_id("p")
-    payload = {
-        "patch_id": patch_id,
-        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "parent": parent_snap_id,
-        "doc": doc_path.name,
-        "author": author,
-        "ops": ops,
-    }
-    out = pdir / f"{patch_id}.json"
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"[patch] {patch_id} -> {doc_path.name} ({len(ops)} op{'s' if len(ops)!=1 else ''})",
-          flush=True)
-    return patch_id
 
 
 async def detect_id_drift(doc_path: Path, before_text: str) -> None:
@@ -526,26 +476,15 @@ _pre_edit_state: dict[str, dict] = {}
 _validate_revert_count: dict[str, int] = {}
 
 
-def _safe_inline_doc_path(rel: str) -> Path | None:
-    """Resolve a chat-context doc path to an absolute Path iff it's safe
-    to inline into the agent's preamble — under examples/ or docs/, .md
-    suffix, exists as a regular file. Otherwise None.
+def _safe_inline_doc_slug(slug: str) -> Path | None:
+    """Resolve a chat-context doc slug to the absolute path of its
+    current.md iff it's safe to inline into the agent's preamble.
 
     Read-side counterpart to `_validate_agent_write_path`. The chat
     context comes from the client, so a malicious or buggy front-end
-    could otherwise coax the backend into reading and inlining arbitrary
-    files (`.env`, `backend.py`, `/etc/passwd`) into agent context."""
-    if not rel or not rel.endswith(".md"):
-        return None
-    try:
-        p = (ROOT / rel).resolve()
-        rel_posix = p.relative_to(ROOT).as_posix()
-    except (ValueError, OSError):
-        return None
-    if not (rel_posix.startswith("examples/")
-            or rel_posix.startswith("docs/")):
-        return None
-    if not p.is_file():
+    could otherwise coax the backend into reading arbitrary files."""
+    p = _doc_path_for(slug)
+    if p is None or not p.is_file():
         return None
     return p
 
@@ -553,11 +492,11 @@ def _safe_inline_doc_path(rel: str) -> Path | None:
 def _validate_agent_write_path(file_path: str) -> tuple[bool, str]:
     """Decide whether the agent is allowed to Edit/Write a given path.
 
-    Allowed writes: direct children of examples/ or docs/, .md suffix only.
-    Anything else — project source files, dotfiles like .env, .history/ (the
-    backend manages snapshots), absolute paths like ~/.ssh, paths outside
-    ROOT — is rejected. This is the root-cause defense against a successful
-    prompt injection convincing the agent to clobber arbitrary files."""
+    The only writable target is `docs/<slug>/current.md`. Anything else —
+    baseline.md (the immutable history-0), snaps/, project source files,
+    dotfiles, absolute paths outside ROOT — is rejected. This is the
+    root-cause defense against a successful prompt injection convincing
+    the agent to clobber files outside its lane."""
     if not file_path:
         return False, "missing file_path"
     try:
@@ -565,23 +504,27 @@ def _validate_agent_write_path(file_path: str) -> tuple[bool, str]:
     except (OSError, ValueError):
         return False, f"invalid file_path: {file_path!r}"
     try:
-        p.relative_to(ROOT)
+        p.relative_to(DOCS_ROOT)
     except ValueError:
         return False, (
-            f"writes outside the project root are not permitted ({file_path!r}). "
-            "The agent may only modify .md files under examples/ or docs/."
+            f"writes outside docs/ are not permitted ({file_path!r}). "
+            "The agent may only modify docs/<slug>/current.md."
         )
-    if p.suffix.lower() != ".md":
+    if p.name != "current.md":
         return False, (
-            f"only .md files are writable by the agent ({p.name!r}). "
-            "Project source files (backend.py, index.html, etc.) and "
-            "configuration files (.env, .gitignore, SKILL.md) are off-limits."
+            f"only current.md is writable by the agent ({p.name!r}). "
+            "baseline.md is immutable (history-0); snaps/ is managed "
+            "by the backend; project files are off-limits."
         )
-    if p.parent not in (EXAMPLES_DIR, DOCS_DIR):
+    if p.parent.parent != DOCS_ROOT:
         return False, (
-            f"only files directly under examples/ or docs/ are writable "
-            f"({file_path!r}). Subdirectories like docs/raw/ and .history/ "
-            "are managed by the backend, not the agent."
+            f"writable paths must be docs/<slug>/current.md, not "
+            f"{file_path!r}. Slugs are direct children of docs/."
+        )
+    if not _DOC_SLUG_RE.match(p.parent.name):
+        return False, (
+            f"doc slug {p.parent.name!r} is not a valid name. Slugs must "
+            "match [a-zA-Z0-9][a-zA-Z0-9-]{0,63}."
         )
     return True, ""
 
@@ -633,14 +576,14 @@ async def finalize_md_edit(
     snap_id: str | None,
     author: str,
 ) -> None:
-    """Shared post-edit substrate work, used by both the Claude post-hook
+    """Shared post-edit substrate work — used by both the Claude post-hook
     (per Edit/Write) and the Codex per-turn finalizer.
 
     - If we have before_text but no snap_id, save a fresh snapshot now.
-      (Claude's pre-hook already snapshotted; Codex snapshots post-turn
-      from its in-memory before-state.)
-    - Derive id-drift + patches if before_text is available.
-    - Broadcast doc_changed; refresh the doc list if this was a new .md.
+      (Claude's pre-hook already snapshotted; Codex snapshots post-turn.)
+    - Detect any track-ID drift the agent may have introduced.
+    - Broadcast doc_changed (by slug); refresh the doc list if this is a
+      newly-visible doc.
     """
     if before_text is not None and snap_id is None:
         try:
@@ -653,26 +596,12 @@ async def finalize_md_edit(
             await detect_id_drift(doc_path, before_text)
         except Exception as e:
             print(f"[alias] drift detection failed: {e}", flush=True)
-        try:
-            after_text = doc_path.read_text(encoding="utf-8")
-            ops = derive_patch_ops(before_text, after_text)
-            if ops and snap_id:
-                write_patch(
-                    doc_path,
-                    parent_snap_id=snap_id,
-                    ops=ops,
-                    author=author,
-                )
-        except Exception as e:
-            print(f"[patch] derivation failed: {e}", flush=True)
 
-    try:
-        rel = doc_path.resolve().relative_to(ROOT).as_posix()
-    except ValueError:
-        rel = str(doc_path)
-    await state.broadcast({"type": "doc_changed", "file": rel})
-    if rel.endswith(".md") and (rel.startswith("examples/") or rel.startswith("docs/")):
-        await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": rel})
+    slug = _doc_slug_from_path(doc_path)
+    if slug:
+        await state.broadcast({"type": "doc_changed", "doc": slug})
+        # New doc visible to the doc list? Refresh.
+        await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": slug})
 
 
 async def post_tool_use_hook(input_data, tool_use_id, context):
@@ -1047,7 +976,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                                       f"selection label={s.get('label')!r}",
                                       flush=True)
                 if doc_changed_after_mint and doc:
-                    await state.broadcast({"type": "doc_changed", "file": doc})
+                    await state.broadcast({"type": "doc_changed", "doc": doc})
 
                 # Echo user's text verbatim.
                 await state.broadcast({"role": "user", "type": "text", "text": text})
@@ -1063,37 +992,44 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 preamble = []
                 doc_inlined = False
                 if doc:
-                    safe_path = _safe_inline_doc_path(doc)
+                    safe_path = _safe_inline_doc_slug(doc)
                     doc_text: str | None = None
                     if safe_path is not None:
                         try:
                             doc_text = safe_path.read_text(encoding="utf-8")
                         except (OSError, UnicodeDecodeError):
                             doc_text = None
+                    rel_for_agent = (
+                        safe_path.relative_to(ROOT).as_posix()
+                        if safe_path is not None else f"docs/{doc}/current.md"
+                    )
                     if doc_text is not None and len(doc_text) <= INLINE_DOC_CAP:
                         lines = doc_text.count("\n") + 1
                         preamble.append(
-                            f'The reader is viewing "{doc}" ({lines} lines, '
+                            f'The reader is viewing "{doc}" — file path '
+                            f'`{rel_for_agent}` ({lines} lines, '
                             f"{len(doc_text)} bytes). When you need to edit, "
                             "this is the file. The current contents are "
                             "inlined below — do NOT call Read on this file "
                             "unless YOU have edited it since this preamble "
                             "(your own edits invalidate the inlined copy):\n\n"
-                            f"=== doc:{doc} ===\n{doc_text}\n=== end doc ==="
+                            f"=== doc:{rel_for_agent} ===\n{doc_text}\n=== end doc ==="
                         )
                         doc_inlined = True
                     elif doc_text is not None:
                         preamble.append(
-                            f'The reader is viewing "{doc}" ('
-                            f"{len(doc_text)} bytes — too large to inline). "
-                            "When you need to edit, this is the file. Use "
-                            "`Read` with `offset`/`limit` to load specific "
-                            "ranges rather than the whole file."
+                            f'The reader is viewing "{doc}" — file path '
+                            f"`{rel_for_agent}` ({len(doc_text)} bytes — "
+                            "too large to inline). When you need to edit, "
+                            "this is the file. Use `Read` with `offset`/"
+                            "`limit` to load specific ranges rather than "
+                            "the whole file."
                         )
                     else:
                         preamble.append(
-                            f'The reader is viewing the document at "{doc}". '
-                            "When you need to edit, this is the file."
+                            f'The reader is viewing "{doc}" — file path '
+                            f"`{rel_for_agent}`. When you need to edit, "
+                            "this is the file."
                         )
                 if len(selections) == 1:
                     s = selections[0]
@@ -1176,16 +1112,22 @@ async def serve_static(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
     if not target.exists() or not target.is_file():
         raise web.HTTPNotFound()
-    # Allowlist: a small set of root files, plus markdown docs that live
-    # directly under examples/ or docs/ (not docs/raw/ or other subdirs).
+    # Allowlist: a small set of root files, or docs/<slug>/current.md or
+    # docs/<slug>/baseline.md. snaps/ is NOT served — it's local backend
+    # state, not viewer-facing.
     if target.parent == ROOT:
         if target.name not in _STATIC_ROOT_FILES:
             raise web.HTTPNotFound()
-    elif target.parent in (EXAMPLES_DIR, DOCS_DIR):
-        if target.suffix.lower() != ".md":
-            raise web.HTTPNotFound()
     else:
-        raise web.HTTPNotFound()
+        try:
+            doc_rel = target.relative_to(DOCS_ROOT)
+        except ValueError:
+            raise web.HTTPNotFound()
+        parts = doc_rel.parts
+        if (len(parts) != 2
+                or not _DOC_SLUG_RE.match(parts[0])
+                or parts[1] not in ("current.md", "baseline.md")):
+            raise web.HTTPNotFound()
     return web.FileResponse(target)
 
 
@@ -1244,24 +1186,26 @@ async def upload_md(request: web.Request) -> web.Response:
             status=415,
         )
     needs_conversion = ext != ".md"
-    # Sanitize: strip path components, keep only safe chars
-    safe_name = re.sub(r"[^\w.\-]", "_", Path(raw_name).name)
-    if not safe_name or safe_name == ext:
-        safe_name = f"uploaded{ext or '.bin'}"
-
-    # User uploads now go into docs/ (not examples/, which is reserved for ship-with).
-    if needs_conversion:
-        raw_dir = DOCS_DIR / "raw"
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        target = raw_dir / safe_name
-    else:
-        DOCS_DIR.mkdir(parents=True, exist_ok=True)
-        target = DOCS_DIR / safe_name
+    # Sanitize the raw filename into a slug (lowercase, alnum+dash).
+    raw_stem = Path(raw_name).stem
+    slug_base = re.sub(r"[^a-z0-9-]+", "-", raw_stem.lower()).strip("-")
+    if not slug_base or not _DOC_SLUG_RE.match(slug_base):
+        slug_base = "uploaded"
+    # Find a free slug under docs/.
+    slug = slug_base
     counter = 1
-    base = target.stem
-    while target.exists():
-        target = target.with_name(f"{base}-{counter}{ext}")
+    while (DOCS_ROOT / slug).exists():
         counter += 1
+        slug = f"{slug_base}-{counter}"
+    doc_dir = DOCS_ROOT / slug
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    # Non-.md drops land at docs/<slug>/original.<ext>; .md drops land at
+    # docs/<slug>/current.md (with a sibling baseline.md as the immutable
+    # history-0 derived from the upload).
+    if needs_conversion:
+        target = doc_dir / f"original{ext}"
+    else:
+        target = doc_dir / "current.md"
 
     # Stream-read with size cap
     total = 0
@@ -1304,43 +1248,45 @@ async def upload_md(request: web.Request) -> web.Response:
     rel = target.relative_to(ROOT).as_posix()
 
     if needs_conversion:
-        # Non-.md files: viewer will ask the agent to convert. No doc_id mint,
-        # no docs broadcast — the new .md doesn't exist yet.
-        target_name = f"docs/{Path(safe_name).stem}.md"
+        # Non-.md upload: lives at docs/<slug>/original.<ext>. The agent
+        # will convert it into docs/<slug>/current.md + baseline.md. No
+        # doc_id mint yet (no .md file exists).
         unknown_flag = ext not in KNOWN_EXTS
-        print(f"[upload:raw] {rel} ({total} bytes, kind={ext}, unknown={unknown_flag})", flush=True)
+        print(f"[upload:raw] {rel} ({total} bytes, slug={slug}, kind={ext},"
+              f" unknown={unknown_flag})", flush=True)
         return web.json_response({
             "path": rel,
+            "slug": slug,
             "name": target.name,
             "kind": ext,
             "needs_conversion": True,
             "unknown": unknown_flag,
-            "target": target_name,
+            "target": f"docs/{slug}/current.md",
         })
 
-    # .md upload: mint doc_id and tell connected viewers
+    # .md upload: also stamp baseline.md so Reset has something to restore.
+    baseline = doc_dir / "baseline.md"
+    if not baseline.exists():
+        baseline.write_bytes(target.read_bytes())
     ensure_doc_ids()
-    await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": rel})
-    print(f"[upload] {target.name} ({total} bytes)", flush=True)
-    return web.json_response({"path": rel, "name": target.name})
+    await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": slug})
+    print(f"[upload] docs/{slug}/current.md ({total} bytes)", flush=True)
+    return web.json_response({"path": rel, "slug": slug, "name": target.name})
 
 
 # ---- Reset to history-0 -------------------------------------------------
-# POST /reset?doc=examples/<name>.md restores the working copy from the
-# oldest snapshot under .history/<stem>/snap-*.md. ULID-prefixed names sort
-# by mint time, so the lexicographic minimum is the earliest snap — i.e.,
-# the state of the doc before any agent ever touched it (or before the
-# backend first served it, whichever came first). For the truly-shipped
-# version of a doc, `git checkout examples/<name>.md` is the answer.
+# POST /reset?doc=<slug> restores docs/<slug>/current.md from baseline.md
+# (the immutable history-0 sitting next to it in the doc folder). The
+# baseline is the canonical Reset target — no more "oldest snap" guesswork.
 
 
 async def list_history(request: web.Request) -> web.Response:
-    """GET /history?doc=examples/X.md|docs/X.md — list snapshots captured by pre-edit hook."""
+    """GET /history?doc=<slug> — list snapshots captured by pre-edit hook."""
     _require_localhost_origin(request)
     doc_param = request.query.get("doc", "").strip()
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
-        return web.json_response({"error": "bad doc path"}, status=400)
+        return web.json_response({"error": "bad doc slug"}, status=400)
     hist = _history_dir_for(doc_path)
     snaps = []
     if hist.exists():
@@ -1385,15 +1331,12 @@ def _snapshot_if_changed(doc_path: Path) -> str | None:
 
 
 async def undo_doc(request: web.Request) -> web.Response:
-    """POST /undo?doc=examples/X.md|docs/X.md — restore the most recent snapshot.
-
-    Convenience over /restore_snapshot when the user just wants "go back one"
-    without opening the history panel."""
+    """POST /undo?doc=<slug> — restore the most recent snapshot."""
     _require_localhost_origin(request)
     doc_param = request.query.get("doc", "").strip()
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
-        return web.json_response({"error": "bad doc path"}, status=400)
+        return web.json_response({"error": "bad doc slug"}, status=400)
     hist = _history_dir_for(doc_path)
     if not hist.exists():
         return web.json_response({"error": "no snapshots yet"}, status=404)
@@ -1404,21 +1347,21 @@ async def undo_doc(request: web.Request) -> web.Response:
                        # pre-existing newest, not to the safety snap itself
     _snapshot_if_changed(doc_path)
     doc_path.write_bytes(newest.read_bytes())
-    rel = doc_path.relative_to(ROOT).as_posix()
-    await state.broadcast({"type": "doc_changed", "file": rel})
+    slug = _doc_slug_from_path(doc_path) or doc_param
+    await state.broadcast({"type": "doc_changed", "doc": slug})
     snap_id = newest.stem.replace("snap-", "")
-    print(f"[undo] {rel} <- snap-{snap_id}", flush=True)
-    return web.json_response({"path": rel, "snap_id": snap_id, "ok": True})
+    print(f"[undo] docs/{slug}/current.md <- snap-{snap_id}", flush=True)
+    return web.json_response({"doc": slug, "snap_id": snap_id, "ok": True})
 
 
 async def restore_snapshot(request: web.Request) -> web.Response:
-    """POST /restore_snapshot?doc=...&snap_id=... — overwrite working copy with snapshot."""
+    """POST /restore_snapshot?doc=<slug>&snap_id=... — restore from a snap."""
     _require_localhost_origin(request)
     doc_param = request.query.get("doc", "").strip()
     snap_id = request.query.get("snap_id", "").strip()
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
-        return web.json_response({"error": "bad doc path"}, status=400)
+        return web.json_response({"error": "bad doc slug"}, status=400)
     if not snap_id or not re.fullmatch(r"[A-Za-z0-9_-]{6,40}", snap_id):
         return web.json_response({"error": "bad snap_id"}, status=400)
     snap_path = _history_dir_for(doc_path) / f"snap-{snap_id}.md"
@@ -1426,74 +1369,64 @@ async def restore_snapshot(request: web.Request) -> web.Response:
         return web.json_response({"error": "snapshot not found"}, status=404)
     _snapshot_if_changed(doc_path)
     doc_path.write_bytes(snap_path.read_bytes())
-    rel = doc_path.relative_to(ROOT).as_posix()
-    await state.broadcast({"type": "doc_changed", "file": rel})
-    print(f"[restore] {rel} <- snap-{snap_id}", flush=True)
-    return web.json_response({"path": rel, "snap_id": snap_id, "ok": True})
+    slug = _doc_slug_from_path(doc_path) or doc_param
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    print(f"[restore] docs/{slug}/current.md <- snap-{snap_id}", flush=True)
+    return web.json_response({"doc": slug, "snap_id": snap_id, "ok": True})
 
 
 async def reset_doc(request: web.Request) -> web.Response:
+    """POST /reset?doc=<slug> — restore current.md from baseline.md (history-0)."""
     _require_localhost_origin(request)
     doc_param = request.query.get("doc", "").strip()
     doc_path = _doc_path_for(doc_param)
     if doc_path is None:
-        return web.json_response({"error": "bad doc path"}, status=400)
+        return web.json_response({"error": "bad doc slug"}, status=400)
     history_zero = _history_zero_path(doc_path)
     if history_zero is None:
         return web.json_response(
             {"error": (
-                f"no history snapshot for {doc_path.name} yet — Reset "
-                "restores to the state before the first agent edit, but no "
-                "agent has touched this doc. For the shipped version, run "
-                f"`git checkout {doc_path.relative_to(ROOT).as_posix()}`."
+                f"no baseline.md for {doc_param!r} — this doc has no "
+                "history-0 to reset to. For a user-created doc, save a "
+                "baseline first (future action); for a ship-with example, "
+                f"run `git checkout docs/{doc_param}/baseline.md`."
             )},
             status=404,
         )
     _snapshot_if_changed(doc_path)
     doc_path.write_bytes(history_zero.read_bytes())
-    rel = doc_path.relative_to(ROOT).as_posix()
-    await state.broadcast({"type": "doc_changed", "file": rel})
-    print(f"[reset] {rel} <- .history/{doc_path.stem}/{history_zero.name}",
-          flush=True)
-    snap_id = (history_zero.stem.replace("snap-", "")
-               if history_zero.stem != "baseline" else "baseline")
-    return web.json_response({
-        "path": rel,
-        "snap_id": snap_id,
-        "ok": True,
-    })
+    slug = _doc_slug_from_path(doc_path) or doc_param
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    print(f"[reset] docs/{slug}/current.md <- baseline.md", flush=True)
+    return web.json_response({"doc": slug, "snap_id": "baseline", "ok": True})
 
 
 def ensure_history_zero() -> None:
-    """For every .md under examples/ + docs/, capture a history-0 snapshot
-    if no Reset target exists yet. Guarantees the Reset button always has
-    something to restore to, even for docs the agent hasn't touched in
-    this clone.
-
-    Counts a doc as already having a Reset target if either:
-    - a tracked baseline.md is present (the shipped history-0 for examples), or
-    - any snap-*.md is present (local pre-edit snapshot history)."""
+    """For every docs/<slug>/current.md without a sibling baseline.md, snap
+    the current content AS the baseline. This handles user-created docs
+    that haven't been formally given a history-0 — the Reset button always
+    has something to restore to."""
+    if not DOCS_ROOT.exists():
+        return
     minted = 0
-    bases = [d for d in (EXAMPLES_DIR, DOCS_DIR) if d.exists()]
-    for d in bases:
-        for md in d.glob("*.md"):
-            hist = _history_dir_for(md)
-            if (hist / "baseline.md").exists():
-                continue
-            if hist.exists() and any(hist.glob("snap-*.md")):
-                continue
-            try:
-                text = md.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as e:
-                print(f"[history] cannot read {md.name} for history-0: {e}",
-                      flush=True)
-                continue
-            snap_id = save_snapshot(md, text)
-            print(f"[history] minted history-0 for {md.name} -> snap-{snap_id}",
+    for sub in sorted(DOCS_ROOT.iterdir()):
+        if not sub.is_dir() or not _DOC_SLUG_RE.match(sub.name):
+            continue
+        current = sub / "current.md"
+        baseline = sub / "baseline.md"
+        if baseline.exists() or not current.exists():
+            continue
+        try:
+            baseline.write_bytes(current.read_bytes())
+        except OSError as e:
+            print(f"[history] cannot mint baseline for {sub.name}: {e}",
                   flush=True)
-            minted += 1
+            continue
+        print(f"[history] minted baseline.md for {sub.name} from current.md",
+              flush=True)
+        minted += 1
     if minted:
-        print(f"ensured history-0 ({minted} new)", flush=True)
+        print(f"ensured baseline ({minted} new)", flush=True)
 
 
 def ensure_skill_mirror() -> None:
@@ -1528,8 +1461,9 @@ def ensure_skill_mirror() -> None:
 
 
 async def on_startup(app: web.Application):
+    ensure_working_copies()  # baseline.md -> current.md on fresh clones
     ensure_doc_ids()
-    ensure_history_zero()
+    ensure_history_zero()    # current.md -> baseline.md for new user docs
     ensure_skill_mirror()
     await init_runtime()
 

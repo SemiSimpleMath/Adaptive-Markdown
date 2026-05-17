@@ -24,20 +24,21 @@ desktop.ini
 
 # Runtime / generated state
 screenshots/
-# .history/ contains a stable baseline.md per ship-with doc (tracked in
-# git, the Reset target) plus an unbounded number of timestamped
-# snap-*.md captures from local agent activity (gitignored).
-.history/*
-!.history/*/
-.history/*/snap-*.md
 *.html.bak
 *.id-aliases.json
-*.patches/
 .am-provider
 
-# User content — created at runtime, not part of the repo
-docs/
-examples/raw/
+# Doc-as-folder layout: docs/<slug>/ — only the three ship-with examples
+# may land in git, and even within those, only baseline.md + optional
+# original.<ext> + assets/ are tracked. current.md (working copy), snaps/
+# (pre-edit captures), and patches/ (legacy, soon-removed) stay local.
+docs/*
+!docs/intro/
+!docs/paper/
+!docs/textbook/
+docs/*/current.md
+docs/*/snaps/
+docs/*/patches/
 
 # Local scratch
 scratch folder/
