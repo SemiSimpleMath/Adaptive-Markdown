@@ -998,6 +998,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return [
       '<!DOCTYPE html>',
       '<html lang="en"><head><meta charset="utf-8">',
+      // Base href set by setContent for the current doc, so relative refs
+      // like <img src="assets/foo.png"> in the doc body resolve to
+      // /docs/<slug>/assets/foo.png on the parent origin.
+      '<base id="doc-base">',
       '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">',
       '<style>',
       '/* Baseline CSS custom properties. Override these on :root in your',
@@ -1141,7 +1145,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       'renderMath();',
       'se.scrollTop=sy;',
       '}',
-      'window.addEventListener("message",e=>{const d=e.data||{};if(d.type==="setContent"){setContent(d.html,d.meta);}else if(d.type==="setSelections"){selectedKeys.clear();for(const sel of(d.selections||[])){if(!sel)continue;if(sel.track_id)selectedKeys.add("t:"+sel.track_id);else if(sel.anchor_id)selectedKeys.add("a:"+sel.anchor_id);else if(sel.excerpt)selectedKeys.add("x:"+String(sel.excerpt).replace(/\\s+/g," ").trim().slice(0,200));}applySelection();}else if(d.type==="clearInsertion"){clearInsertionMarker();}else if(d.type==="scrollToAnchor"){const el=document.getElementById(d.id);if(el)el.scrollIntoView({behavior:"smooth",block:"start"});}});',
+      'window.addEventListener("message",e=>{const d=e.data||{};if(d.type==="setContent"){if(d.baseHref){const b=document.getElementById("doc-base");if(b)b.href=d.baseHref;}setContent(d.html,d.meta);}else if(d.type==="setSelections"){selectedKeys.clear();for(const sel of(d.selections||[])){if(!sel)continue;if(sel.track_id)selectedKeys.add("t:"+sel.track_id);else if(sel.anchor_id)selectedKeys.add("a:"+sel.anchor_id);else if(sel.excerpt)selectedKeys.add("x:"+String(sel.excerpt).replace(/\\s+/g," ").trim().slice(0,200));}applySelection();}else if(d.type==="clearInsertion"){clearInsertionMarker();}else if(d.type==="scrollToAnchor"){const el=document.getElementById(d.id);if(el)el.scrollIntoView({behavior:"smooth",block:"start"});}});',
       'parent.postMessage({type:"iframeReady"},"*");',
       '})();',
       '<\/script></body></html>',
@@ -1342,11 +1346,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // reader can inspect the file content before it becomes agent input.
   async function importFile(file) {
     document.body.classList.remove('dropping');
-    if (newDocOverlay && !newDocOverlay.hidden) hideNewDocOverlay();
+    const overlayWasOpen = newDocOverlay && !newDocOverlay.hidden;
+    if (overlayWasOpen) hideNewDocOverlay();
     if (!file) return;
     const lower = (file.name || '').toLowerCase();
     const dot = lower.lastIndexOf('.');
     const ext = dot >= 0 ? lower.slice(dot) : '';
+    // Assets (images, audio, video, common data files) get routed to the
+    // current doc's assets/ folder. The + Doc overlay is explicitly for
+    // creating a NEW doc, so a drop on that overlay falls through to the
+    // import flow even if the file is an asset-shaped type.
+    if (!overlayWasOpen && currentDoc && ASSET_DROP_EXTS.has(ext)) {
+      await uploadAsset(file);
+      return;
+    }
     const isMarkdown = ext === '.md';
     const isKnown = SUPPORTED_DROP_EXTS.includes(ext);
     let allowUnknown = false;
@@ -1464,7 +1477,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
       if (currentFm.audience) metaBits.push('audience: ' + currentFm.audience);
       if (currentFm.language) metaBits.push('language: ' + currentFm.language);
-      sendToFrame({ type: 'setContent', html, meta: metaBits.join(' · ') });
+      const baseHref = currentDoc ? `/docs/${currentDoc}/` : '/';
+      sendToFrame({ type: 'setContent', html, meta: metaBits.join(' · '), baseHref });
       return;
     }
     // Alt views render into the original <article id="body"> outside the iframe.
@@ -2400,6 +2414,39 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // is auto-prompted to convert it to adaptive markdown; the viewer switches
   // when the new file lands.
   const SUPPORTED_DROP_EXTS = ['.md', '.tex', '.txt', '.rst', '.org'];
+  // Asset drop: when one of these lands on the doc area (NOT the + Doc
+  // overlay), it goes to docs/<currentDoc>/assets/ rather than creating
+  // a new doc. Mirror of _ASSET_EXTS in backend.py.
+  const ASSET_DROP_EXTS = new Set([
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.avif', '.bmp', '.ico',
+    '.mp3', '.ogg', '.wav', '.flac', '.m4a', '.aac',
+    '.mp4', '.webm', '.mov', '.mkv',
+    '.csv', '.json', '.parquet',
+  ]);
+
+  async function uploadAsset(file) {
+    if (!currentDoc) {
+      appendMessage('error', 'No active doc — open one before dropping assets.');
+      return;
+    }
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const resp = await fetch(
+        '/upload-asset?doc=' + encodeURIComponent(currentDoc),
+        { method: 'POST', body: form },
+      );
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        appendMessage('error', data.error || `asset upload failed: ${resp.status}`);
+        return;
+      }
+      // Backend already broadcasts a system-style chat notice to the agent
+      // when the asset lands; no extra client-side message needed.
+    } catch (err) {
+      appendMessage('error', 'asset upload error: ' + (err.message || err));
+    }
+  }
   let dragDepth = 0;
   document.addEventListener('dragenter', (e) => {
     if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;

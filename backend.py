@@ -1164,9 +1164,25 @@ async def serve_static(request: web.Request) -> web.Response:
         except ValueError:
             raise web.HTTPNotFound()
         parts = doc_rel.parts
-        if (len(parts) != 2
-                or not _DOC_SLUG_RE.match(parts[0])
-                or parts[1] not in ("current.md", "baseline.md")):
+        # Allowed shapes under docs/<slug>/:
+        #   - current.md or baseline.md (the doc files the viewer loads)
+        #   - assets/<file>             (binary materials the doc embeds)
+        # Everything else (snaps/, patches/, original.<ext>) is backend
+        # state and must not be served to viewer-side iframes.
+        ok = False
+        if len(parts) == 2 and _DOC_SLUG_RE.match(parts[0]) \
+                and parts[1] in ("current.md", "baseline.md"):
+            ok = True
+        elif len(parts) == 3 and _DOC_SLUG_RE.match(parts[0]) \
+                and parts[1] == "assets":
+            # Asset filename must have a recognized extension (defense in
+            # depth — agents and users shouldn't be able to coax the server
+            # into serving arbitrary file types).
+            asset_ext = Path(parts[2]).suffix.lower()
+            if (asset_ext in _ASSET_EXTS
+                    and asset_ext not in _ASSET_BLOCKED_EXTS):
+                ok = True
+        if not ok:
             raise web.HTTPNotFound()
     return web.FileResponse(target)
 
@@ -1175,7 +1191,22 @@ async def serve_static(request: web.Request) -> web.Response:
 # POST /upload with multipart form, field name "file", .md only. Saves to
 # examples/, mints doc_id, broadcasts updated docs list. Returns the
 # relative path the client should switch to.
-_UPLOAD_MAX_BYTES = 1 * 1024 * 1024  # 1 MB safety cap
+_UPLOAD_MAX_BYTES = 1 * 1024 * 1024  # 1 MB safety cap for text imports
+_ASSET_MAX_BYTES = 25 * 1024 * 1024  # 25 MB cap for asset drops (images, audio, etc.)
+
+# Extensions that the doc-area drop UX treats as "asset" (lands under
+# docs/<slug>/assets/) rather than as a new-doc candidate. Anything not in
+# this set falls through to the existing new-doc / convert flow.
+_ASSET_EXTS = {
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".bmp", ".ico",
+    # Audio
+    ".mp3", ".ogg", ".wav", ".flac", ".m4a", ".aac",
+    # Video
+    ".mp4", ".webm", ".mov", ".mkv",
+    # Data (small, opaque-to-the-agent-but-script-readable)
+    ".csv", ".json", ".parquet",
+}
 
 
 async def upload_md(request: web.Request) -> web.Response:
@@ -1312,6 +1343,121 @@ async def upload_md(request: web.Request) -> web.Response:
     await state.broadcast({"type": "docs", "list": list_all_docs(), "doc": slug})
     print(f"[upload] docs/{slug}/current.md ({total} bytes)", flush=True)
     return web.json_response({"path": rel, "slug": slug, "name": target.name})
+
+
+# Asset blocklist mirrors the upload blocklist — executable / archive / macro-
+# bearing formats can never be assets, no matter what extension was on the file.
+_ASSET_BLOCKED_EXTS = {
+    ".exe", ".bat", ".cmd", ".com", ".scr", ".pif",
+    ".ps1", ".psm1", ".psd1", ".sh", ".bash", ".zsh", ".fish",
+    ".vbs", ".vbe", ".jse", ".wsf", ".wsh", ".hta",
+    ".jar", ".class", ".msi", ".msp", ".apk", ".app", ".deb", ".rpm",
+    ".dll", ".so", ".dylib", ".sys", ".drv", ".o", ".a", ".lib",
+    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+    ".iso", ".dmg", ".img",
+    ".docm", ".xlsm", ".pptm", ".dotm", ".xltm", ".potm",
+    ".lnk", ".url", ".desktop",
+}
+
+
+async def upload_asset(request: web.Request) -> web.Response:
+    """POST /upload-asset?doc=<slug> with multipart `file` — saves the
+    file to docs/<slug>/assets/<sanitized-name>. The agent gets told via
+    a chat notice that the asset is now referenceable as
+    `assets/<name>` from the doc body."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    doc_dir = DOCS_ROOT / slug if slug else None
+    if not slug or not _DOC_SLUG_RE.match(slug) or doc_dir is None \
+            or not doc_dir.is_dir():
+        return web.json_response(
+            {"error": "bad or unknown doc slug"}, status=400,
+        )
+
+    reader = await request.multipart()
+    field = None
+    async for part in reader:
+        if part.name == "file":
+            field = part
+            break
+    if field is None:
+        return web.json_response({"error": "no file field"}, status=400)
+
+    raw_name = field.filename or "asset.bin"
+    ext = Path(raw_name).suffix.lower()
+    if ext in _ASSET_BLOCKED_EXTS:
+        return web.json_response(
+            {"error": f"refused: {ext} files are not allowed as assets",
+             "kind": ext, "blocked": True},
+            status=415,
+        )
+    if ext not in _ASSET_EXTS:
+        return web.json_response(
+            {"error": f"unsupported asset type: {ext or '(no extension)'}",
+             "kind": ext or "(no extension)",
+             "supported": sorted(_ASSET_EXTS)},
+            status=415,
+        )
+
+    # Sanitize the filename: strip path components, restrict to safe chars,
+    # preserve extension. Collisions get a "-N" suffix.
+    safe_stem = re.sub(r"[^\w.\-]", "_", Path(raw_name).stem) or "asset"
+    safe_name = f"{safe_stem}{ext}"
+    assets_dir = doc_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    target = assets_dir / safe_name
+    counter = 1
+    while target.exists():
+        counter += 1
+        target = assets_dir / f"{safe_stem}-{counter}{ext}"
+
+    # Stream-read with size cap. No text decoding — assets are bytes.
+    total = 0
+    with target.open("wb") as out:
+        while True:
+            chunk = await field.read_chunk(size=64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _ASSET_MAX_BYTES:
+                out.close()
+                target.unlink(missing_ok=True)
+                return web.json_response(
+                    {"error": f"asset too large (max "
+                              f"{_ASSET_MAX_BYTES // (1024*1024)} MB)"},
+                    status=413,
+                )
+            out.write(chunk)
+
+    rel_in_doc = f"assets/{target.name}"
+    rel_full = target.relative_to(ROOT).as_posix()
+    size_kb = total / 1024
+    size_str = (
+        f"{size_kb:.1f} KB" if size_kb < 1024
+        else f"{size_kb / 1024:.2f} MB"
+    )
+    # Tell the agent (and the reader, via chat) that the asset is now
+    # available. The agent picks it up on the next chat turn as
+    # conversation history.
+    await state.broadcast({
+        "role": "user", "type": "text",
+        "text": (
+            f"_(System: reader dropped `{rel_in_doc}` ({size_str}) into "
+            f"`docs/{slug}/assets/`. Reference it from `current.md` as "
+            f"`assets/{target.name}` — e.g. `<img src=\"assets/"
+            f"{target.name}\" alt=\"...\">` for an image, `<audio src=\"...\">` "
+            f"for audio, etc.)_"
+        ),
+    })
+    print(f"[asset] docs/{slug}/{rel_in_doc} ({total} bytes)", flush=True)
+    return web.json_response({
+        "ok": True,
+        "doc": slug,
+        "path": rel_full,
+        "name": target.name,
+        "ref": rel_in_doc,
+        "bytes": total,
+    })
 
 
 # ---- Reset to history-0 -------------------------------------------------
@@ -1529,6 +1675,7 @@ def make_app() -> web.Application:
     app.router.add_get("/", serve_index)
     app.router.add_get("/ws", ws_handler)
     app.router.add_post("/upload", upload_md)
+    app.router.add_post("/upload-asset", upload_asset)
     app.router.add_get("/history", list_history)
     app.router.add_post("/undo", undo_doc)
     app.router.add_post("/restore_snapshot", restore_snapshot)

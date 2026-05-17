@@ -39,6 +39,10 @@ docs/*
 docs/*/current.md
 docs/*/snaps/
 docs/*/patches/
+# Asset drops land at docs/<slug>/assets/. By default they stay local —
+# add specific files with `git add -f docs/<slug>/assets/<file>` if you
+# want to ship an asset with one of the example docs.
+docs/*/assets/
 
 # Local scratch
 scratch folder/
