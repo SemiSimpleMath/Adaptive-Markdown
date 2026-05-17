@@ -1,6 +1,6 @@
 # The Adaptive Markdown format
 
-This is the technical specification of the format. If you just want to write or read docs, [the tutorial](examples/intro.md) is enough. This file is for people building tooling, agents, viewers, or extensions.
+This is the technical specification of the format. If you just want to write or read docs, [the tutorial](docs/intro/baseline.md) is enough. This file is for people building tooling, agents, viewers, or extensions.
 
 ## Design invariant
 
@@ -32,20 +32,21 @@ A function $f$ is *continuous* at $a$ if ...
 
 **Proof.** ... $\square$
 
-::: figure { intent="Plot of f with horizontal tangent at c" renderer=canvas }
+<figure>
 <canvas id="rolle-plot" width="640" height="280"></canvas>
 <script>
   (function() { /* canvas drawing */ })();
 </script>
-:::
+<figcaption>Plot of f with horizontal tangent at c.</figcaption>
+</figure>
 ```
 
-Four layers, each plain markdown:
+Four layers, each plain markdown (CommonMark allows raw HTML blocks — the last layer is just HTML passed through):
 
 1. **YAML frontmatter** delimited by `---` at top of file.
 2. **Markdown body** — CommonMark with extensions noted below.
 3. **Pandoc-style heading attributes** — `{#id .class key=value}` after a heading.
-4. **`:::` directives** — fenced blocks with a name and optional attributes.
+4. **HTML blocks** for structured content — `<aside class="note">`, `<figure>`, `<section class="theorem">`, `<div class="pinned">`, plus `<style>` / `<script>` / `<svg>` / `<canvas>` for anything interactive.
 
 ## Frontmatter
 
@@ -114,41 +115,40 @@ Format: `b-` + 16-char base32 ULID-truncation. Time-sortable (first 10 chars), 3
 
 **Preservation** — agents must never delete existing tracking IDs unless explicitly asked. On block split, the original ID stays with the first piece; the new sibling gets a fresh one. On merge, one ID survives; the dropped ones go to the alias map (see Sidecar files below).
 
-## Directives
+## Structured content via HTML blocks
 
-`:::` fenced blocks, name + optional pandoc-attrs:
+CommonMark passes HTML blocks through verbatim. The viewer applies CSS by class name. This means structured content (callouts, figures, locked sections, theorems) is written as plain HTML in the source — no parallel grammar to learn, no plugin to coordinate with.
 
-```markdown
-::: figure { intent="..." renderer=canvas }
-<canvas></canvas>
-<script>...</script>
-:::
+The vocabulary the viewer themes by default:
 
-::: pinned
-This block is author-locked.
-:::
+| Pattern | What it is | Renders as |
+|---|---|---|
+| `<aside class="note">…</aside>` | Callout — also `class="aside"` or `class="remark"` | Muted background, left border |
+| `<div class="pinned">…</div>` | Author-locked content the agent must not rewrite | Blue tint, left border, 🔒 chip |
+| `<figure>…<figcaption>…</figcaption></figure>` | Figure with optional caption | Centred; dashed placeholder border when empty |
+| `<section class="theorem" id="rolle">…</section>` | Explicit-boundary kind-block — also `lemma`, `proposition`, `corollary`, `definition`, `example`, `proof`, `solution`, `abstract` | Coloured left border for boundary; heading inside picks up `data-kind` styling |
 
-::: note { intent="Reminder of EVT" }
-The Extreme Value Theorem says ...
-:::
+The class vocabulary is **open** — adding a new semantic class (`<aside class="caveat">`, `<section class="conjecture">`) costs zero parser changes. Add a single CSS rule in a doc-local `<style>` block, or define it in the viewer's baseline for project-wide use.
+
+### Inline markdown inside HTML blocks
+
+To embed markdown *inside* an HTML block, surround the inner content with blank lines:
+
+```html
+<aside class="note">
+
+This **inner text** renders as markdown, not raw HTML.
+
+</aside>
 ```
 
-The viewer wraps directive bodies in `<div class="directive {name}">`. The CSS themes a few names by default:
+Without the blank lines, the content is treated as raw HTML. This is CommonMark behaviour, not an AM-specific rule.
 
-| Directive | Built-in style |
-|---|---|
-| `figure` | Dashed border, centred — for canvas / SVG / image with optional intent description |
-| `pinned` | Blue tint, left border — author-locked content the agent must not rewrite |
-| `note`, `aside` | Muted background, left border — for callouts |
+### Figures
 
-Any other directive name (`::: warning`, `::: example-output`, `::: my-thing`) renders as `<div class="directive my-thing">` — works fine, just no built-in theme. Add your own CSS in a doc-local `<style>` block.
+A `<figure>` with no rendered content (just a `<figcaption>` describing intent) shows the placeholder border, signalling "this figure hasn't been drawn yet." Once the body contains a `<canvas>`, `<svg>`, `<img>`, etc., the placeholder border goes away. The caption stays visible — that's HTML5 semantic intent.
 
-### The `intent` attribute
-
-For `:::figure` and other generative blocks, the `intent="..."` attribute is a human-readable description of what the figure shows. It serves two purposes:
-
-1. **Accessibility** — used as alt text / aria-label.
-2. **Regenerability** — when the agent is asked to "redo this figure with axes labelled", the intent describes what the figure is supposed to be, separately from the implementation.
+For attribution / accessibility, `aria-label="..."` on the `<figure>` is honoured. For generative figures the agent should be able to redraw later, write a concrete `<figcaption>` describing what the figure shows; the regenerability hint lives in the caption text itself.
 
 ## Math
 
@@ -206,37 +206,54 @@ The `{type=...}` attribute classifies the relationship (depends, mentions, gener
 |---|---|---|
 | Frontmatter | Keys the viewer reads (table above) | Any other key |
 | Headings | Reserved first words → `data-kind` | Any other first word |
-| Directives | `figure`, `pinned`, `note`, `aside` themed | Any other name renders unstyled |
+| Themed classes | `note`, `aside`, `remark`, `pinned`, kind-block names (`theorem`, `lemma`, …) | Any other class — renders unstyled unless you supply CSS |
+| HTML blocks | CommonMark rules (open at start of line, blank lines around inline markdown) | Any HTML the iframe accepts |
 | Anchor IDs | Pattern `[\w-]+` | Any string in that pattern |
 | Tracking IDs | Pattern `b-[A-Z0-9]+` | Minted by the system, not user-typed |
 | `doc_id` | Pattern `d-[A-Z0-9]+` | Minted automatically |
-| Embedded HTML | `<style>`, `<script>`, `<canvas>` etc. | Any HTML the iframe accepts |
 
-There is no `--strict` linter today. The format is deliberately loose at v0.1 to let conventions emerge from real use. A schema-based check is on the roadmap.
+The format is deliberately loose. There is no `--strict` linter today; the validator only checks JS/CSS/SVG syntax inside embedded blocks, not the HTML structure. The browser is forgiving of malformed HTML, so the failure mode is visual glitch rather than hard error.
 
-## Sidecar files
+## Layout — doc as folder
 
-The viewer maintains three sidecars next to each doc. None are part of the source — they're system state. All are gitignorable.
+Each doc is a self-contained folder under `docs/`:
+
+```
+docs/
+└── <slug>/
+    ├── baseline.md       # immutable history-0 (tracked in git for ship-with docs)
+    ├── current.md        # working copy the agent edits (gitignored)
+    ├── original.<ext>    # optional provenance (the .tex, .pdf, etc. the doc came from)
+    ├── snaps/            # pre-edit snapshots (gitignored)
+    │   └── snap-{id}.md
+    └── assets/           # materials the doc embeds — figures, audio, data files
+```
+
+The slug is the doc's canonical identifier in the WebSocket protocol and in the file picker. `baseline.md` is the Reset target — the doc as it was before any agent ever touched it. `current.md` is the file the agent edits; gitignored so live testing never leaks into the published artifact. `snaps/` accumulates pre-edit snapshots; the History panel reads from here.
+
+Each folder is the unit of sharing — zip `docs/<slug>/` and you have a portable doc plus its history and provenance.
+
+### Sidecars
 
 | Path | Purpose |
 |---|---|
-| `.history/<stem>/snap-{id}.md` | Pre-edit snapshots. Captured automatically by the pre-tool-use hook before any `Edit`/`Write`, plus a history-0 snapshot at backend startup for any doc that doesn't already have one. Browse-and-restore via the `↶ History` button; `↺ Reset` restores from the oldest snap-* (i.e. history-0). |
-| `<doc>.id-aliases.json` | Union-find map of dropped/merged tracking IDs → their current surviving ID. Maintained on block merge / delete. Format: `{ "b-OLD": "b-NEW", "b-OLDER": "b-OLD" }`. Path-compressed on traversal. |
-| `<doc>.patches/p-{id}.json` | Derived patches — each captures `{ts, parent, author, ops}` where ops are block-level `replace`/`insert`/`delete` with `before_hash` and `after_hash`. Lets us do granular conflict detection and future 3-way merges. |
+| `docs/<slug>/baseline.md` | Immutable history-0. Tracked in git for ship-with docs. The Reset button restores from here. |
+| `docs/<slug>/snaps/snap-{id}.md` | Pre-edit snapshots. Captured automatically by the pre-tool-use hook before any agent `Edit`/`Write`, plus history-0 mint at startup if a doc has none. Browse-and-restore via the History panel. |
+| `<doc>.id-aliases.json` | Union-find map of dropped/merged tracking IDs → their current surviving ID. Maintained on block merge/delete. Format: `{ "b-OLD": "b-NEW" }`. Path-compressed on traversal. |
 
 ## File-level invariants the system enforces
 
 A few invariants the backend hooks maintain. Worth knowing if you're building tooling against the substrate:
 
-- Every `.md` under `examples/` has a `doc_id` in its frontmatter (minted at first sight if missing).
-- Every `.md` under `examples/` and `docs/` has at least one snapshot under `.history/<stem>/` (history-0 minted at first sight if missing).
-- Every `Edit`/`Write` to a `.md` is preceded by a snapshot to `.history/`.
-- Every `Edit`/`Write` to a `.md` produces a derived patch under `<doc>.patches/` if any tracking-ID-anchored blocks changed.
+- Every `docs/<slug>/current.md` has a `doc_id` in its frontmatter (minted at first sight if missing).
+- Every doc folder has a `baseline.md` (the Reset target). On fresh clones, the backend copies `baseline.md` → `current.md` if `current.md` is missing.
+- Every agent `Edit`/`Write` to `current.md` is preceded by a snapshot to `snaps/`.
+- The only path the agent may write to is `docs/<slug>/current.md`. `baseline.md`, `snaps/`, and everything outside `docs/` are off-limits; the PreToolUse hook rejects attempts with a clear error.
 - Tracking IDs that disappear from a doc are recorded as tombstones in the alias map.
 
 ## Skill — the agent's contract
 
-Everything above is the format. The agent's behaviour on top of the format is specified in [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) — ~420 lines of plain text the agent loads at the start of every session. The skill is the format's *normative* document for agent implementations; this file is the *descriptive* one for humans.
+Everything above is the format. The agent's behaviour on top of the format is specified in [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) — a self-contained spec the agent loads at the start of every session. The skill is the format's *normative* document for agent implementations; this file is the *descriptive* one for humans.
 
 ## Versioning
 

@@ -29,7 +29,7 @@ Adaptive Markdown listening on http://127.0.0.1:8090
 This tool runs a capable coding agent on your local machine with access to a document you load. **Treat this like running someone else's code locally** — because that's effectively what every chat turn is.
 
 - **Use it with documents you authored or fully trust.** Document content becomes part of the agent's context. A malicious markdown or LaTeX file can include hidden instructions — natural-language prompt injection — aimed at the agent. Dropping in a `.md` you found on a sketchy corner of the internet is the same risk class as `curl … | bash`. When you drop a non-markdown file for conversion, the viewer shows the first 2KB in a preview dialog before sending it to the agent; skim for unexpected instructions before clicking "Send to agent."
-- **The agent's write scope is constrained to `examples/*.md` and `docs/*.md`.** Edits to project source files, configuration, `.env`, history snapshots, or anything outside the doc tree are rejected (Claude mode: pre-edit hook; Codex mode: post-turn revert from snapshot). The iframe rendering your doc runs at a null origin and cannot read the parent page or the local backend. The backend's static file route only serves the favicon and `.md` files under `examples/` and `docs/` — `.env` and sidecar JSON return 404. WebSocket and POST endpoints check the request `Origin` and reject cross-origin callers.
+- **The agent's write scope is constrained to `docs/<slug>/current.md`.** `baseline.md` (the immutable history-0), `snaps/` (pre-edit captures), project source files, configuration, `.env`, and anything outside the doc tree are all rejected (Claude mode: pre-edit hook; Codex mode: post-turn revert from snapshot). The iframe rendering your doc runs at a null origin and cannot read the parent page or the local backend. The backend's static file route only serves the favicon and the `current.md` / `baseline.md` per doc folder — `.env`, snapshot files, and sidecar JSON return 404. WebSocket and POST endpoints check the request `Origin` and reject cross-origin callers.
 - **Defenses are not perfect.** Prompt injection that convinces the agent to "translate this text" where the text is actually a covert instruction is still a real risk class — the document is *content* and the agent reads all of it. The `↶ History` button captures pre-edit snapshots; check it after any turn that didn't go as expected.
 - **Codex mode has a wider in-project blast radius than Claude.** Codex's CLI sandbox makes the entire project root writable and its hook system can't gate file edits today, so we run a post-turn validator that detects and reverts unauthorized writes from snapshot. The bytes briefly hit disk during the turn before being reverted; you'll see a warning in chat if this fires. Network egress is disabled in both modes by default.
 - **This software is provided AS-IS** per the [MIT license](LICENSE). The authors assume no responsibility for misuse, data loss, or unexpected agent behavior. Use at your own risk.
@@ -130,8 +130,8 @@ with these known limitations vs Claude mode:
   the whole project root writable; we can't gate writes at edit time the
   way Claude's pre-edit hook does. Instead, the runtime runs a post-turn
   validator that snapshots protected files before the turn and reverts any
-  modifications outside `examples/*.md` / `docs/*.md` after. The reverted
-  bytes briefly hit disk; you'll see a warning in chat if this fires.
+  modifications outside `docs/<slug>/current.md` after. The reverted bytes
+  briefly hit disk; you'll see a warning in chat if this fires.
 - **No conversation memory by default.** Each `codex exec` is a fresh
   subprocess. The adapter replays prior turns into the prompt so the model has
   context, but it costs tokens. Use the **New chat** button (or a model
@@ -158,7 +158,7 @@ other's env vars. No need to comment-out blocks when switching.
 
 ## First run — the tutorial
 
-`examples/intro.md` is itself the tutorial. It has four interactive sections:
+`docs/intro/baseline.md` is itself the tutorial (the working copy gets restored from it via Reset). It has four interactive sections:
 
 1. **Rewrite for a kid** — click an ε-δ continuity definition, ask the agent to rewrite it for a 10-year-old.
 2. **Translate from French** — click a paragraph about Évariste Galois, ask to translate.
@@ -194,16 +194,17 @@ Environment variables (all optional):
 
 ## The format
 
-The full technical spec lives in [`FORMAT.md`](FORMAT.md) — file shape, reserved heading words, the two-tier ID model (anchor vs tracking), directive vocabulary, math conventions, embedded `<style>` / `<script>` semantics, sidecar files. Read that if you're writing tooling, an alternative agent, or a viewer port.
+The full technical spec lives in [`FORMAT.md`](FORMAT.md) — file shape, reserved heading words, the two-tier ID model (anchor vs tracking), the HTML-block class vocabulary for structured content (callouts, figures, theorems, locked sections), math conventions, embedded `<style>` / `<script>` semantics, the doc-as-folder layout. Read that if you're writing tooling, an alternative agent, or a viewer port.
 
 The agent's contract is the skill text under [`.claude/skills/adaptive-markdown/SKILL.md`](.claude/skills/adaptive-markdown/SKILL.md) (read by the Claude Agent SDK) and its byte-identical mirror at [`.agents/skills/adaptive-markdown/SKILL.md`](.agents/skills/adaptive-markdown/SKILL.md) (prepended per-turn by the Codex adapter). It's the prescriptive instructions the model uses every session — same text, two locations to match each runtime's discovery convention.
 
 ## How it works
 
-- **The doc** (`examples/*.md`) is a regular markdown file with optional `{#anchor}` attributes, `:::` directives, and inline `<style>` / `<script>` blocks.
+- **Each doc is a folder** under `docs/<slug>/`. `baseline.md` is the immutable history-0 (tracked in git for ship-with docs). `current.md` is the working copy the agent edits. `snaps/` holds pre-edit snapshots. `assets/` is for materials the doc embeds.
+- **The source** is plain markdown — CommonMark, with `{#anchor}` attributes on headings (Pandoc syntax), KaTeX math, and raw HTML blocks (`<aside class="note">`, `<figure>`, `<section class="theorem">`, `<div class="pinned">`) for anything more structured than prose.
 - **The viewer** (`index.html`) renders the doc inside a sandboxed iframe and pipes click-to-focus selections, drops, and live updates over a WebSocket.
-- **The agent** is either the Claude Agent SDK (default, supported) or the Codex CLI (experimental) via a thin provider abstraction in `agent_runtime/`. Both load the same skill text — at `.claude/skills/adaptive-markdown/SKILL.md` for Claude (auto-discovered by the SDK) and the mirror at `.agents/skills/adaptive-markdown/SKILL.md` for Codex (prepended per-turn into the prompt by the adapter; the backend auto-syncs the mirror on startup so the two never drift). The skill is ~420 lines of plain text that teaches the model how to operate on the doc — preserve tracking IDs, write KaTeX-safe math, never write outside `examples/`/`docs/`, etc.
-- **History & undo** — every pre-edit snapshot is captured under `.history/<doc-stem>/snap-…md`, plus a history-0 snapshot at backend startup for any doc that doesn't already have one. The `↶ History` button in the doc header lets you scrub back through every snapshot; `↺ Reset` jumps to the oldest one (history-0). To go further back than that — to the version that shipped in this clone — use `git checkout examples/<name>.md`.
+- **The agent** is either the Claude Agent SDK (default, supported) or the Codex CLI (experimental) via a thin provider abstraction in `agent_runtime/`. Both load the same skill text — at `.claude/skills/adaptive-markdown/SKILL.md` for Claude (auto-discovered by the SDK) and the mirror at `.agents/skills/adaptive-markdown/SKILL.md` for Codex (prepended per-turn into the prompt by the adapter; the backend auto-syncs the mirror on startup so the two never drift). The skill teaches the model how to operate on the doc — preserve tracking IDs, write KaTeX-safe math, never write outside `docs/<slug>/current.md`, etc.
+- **History & undo** — every pre-edit snapshot is captured under `docs/<slug>/snaps/snap-…md`. The `↶ History` button in the doc header lets you scrub back through every snapshot; `↺ Reset` restores from `baseline.md` (the immutable history-0). To go further back than that — to the version that shipped in this clone — use `git checkout docs/<slug>/baseline.md`.
 
 ## Drop your own files
 
@@ -215,8 +216,9 @@ A short list of the big ones — see [`ROADMAP.md`](ROADMAP.md) for the full pic
 
 - Codex parity (today: experimental — coarser snapshot granularity, no budget cap, see [Picking the runtime](#picking-the-runtime))
 - Variant blocks + audience presets, pending-changes review mode, annotation overlay
-- Pyodide for in-browser Python / SymPy in `:::computation` blocks
-- Multi-document workspace with cross-doc dependency graphs
+- Pyodide for in-browser Python / SymPy in computation blocks
+- Multi-document workspace with cross-doc references and dependency graphs
+- Asset drop — drop an image / data file / audio into the doc area and the agent gets a reference it can use
 - Lean verification of formal theorem statements
 - Hosted multi-user mode
 
@@ -228,4 +230,4 @@ All code and content under [MIT](LICENSE).
 
 ---
 
-In a few years, no one will be reading journals on paper. Everyone will be interacting with articles, translating them instantly, exploring alternative proofs, asking questions, writing code on the spot into the document. This is what we're building toward.
+A doc that edits itself is a different kind of artifact from a static file. You can ask it questions, ask it to restyle, ask it to add an animation, ask it to translate, ask it to plot. The source stays plain markdown — readable, portable, version-controllable — and the agent reaches into it the same way a human author would. That's what we're building toward.

@@ -59,7 +59,7 @@ Authors can choose what sections are non-editable. The entire document history i
 </div>
 
 ## Future
-In a few years, no one will be reading journals on paper. Everyone will be interacting with articles, translating them instantly, exploring alternative proofs, asking questions, writing code on the spot into the document. This is Adaptive Markdown.
+A doc that edits itself is a different kind of artifact from a static file. You can ask it questions, ask it to restyle, ask it to translate a paragraph, ask it to add an animation, ask it to plot some data. The source stays plain markdown — readable, portable, version-controllable — and the agent reaches into it the same way you would as an author. This is Adaptive Markdown.
 
 ## More Use Cases (this is a growing list!)
 
