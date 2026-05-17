@@ -824,6 +824,43 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // much heavier for what is a pure-function check.
   window.__amMd = md;
 
+  // Replace blank lines inside structural HTML blocks (figure, aside,
+  // section, details) with a one-line HTML comment so CommonMark's
+  // type-6 HTML-block rule doesn't terminate the block mid-structure.
+  //
+  // CommonMark says a type-6 HTML block ends at the first following blank
+  // line. So a figure containing a canvas + script + figcaption, where
+  // the script body has a blank line in it, renders as separate HTML
+  // chunks instead of one self-contained block — and any text after the
+  // blank line gets parsed as a markdown paragraph and ends up inside the
+  // still-open script tag in the assembled stream, producing a syntax
+  // error in the script body. The script never runs, no figure shows.
+  //
+  // Agents write blank lines for readability and silently break their own
+  // animations. Substituting blank lines with `<!--am:keep-->` keeps the
+  // type-6 block intact: the substitution is invisible in HTML, harmless
+  // in JS (Annex-B legacy line comment), harmless in CSS.
+  //
+  // Only the structural type-6 tags need this; type-1 blocks (script,
+  // style, pre) already tolerate blank lines per the spec.
+  function preserveStructuralBlocks(text) {
+    const tags = ['figure', 'aside', 'section', 'details', 'header',
+                  'footer', 'main', 'article', 'nav'];
+    let result = text;
+    for (const tag of tags) {
+      const re = new RegExp(
+        `(^|\\n)(<${tag}\\b(?:[^>]*)>)([\\s\\S]*?)\\n(</${tag}\\s*>)`,
+        'gi',
+      );
+      result = result.replace(re, (full, pre, open, inner, close) => {
+        const fixed = inner.replace(/^[ \t]*\r?$/gm, '<!--am:keep-->');
+        return `${pre}${open}${fixed}\n${close}`;
+      });
+    }
+    return result;
+  }
+  window.__amPreserve = preserveStructuralBlocks;
+
   function annotateHeadings(article) {
     article.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
       const text = h.textContent.trim();
@@ -1362,7 +1399,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       docFrame.style.display = 'block';
       docScrollEl.hidden = true;
       const { text: protectedText, ph } = protectMath(currentBody);
-      let html = md.render(protectedText);
+      const preserved = preserveStructuralBlocks(protectedText);
+      let html = md.render(preserved);
       html = restoreMath(html, ph);
       const metaBits = [];
       const a = currentFm.authors || currentFm.author;
@@ -1961,7 +1999,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // including math protection so multi-line $$...$$ doesn't get split.
     try {
       const { text: protectedText, ph } = protectMath(rawText);
-      let html = md.render(protectedText);
+      const preserved = preserveStructuralBlocks(protectedText);
+      let html = md.render(preserved);
       html = restoreMath(html, ph);
       target.innerHTML = html;
       // Drop any <script> the assistant might have embedded — chat must not execute.
