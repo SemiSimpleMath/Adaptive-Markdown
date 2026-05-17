@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  Adaptive-Markdown doc-iframe content host.
+
+  This page is served at a DIFFERENT origin than the viewer chrome
+  (in dev: http://localhost:<port>/iframe-host while the viewer is at
+  http://127.0.0.1:<port>/). Both hostnames hit the same backend, but
+  the browser's same-origin policy treats them as separate origins.
+
+  The iframe is sandboxed with `allow-scripts allow-popups allow-same-origin`.
+  The `allow-same-origin` is safe here precisely because "same-origin to
+  itself" is a different origin from the parent — so the iframe can hold
+  its own cookies / Cache Storage / localStorage (needed for nested
+  third-party embeds like YouTube), but its scripts still cannot reach
+  parent.document, parent.localStorage, etc.
+
+  Parent ↔ iframe communicate via postMessage only. Origin checks at
+  both ends prevent unrelated tabs from speaking the protocol.
+-->
+<base id="doc-base">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>
+/* Baseline CSS custom properties. Override on :root in your doc-local
+   <style> block to re-theme the whole page without redefining every rule. */
+:root {
+  --am-bg: #fff;
+  --am-text: #1a1a1a;
+  --am-muted: #888;
+  --am-link: #2a4d7a;
+  --am-code-bg: #f4f3ee;
+  --am-pre-bg: #f4f3ee;
+  --am-blockquote-border: #d0d0c8;
+  --am-blockquote-text: #555;
+  --am-theorem-color: #2a4d7a;
+  --am-definition-color: #c39548;
+  --am-example-color: #6a9255;
+  --am-figure-placeholder-border: #c8c8c0;
+  --am-figure-caption: #555;
+  --am-note-bg: #fafaf6;
+  --am-note-border: #888;
+  --am-pinned-bg: #f3f6fa;
+  --am-pinned-border: #4a6db5;
+  --am-error-bg: #fdecec;
+  --am-error-border: #d4a4a4;
+  --am-error-text: #8a2a2a;
+  --am-selection-outline: #2a4d7a;
+  --am-hover-outline: #b8b8b0;
+}
+html, body { margin: 0; padding: 0; min-height: 100%; box-sizing: border-box; }
+body { font-family: ui-serif, Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.6; color: var(--am-text); background: var(--am-bg); padding: 32px 56px; }
+.meta { color: var(--am-muted); font-size: 13px; margin: 0 auto 24px; max-width: 760px; font-family: ui-sans-serif, system-ui, sans-serif; }
+article#body { max-width: 760px; margin: 0 auto; }
+article#body h1 { font-size: 1.8rem; margin: 0 0 1rem; font-family: ui-sans-serif, system-ui, sans-serif; }
+article#body h2 { font-size: 1.3rem; margin: 1.8em 0 0.5em; font-family: ui-sans-serif, system-ui, sans-serif; }
+article#body h3 { font-size: 1.1rem; margin: 1.4em 0 0.4em; font-family: ui-sans-serif, system-ui, sans-serif; }
+article#body p { margin: 1em 0; }
+article#body blockquote { margin: 1em 0; padding: 0.6em 1em; border-left: 3px solid var(--am-blockquote-border); color: var(--am-blockquote-text); }
+article#body code { background: var(--am-code-bg); padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.92em; }
+article#body pre { background: var(--am-pre-bg); padding: 0.8em; border-radius: 3px; overflow-x: auto; }
+article#body pre code { background: transparent; padding: 0; }
+article#body a { color: var(--am-link); }
+article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,article,section,aside,figure,div.pinned) { cursor: pointer; }
+article#body .hover-block { outline: 1px dashed var(--am-hover-outline); outline-offset: 6px; }
+article#body .selected-block, article#body .selected-block.hover-block { outline: 2px solid var(--am-selection-outline); outline-offset: 6px; border-radius: 2px; }
+article#body .insertion-marker { height: 2px; background: var(--am-selection-outline); margin: 6px 0; border-radius: 1px; pointer-events: none; opacity: 0.85; }
+article#body [data-kind="theorem"], article#body [data-kind="lemma"], article#body [data-kind="proposition"], article#body [data-kind="corollary"] { color: var(--am-theorem-color); font-style: italic; }
+article#body [data-kind="definition"] { color: var(--am-definition-color); font-style: italic; }
+article#body [data-kind="example"], article#body [data-kind="solution"], article#body [data-kind="proof"] { color: var(--am-example-color); font-style: italic; }
+article#body section.theorem, article#body section.lemma, article#body section.proposition, article#body section.corollary { border-left: 3px solid var(--am-theorem-color); padding: 0.4em 0.9em; margin: 1em 0; }
+article#body section.definition { border-left: 3px solid var(--am-definition-color); padding: 0.4em 0.9em; margin: 1em 0; }
+article#body section.example, article#body section.solution, article#body section.proof { border-left: 3px solid var(--am-example-color); padding: 0.4em 0.9em; margin: 1em 0; }
+aside.note, aside.aside, aside.remark, .note, .aside, .remark { border-left: 3px solid var(--am-note-border); background: var(--am-note-bg); padding: 0.8em 1.2em; margin: 1em 0; }
+.pinned { border-left: 3px solid var(--am-pinned-border); background: var(--am-pinned-bg); padding: 0.8em 1.2em; margin: 1em 0; }
+figure { padding: 0.6em; margin: 1em 0; text-align: center; border-radius: 4px; }
+figure:not(:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table)) { border: 1px dashed var(--am-figure-placeholder-border); }
+figure figcaption { font-style: italic; color: var(--am-figure-caption); padding-top: 0.35em; }
+.error-banner { background: var(--am-error-bg); border: 1px solid var(--am-error-border); border-radius: 4px; padding: 0.75rem 1rem; color: var(--am-error-text); font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="meta" id="meta"></div>
+<article id="body"></article>
+
+<script src="https://cdn.jsdelivr.net/npm/morphdom@2.7.4/dist/morphdom-umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
+<script>
+(function(){
+  'use strict';
+
+  // Origin of the parent that's allowed to drive this iframe. The parent
+  // injects its origin via a one-shot `hello` message at boot; subsequent
+  // messages from any other origin are ignored. Until hello arrives we
+  // accept only the `hello` itself.
+  let PARENT_ORIGIN = null;
+
+  const body = document.getElementById('body');
+  const meta = document.getElementById('meta');
+
+  // ---- Per-script cleanup tracking ---------------------------------------
+  // window.__doc.cleanup(fn) attaches a teardown to the currently-executing
+  // <script>. When that script is later removed/replaced (agent edit), its
+  // cleanups run. Scripts that survive the edit (textContent unchanged)
+  // keep their resources intact — timers, listeners, canvas animations.
+  const SCRIPT_CLEANUPS = new WeakMap();
+  let _currentScript = null;
+  window.__doc = {
+    cleanup(fn) {
+      if (typeof fn !== 'function') return;
+      if (_currentScript) {
+        const a = SCRIPT_CLEANUPS.get(_currentScript);
+        if (a) a.push(fn);
+      }
+    }
+  };
+  function runScriptCleanups(s) {
+    const a = SCRIPT_CLEANUPS.get(s);
+    if (!a) return;
+    for (const fn of a) { try { fn(); } catch (_) {} }
+    SCRIPT_CLEANUPS.delete(s);
+  }
+
+  // ---- Block identity / annotation ---------------------------------------
+  const TRACK_ID_RE = /^\s*id\s*:\s*(b-[A-Z0-9-]+)\s*$/i;
+  const KIND = new Set([
+    'theorem','lemma','proposition','corollary',
+    'definition','example','remark','note','aside','proof','solution'
+  ]);
+
+  function attachIds(container) {
+    const w = document.createTreeWalker(container, NodeFilter.SHOW_COMMENT);
+    const cs = [];
+    let n;
+    while ((n = w.nextNode())) cs.push(n);
+    for (const k of cs) {
+      const m = k.textContent.match(TRACK_ID_RE);
+      if (!m) continue;
+      let s = k.nextSibling;
+      while (s && s.nodeType !== 1) s = s.nextSibling;
+      if (s) s.dataset.trackId = m[1];
+    }
+  }
+  function annotateHs(root) {
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(h => {
+      const f = (h.textContent.trim().match(/^(\w+)/) || [])[1];
+      if (f && KIND.has(f.toLowerCase())) h.dataset.kind = f.toLowerCase();
+    });
+  }
+
+  // Convert an innerHTML-parsed <script> into a fresh element so the browser
+  // actually executes it. Sets _currentScript across the synchronous
+  // execution so __doc.cleanup attaches to this script.
+  function reExec(s) {
+    const ns = document.createElement('script');
+    for (const a of Array.from(s.attributes)) ns.setAttribute(a.name, a.value);
+    ns.textContent = s.textContent;
+    SCRIPT_CLEANUPS.set(ns, []);
+    _currentScript = ns;
+    s.parentNode.replaceChild(ns, s);
+    _currentScript = null;
+    return ns;
+  }
+  function scriptKey(s) { return (s.src || '') + '#' + s.textContent; }
+
+  function renderMath() {
+    if (window.renderMathInElement) {
+      window.renderMathInElement(body, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '$', right: '$', display: false },
+        ],
+        throwOnError: false,
+        ignoredTags: ['script','noscript','style','textarea','pre','code'],
+      });
+    } else {
+      setTimeout(renderMath, 60);
+    }
+  }
+
+  // ---- Block / selection / insertion -------------------------------------
+  function findBlock(el) {
+    let c = el;
+    while (c && c !== body) {
+      if (c.parentElement === body) return c;
+      c = c.parentElement;
+    }
+    return null;
+  }
+  function blockInfo(el) {
+    const t = el.dataset.trackId || null;
+    const a = el.id || null;
+    const id = t || a || null;
+    let label = '';
+    const h = el.querySelector(':scope>h1,:scope>h2,:scope>h3,:scope>h4,:scope>h5,:scope>h6');
+    if (h) label = h.textContent.trim().replace(/\s+/g, ' ').slice(0, 60);
+    else label = el.textContent.replace(/\s+/g, ' ').trim().slice(0, 60);
+    const excerpt = el.textContent.replace(/\s+/g, ' ').trim().slice(0, 2000);
+    return { id, track_id: t, anchor_id: a, label, excerpt };
+  }
+  function keyOf(el) {
+    const t = el.dataset.trackId;
+    if (t) return 't:' + t;
+    const a = el.id;
+    if (a) return 'a:' + a;
+    const x = el.textContent.replace(/\s+/g, ' ').trim().slice(0, 200);
+    return 'x:' + x;
+  }
+  const selectedKeys = new Set();
+  function applySelection() {
+    for (const ch of body.children) {
+      if (selectedKeys.has(keyOf(ch))) ch.classList.add('selected-block');
+      else ch.classList.remove('selected-block');
+    }
+  }
+
+  let insertionMarker = null;
+  function clearInsertionMarker() {
+    if (insertionMarker) { insertionMarker.remove(); insertionMarker = null; }
+  }
+  function findInsertionPosition(y) {
+    let before = null, after = null;
+    for (const ch of body.children) {
+      if (ch === insertionMarker) continue;
+      const r = ch.getBoundingClientRect();
+      if (r.bottom <= y) before = ch;
+      else if (r.top >= y) { after = ch; break; }
+    }
+    return { before, after };
+  }
+  function setInsertionMarker(beforeEl, afterEl) {
+    clearInsertionMarker();
+    insertionMarker = document.createElement('div');
+    insertionMarker.className = 'insertion-marker';
+    if (afterEl) body.insertBefore(insertionMarker, afterEl);
+    else if (beforeEl) {
+      if (beforeEl.nextSibling) body.insertBefore(insertionMarker, beforeEl.nextSibling);
+      else body.appendChild(insertionMarker);
+    } else body.appendChild(insertionMarker);
+  }
+
+  // postMessage helper that always targets a known parent origin once we
+  // know it. Before `hello` we fall back to '*' so the initial handshake
+  // can reach the parent regardless of its origin.
+  function toParent(msg) {
+    parent.postMessage(msg, PARENT_ORIGIN || '*');
+  }
+
+  document.addEventListener('click', e => {
+    if (e.target.closest('a')) return;
+    const b = findBlock(e.target);
+    const add = e.shiftKey || e.metaKey || e.ctrlKey;
+    e.preventDefault();
+    try { const s = document.getSelection(); if (s) s.removeAllRanges(); } catch (_) {}
+    if (b) b.classList.remove('hover-block');
+    if (b) {
+      clearInsertionMarker();
+      if (!add) { selectedKeys.clear(); selectedKeys.add(keyOf(b)); }
+      else { const k = keyOf(b); if (selectedKeys.has(k)) selectedKeys.delete(k); else selectedKeys.add(k); }
+      applySelection();
+      toParent({ type: 'selection', block: blockInfo(b), additive: add });
+      return;
+    }
+    if (e.target.closest('article#body')) {
+      selectedKeys.clear();
+      applySelection();
+      const pos = findInsertionPosition(e.clientY);
+      setInsertionMarker(pos.before, pos.after);
+      toParent({
+        type: 'insert_click',
+        before: pos.before ? blockInfo(pos.before) : null,
+        after: pos.after ? blockInfo(pos.after) : null,
+      });
+      return;
+    }
+    selectedKeys.clear();
+    clearInsertionMarker();
+    applySelection();
+    toParent({ type: 'selection', block: null, additive: add });
+  });
+
+  body.addEventListener('mouseover', e => {
+    const b = findBlock(e.target);
+    if (b && !selectedKeys.has(keyOf(b))) b.classList.add('hover-block');
+  });
+  body.addEventListener('mouseout', e => {
+    const b = findBlock(e.target);
+    if (b) b.classList.remove('hover-block');
+  });
+  document.addEventListener('dragover', e => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    const fs = e.dataTransfer && Array.from(e.dataTransfer.files || []);
+    if (fs && fs.length) toParent({ type: 'fileDropped', files: fs });
+  });
+  document.addEventListener('dragenter', () => {
+    toParent({ type: 'dragenter' });
+  });
+
+  // setContent: snapshot scripts → morphdom-diff into body → cleanups for
+  // removed scripts → reExec new scripts → re-apply selection & math.
+  // Unchanged content stays in place so scroll, in-progress canvas
+  // animations, and event listeners survive the edit.
+  function setContent(html, metaTxt) {
+    const se = document.scrollingElement || document.documentElement;
+    const sy = se.scrollTop;
+    clearInsertionMarker();
+    const oldScripts = new Map();
+    body.querySelectorAll('script').forEach(s => oldScripts.set(scriptKey(s), s));
+    const tmp = document.createElement('article');
+    tmp.id = 'body';
+    tmp.innerHTML = html || '';
+    if (window.morphdom) {
+      window.morphdom(body, tmp, {
+        childrenOnly: true,
+        onBeforeElUpdated(f, t) { if (f.isEqualNode(t)) return false; return true; },
+      });
+    } else {
+      body.innerHTML = html || '';
+    }
+    meta.textContent = metaTxt || '';
+    annotateHs(body);
+    attachIds(body);
+    const newScripts = new Map();
+    body.querySelectorAll('script').forEach(s => newScripts.set(scriptKey(s), s));
+    for (const [k, s] of oldScripts) { if (!newScripts.has(k)) runScriptCleanups(s); }
+    for (const [k, s] of newScripts) { if (!oldScripts.has(k)) reExec(s); }
+    applySelection();
+    renderMath();
+    se.scrollTop = sy;
+  }
+
+  window.addEventListener('message', e => {
+    // First message must be a `hello` that locks in the parent's origin.
+    // After that we only honor messages from that exact origin.
+    if (PARENT_ORIGIN === null) {
+      if (e.data && e.data.type === 'hello' && typeof e.origin === 'string' && e.origin.length) {
+        PARENT_ORIGIN = e.origin;
+      } else {
+        return;
+      }
+    } else if (e.origin !== PARENT_ORIGIN) {
+      return;
+    }
+
+    const d = e.data || {};
+    if (d.type === 'setContent') {
+      if (d.baseHref) {
+        const b = document.getElementById('doc-base');
+        if (b) b.href = d.baseHref;
+      }
+      setContent(d.html, d.meta);
+    } else if (d.type === 'setSelections') {
+      selectedKeys.clear();
+      for (const sel of (d.selections || [])) {
+        if (!sel) continue;
+        if (sel.track_id) selectedKeys.add('t:' + sel.track_id);
+        else if (sel.anchor_id) selectedKeys.add('a:' + sel.anchor_id);
+        else if (sel.excerpt) selectedKeys.add(
+          'x:' + String(sel.excerpt).replace(/\s+/g, ' ').trim().slice(0, 200)
+        );
+      }
+      applySelection();
+    } else if (d.type === 'clearInsertion') {
+      clearInsertionMarker();
+    } else if (d.type === 'scrollToAnchor') {
+      const el = document.getElementById(d.id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+
+  toParent({ type: 'iframeReady' });
+})();
+</script>
+</body>
+</html>

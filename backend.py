@@ -1141,6 +1141,18 @@ async def serve_index(request: web.Request) -> web.Response:
     return web.FileResponse(ROOT / "index.html")
 
 
+async def serve_iframe_host(request: web.Request) -> web.Response:
+    """The doc iframe is loaded from a DIFFERENT origin than the viewer
+    (in dev: http://localhost:<port>/iframe-host vs the viewer at
+    http://127.0.0.1:<port>/). Same backend, same port — the browser's
+    same-origin policy treats them as separate origins because the
+    hostname strings differ. That cross-origin gap is what lets the iframe
+    use `allow-same-origin` (for its own cookies / Cache Storage / nested
+    YouTube embeds) while still being firewalled from the viewer chrome's
+    storage and DOM."""
+    return web.FileResponse(ROOT / "iframe-host.html")
+
+
 # Files outside this allowlist are NOT served — even if they exist under ROOT.
 # Without this gate the catch-all route exposed .env, .history/, sidecar JSON,
 # and every internal file in the project tree. Restrict to what the viewer
@@ -1921,6 +1933,7 @@ async def on_cleanup(app: web.Application):
 def make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", serve_index)
+    app.router.add_get("/iframe-host", serve_iframe_host)
     app.router.add_get("/ws", ws_handler)
     app.router.add_post("/upload", upload_md)
     app.router.add_post("/upload-asset", upload_asset)
