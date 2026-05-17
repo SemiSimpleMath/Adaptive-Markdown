@@ -2013,8 +2013,24 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       return;
     }
     if (data.role === 'assistant') {
-      if (data.type === 'text') { appendOrExtendAssistant(data.text); return; }
-      if (data.type === 'tool_use') { updateActivityStatus(friendlyToolStatus(data)); return; }
+      if (data.type === 'text') {
+        // First text chunk: the streaming bubble is now the visible
+        // indicator of progress, so retire the separate activity strip.
+        // If the agent goes thinking/tool_use AGAIN after some text
+        // (rare), updateActivityStatus re-creates the strip via
+        // showActivity().
+        hideActivity();
+        appendOrExtendAssistant(data.text);
+        return;
+      }
+      if (data.type === 'thinking') {
+        updateActivityStatus('Thinking…');
+        return;
+      }
+      if (data.type === 'tool_use') {
+        updateActivityStatus(friendlyToolStatus(data));
+        return;
+      }
     }
   }
 
@@ -2111,14 +2127,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
     log.scrollTop = log.scrollHeight;
   }
-  function showActivity() {
+  function showActivity(initialText) {
     hideActivity();
     const div = document.createElement('div');
     div.className = 'activity';
     div.id = 'activity-indicator';
     const txt = document.createElement('span');
     txt.className = 'activity-text';
-    txt.textContent = 'Working...';
+    txt.textContent = initialText || 'Sending…';
     div.appendChild(txt);
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
