@@ -800,10 +800,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
 
   function parseDirectiveInfo(info) {
-    const m = info.trim().match(/^(\w[\w-]*)\s*(?:\{([^}]*)\})?$/);
+    // Accept either canonical curly-brace form
+    //   :::name { key=value key=value }
+    // or HTML-attribute form (what agents naturally reach for)
+    //   :::name key=value key="quoted value"
+    // Both reduce to {name, attrs}. Anything else (e.g. ":::name some
+    // free-form text") doesn't match — it stays as a paragraph and the
+    // surface issue is visible to the reader.
+    const trimmed = info.trim();
+    const m = trimmed.match(
+      /^(\w[\w-]*)(?:\s*\{([^}]*)\}|\s+(\w[\w-]*\s*=.+))?$/,
+    );
     if (!m) return { name: null, attrs: {} };
     const name = m[1].toLowerCase();
-    const attrStr = (m[2] || '').trim();
+    const attrStr = (m[2] || m[3] || '').trim();
     const attrs = {};
     const re = /(\w[\w-]*)\s*=\s*("([^"]*)"|([^\s"]+))/g;
     let am;
@@ -819,6 +829,44 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
   function escapeHtml(s) { return escapeAttr(s); }
 
+  // Render a directive's attrs into the HTML opener. Always emits a
+  // class="<base> [+ user class]". Passes through id, style, and any
+  // data-*/aria-*/role attribute. Inline event handlers (onclick etc.)
+  // are dropped — that's not what attrs are for, and the iframe sandbox
+  // already blunts them but cleanliness is cheap.
+  function directiveAttrsHtml(attrs, baseClass) {
+    const parts = [];
+    const userCls = (attrs && typeof attrs.class === 'string') ? attrs.class.trim() : '';
+    const cls = userCls ? `${baseClass} ${userCls}` : baseClass;
+    parts.push(` class="${escapeAttr(cls)}"`);
+    if (attrs && attrs.id) parts.push(` id="${escapeAttr(attrs.id)}"`);
+    if (attrs && typeof attrs.style === 'string') parts.push(` style="${escapeAttr(attrs.style)}"`);
+    if (attrs && typeof attrs.role === 'string') parts.push(` role="${escapeAttr(attrs.role)}"`);
+    for (const key of Object.keys(attrs || {})) {
+      if (/^(data|aria)-[a-zA-Z0-9_-]+$/.test(key)) {
+        parts.push(` ${key}="${escapeAttr(attrs[key])}"`);
+      }
+    }
+    return parts.join('');
+  }
+
+  // markdown-it-attrs (also loaded) intercepts `{ key=value }` markers on
+  // container opener lines and moves them onto the token's `t.attrs`
+  // array, stripping them from `t.info` in the process. We have to merge
+  // both — info covers the HTML-attribute form (`:::name k=v`), t.attrs
+  // covers the canonical curly-brace form (`:::name { k=v }`).
+  function mergeTokenAttrs(infoAttrs, tokenAttrs) {
+    const out = Object.assign({}, infoAttrs);
+    if (Array.isArray(tokenAttrs)) {
+      for (const pair of tokenAttrs) {
+        if (Array.isArray(pair) && pair.length >= 2 && !(pair[0] in out)) {
+          out[pair[0]] = pair[1];
+        }
+      }
+    }
+    return out;
+  }
+
   function registerContainer(md, name, render) {
     md.use(window.markdownitContainer, name, {
       validate(params) {
@@ -829,7 +877,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         const t = tokens[idx];
         if (t.nesting === 1) {
           const { attrs } = parseDirectiveInfo(t.info);
-          return render(attrs, true);
+          return render(mergeTokenAttrs(attrs, t.attrs), true);
         }
         return render(null, false);
       },
@@ -853,9 +901,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
                         'proof', 'solution', 'abstract']) {
       registerContainer(md, kind, (attrs, open) => {
         if (open) {
-          const id = attrs && attrs.id ? ` id="${escapeAttr(attrs.id)}"` : '';
           const name = attrs && attrs.name ? ` data-name="${escapeAttr(attrs.name)}"` : '';
-          return `<section class="kind-${kind} kind-block"${id}${name}>\n`;
+          return `<section${directiveAttrsHtml(attrs, `kind-${kind} kind-block`)}${name}>\n`;
         }
         return `</section>\n`;
       });
@@ -867,8 +914,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     for (const name of ['note', 'aside', 'remark']) {
       registerContainer(md, name, (attrs, open) => {
         if (open) {
-          const id = attrs && attrs.id ? ` id="${escapeAttr(attrs.id)}"` : '';
-          return `<div class="directive ${name}"${id}>\n`;
+          return `<div${directiveAttrsHtml(attrs, `directive ${name}`)}>\n`;
         }
         return `</div>\n`;
       });
@@ -893,7 +939,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     });
 
     registerContainer(md, 'pinned', (attrs, open) => {
-      return open ? `<div class="directive pinned">\n` : `</div>\n`;
+      if (open) return `<div${directiveAttrsHtml(attrs, 'directive pinned')}>\n`;
+      return `</div>\n`;
     });
 
     // Catch-all: any directive whose name isn't one of the specific names
@@ -917,8 +964,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         const t = tokens[idx];
         if (t.nesting === 1) {
           const { name, attrs } = parseDirectiveInfo(t.info);
-          const id = attrs && attrs.id ? ` id="${escapeAttr(attrs.id)}"` : '';
-          return `<div class="directive ${escapeAttr(name)}"${id}>\n`;
+          const merged = mergeTokenAttrs(attrs, t.attrs);
+          return `<div${directiveAttrsHtml(merged, `directive ${escapeAttr(name)}`)}>\n`;
         }
         return `</div>\n`;
       },
@@ -927,6 +974,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return md;
   }
   const md = buildMd();
+  // Expose the markdown-it instance for the browser-smoke harness to
+  // exercise directive parsing directly. Harmless namespace use; the
+  // alternative (loading test fixtures through the upload endpoint) is
+  // much heavier for what is a pure-function check.
+  window.__amMd = md;
 
   function annotateHeadings(article) {
     article.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
