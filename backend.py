@@ -1248,6 +1248,108 @@ _PDF_CONVERT_PROMPT = (
     "- Preserve all paragraphs verbatim where possible; do not paraphrase."
 )
 
+# LaTeX-source conversion uses the same Claude path as PDF but takes the
+# .tex content as text rather than as a rasterized document. Same model,
+# same budget, same fallback behavior (returns None on no-key / oversize /
+# API failure so the caller can fall through to the agent-mediated path).
+_TEX_CLAUDE_MAX_BYTES = 500 * 1024  # 500KB of source — plenty for one paper
+_LLM_CONVERT_TEXT_EXTS = {".tex"}
+
+_TEX_CONVERT_PROMPT = (
+    "Convert this LaTeX source to adaptive-markdown. Strict rules:\n"
+    "- Drop the preamble (`\\documentclass`, `\\usepackage`, `\\newcommand`, "
+    "etc.). Custom macros that are actually used in the body should be "
+    "expanded inline.\n"
+    "- `\\title{...}` → `#`. `\\section` → `##`. `\\subsection` → `###`. "
+    "`\\subsubsection` → `####`.\n"
+    "- Preserve math: inline as `$...$`, display as `$$...$$`. KaTeX-"
+    "compatible syntax. Convert `\\[...\\]` → `$$...$$` and `\\(...\\)` → "
+    "`$...$`.\n"
+    "- `\\begin{itemize}` → markdown `- ` bullet list. `\\begin{enumerate}` "
+    "→ markdown `1.` numbered list.\n"
+    "- amsthm environments (`\\begin{theorem}`, `\\begin{lemma}`, "
+    "`\\begin{proposition}`, `\\begin{corollary}`, `\\begin{definition}`, "
+    "`\\begin{example}`, `\\begin{proof}`) → "
+    "`<section class=\"<kind>\">...</section>` with an inner `<h3>` if the "
+    "source had a name in `[...]`.\n"
+    "- `\\begin{figure}` → `<figure>...</figure>`. `\\caption{...}` → "
+    "`<figcaption>...</figcaption>`. TikZ source stays as ```tikz fenced "
+    "blocks.\n"
+    "- `\\begin{tabular}` → GitHub-flavored markdown table.\n"
+    "- `\\textbf{...}` → `**...**`. `\\emph{...}` / `\\textit{...}` → "
+    "`_..._`. `\\texttt{...}` → backtick-quoted code.\n"
+    "- `\\cite{key}` → `[key]`. `\\ref{x}` → drop the ref-target ID but "
+    "keep the surrounding sentence intact.\n"
+    "- Strip `%`-comment lines.\n"
+    "- Do NOT add commentary or preamble. Output ONLY the markdown body.\n"
+    "- Preserve all content. Do not paraphrase. Do not summarize."
+)
+
+
+async def _convert_tex_via_claude(source_text: str) -> str | None:
+    """Send LaTeX source to Claude and ask for adaptive-markdown back.
+    Returns the converted text on success, or None if Claude is
+    unavailable / failed (caller falls back to agent-mediated conversion)."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("[upload:tex:claude] no ANTHROPIC_API_KEY — skipping Claude path",
+              flush=True)
+        return None
+    enc = source_text.encode("utf-8")
+    if len(enc) > _TEX_CLAUDE_MAX_BYTES:
+        print(f"[upload:tex:claude] source too large ({len(enc)}B > "
+              f"{_TEX_CLAUDE_MAX_BYTES}B) — skipping Claude path", flush=True)
+        return None
+
+    def _call() -> str | None:
+        import json as _json
+        import urllib.request
+        import urllib.error
+        body = {
+            "model": _PDF_CLAUDE_MODEL,
+            "max_tokens": _PDF_CLAUDE_MAX_TOKENS,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "--- LaTeX source ---\n"
+                            + source_text
+                            + "\n--- end source ---\n\n"
+                            + _TEX_CONVERT_PROMPT
+                        ),
+                    },
+                ],
+            }],
+        }
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=_json.dumps(body).encode("utf-8"),
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                payload = _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", errors="replace")[:500]
+            print(f"[upload:tex:claude] HTTP {e.code}: {err}", flush=True)
+            return None
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print(f"[upload:tex:claude] network error: {e!r}", flush=True)
+            return None
+        parts = payload.get("content", []) or []
+        text = "\n".join(
+            p.get("text", "") for p in parts if p.get("type") == "text"
+        ).strip()
+        return text or None
+
+    return await asyncio.to_thread(_call)
+
 
 async def _convert_pdf_via_claude(pdf_bytes: bytes) -> str | None:
     """Send a PDF to Claude and ask for adaptive-markdown back. Returns the
@@ -1577,6 +1679,41 @@ async def upload_md(request: web.Request) -> web.Response:
         f.write(text)
 
     rel = target.relative_to(ROOT).as_posix()
+
+    # Server-side conversion via Claude for selected text formats (.tex).
+    # original.<ext> is already on disk; we just need to produce current.md
+    # and baseline.md from Claude's output. If Claude is unavailable or
+    # fails, fall through to the agent-mediated path below.
+    backend_pref = os.environ.get("AM_PDF_BACKEND", "auto").lower()
+    if ext in _LLM_CONVERT_TEXT_EXTS and backend_pref in ("auto", "claude"):
+        md_text = await _convert_tex_via_claude(text)
+        if md_text:
+            md_text = md_text.replace("\r\n", "\n").replace("\r", "\n")
+            if not md_text.endswith("\n"):
+                md_text += "\n"
+            current_md = doc_dir / "current.md"
+            baseline_md = doc_dir / "baseline.md"
+            with current_md.open("w", encoding="utf-8", newline="") as f:
+                f.write(md_text)
+            with baseline_md.open("w", encoding="utf-8", newline="") as f:
+                f.write(md_text)
+            ensure_doc_ids()
+            await state.broadcast({
+                "type": "docs", "list": list_all_docs(), "doc": slug,
+            })
+            print(
+                f"[upload:tex:claude] docs/{slug}/current.md "
+                f"({len(md_text)} chars from {total}B {ext})",
+                flush=True,
+            )
+            return web.json_response({
+                "path": f"docs/{slug}/current.md",
+                "slug": slug,
+                "name": current_md.name,
+                "kind": ext,
+                "converted": True,
+                "converter": "claude",
+            })
 
     if needs_conversion:
         # Non-.md upload: lives at docs/<slug>/original.<ext>. The agent

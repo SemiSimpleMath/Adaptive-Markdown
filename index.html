@@ -901,20 +901,27 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // Only the structural type-6 tags need this; type-1 blocks (script,
   // style, pre) already tolerate blank lines per the spec.
   function preserveStructuralBlocks(text) {
-    const tags = ['figure', 'aside', 'section', 'details', 'header',
-                  'footer', 'main', 'article', 'nav'];
-    let result = text;
-    for (const tag of tags) {
-      const re = new RegExp(
-        `(^|\\n)(<${tag}\\b(?:[^>]*)>)([\\s\\S]*?)\\n(</${tag}\\s*>)`,
-        'gi',
-      );
-      result = result.replace(re, (full, pre, open, inner, close) => {
+    // The original bug was specifically about <script> bodies: a blank
+    // line inside an agent-authored script (very common — agents add them
+    // for readability) made CommonMark terminate the surrounding type-6
+    // HTML block at the blank line, dump remaining script source as
+    // markdown paragraphs, and corrupt the script. Replace such blank
+    // lines with an HTML-comment sentinel (also a legacy JS line comment,
+    // so script semantics are preserved).
+    //
+    // We used to also strip blank lines inside <figure>, <aside>,
+    // <section>, etc. — but that prevented markdown from rendering inside
+    // those blocks (`### Heading` showed up as literal "###"). The
+    // narrower scope here keeps the script-body fix while letting
+    // markdown render normally inside section / aside / details / div,
+    // which is what readers expect for AM's kind-blocks and callouts.
+    return text.replace(
+      /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>)/gi,
+      (full, open, inner, close) => {
         const fixed = inner.replace(/^[ \t]*\r?$/gm, '<!--am:keep-->');
-        return `${pre}${open}${fixed}\n${close}`;
-      });
-    }
-    return result;
+        return `${open}${fixed}${close}`;
+      }
+    );
   }
   window.__amPreserve = preserveStructuralBlocks;
 
@@ -1259,16 +1266,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (!proceed) return;
       allowUnknown = true;
     }
-    // Binary doc formats (PDF, DOCX, etc.) skip the preview gate because
-    // markitdown converts them server-side; the agent isn't in the loop and
-    // a raw-bytes preview would just show gibberish. Show a chat status
-    // instead so the reader knows something is happening during conversion.
-    const isBinaryConvert = BINARY_CONVERT_EXTS.has(ext);
-    if (isBinaryConvert) {
-      appendMessage(
-        'user',
-        'Converting `' + file.name + '`… for PDFs this can take a couple of minutes — Claude is reading the rendered pages.'
-      );
+    // Server-converted formats skip the preview gate: PDF / DOCX / XLSX /
+    // PPTX get markitdown or Claude-vision server-side, and .tex gets
+    // Claude text-mode. None of these reach the agent at import time, so
+    // the preview's "is this OK to send to your agent?" question doesn't
+    // apply. Show a chat status instead so the reader knows something is
+    // happening during conversion.
+    const isServerConvert = SERVER_CONVERT_EXTS.has(ext);
+    if (isServerConvert) {
+      const hint = ext === '.pdf'
+        ? 'this can take a couple of minutes — Claude is reading the rendered pages'
+        : ext === '.tex'
+          ? 'Claude is rewriting LaTeX into adaptive-markdown'
+          : 'converting via markitdown';
+      appendMessage('user', 'Converting `' + file.name + '`… ' + hint + '.');
     } else if (!isMarkdown) {
       const ok = await showConvertPreview(file, ext, !isKnown);
       if (!ok) return;
@@ -2307,10 +2318,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // is auto-prompted to convert it to adaptive markdown; the viewer switches
   // when the new file lands.
   const SUPPORTED_DROP_EXTS = ['.md', '.tex', '.txt', '.rst', '.org', '.pdf', '.docx', '.xlsx', '.pptx'];
-  // These get converted to markdown server-side via markitdown — no preview
-  // dialog (the raw bytes are binary; preview-as-text shows gibberish), no
-  // agent in the loop.
-  const BINARY_CONVERT_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx']);
+  // Formats converted server-side (Claude vision for PDF, Claude text for
+  // LaTeX, markitdown fallback for the Office binaries). No preview
+  // dialog — for binaries the preview is gibberish; for LaTeX we trust
+  // Claude over the agent-chat round-trip. No agent involvement at import.
+  const SERVER_CONVERT_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.tex']);
   // Asset drop: when one of these lands on the doc area (NOT the + Doc
   // overlay), it goes to docs/<currentDoc>/assets/ rather than creating
   // a new doc. Mirror of _ASSET_EXTS in backend.py.
