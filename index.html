@@ -232,6 +232,53 @@ body {
   font: inherit; font-size: 0.92rem; cursor: pointer;
 }
 .convert-preview-dlg .btn-secondary:hover { background: #f3f3f1; }
+
+/* Reset confirmation dialog — replaces the native confirm() with a
+   viewer-styled modal that's clearer about what's being replaced and
+   reassures the user the current state isn't lost. */
+.reset-confirm-dlg {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.1rem 1.2rem 0.9rem;
+  max-width: 500px;
+  width: 90vw;
+  font: inherit;
+  background: white;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.18);
+}
+.reset-confirm-dlg::backdrop { background: rgba(0,0,0,0.32); }
+.reset-confirm-dlg h3 {
+  margin: 0 0 0.5rem; font-size: 1.05rem; color: var(--accent);
+}
+.reset-confirm-dlg .reset-doc-line {
+  font-family: ui-monospace, monospace; font-size: 0.85rem;
+  color: var(--muted); background: #f6f6f4; border: 1px solid var(--border);
+  border-radius: 4px; padding: 0.45rem 0.65rem; margin-bottom: 0.8rem;
+}
+.reset-confirm-dlg p {
+  margin: 0 0 0.7rem; font-size: 0.92rem; line-height: 1.5;
+}
+.reset-confirm-dlg .reset-safety {
+  font-size: 0.85rem; color: var(--muted);
+  background: #f0f7ed; border-left: 3px solid #6a9255; border-radius: 4px;
+  padding: 0.55rem 0.7rem; margin-bottom: 1rem;
+}
+.reset-confirm-dlg .reset-actions {
+  display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.4rem;
+}
+.reset-confirm-dlg .btn-primary,
+.reset-confirm-dlg .btn-secondary {
+  font: inherit; font-size: 0.92rem; padding: 0.5rem 1.1rem;
+  border-radius: 4px; cursor: pointer;
+}
+.reset-confirm-dlg .btn-primary {
+  background: var(--accent); color: white; border: 0; font-weight: 600;
+}
+.reset-confirm-dlg .btn-primary:hover { filter: brightness(1.1); }
+.reset-confirm-dlg .btn-secondary {
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+}
+.reset-confirm-dlg .btn-secondary:hover { background: #f3f3f1; }
 .history-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -663,6 +710,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="convert-actions">
         <button type="button" class="btn-secondary" id="convert-cancel">Cancel</button>
         <button type="button" class="btn-primary" id="convert-confirm">Send to agent</button>
+      </div>
+    </dialog>
+    <dialog id="reset-confirm-dlg" class="reset-confirm-dlg">
+      <h3>Reset to baseline?</h3>
+      <div class="reset-doc-line" id="reset-doc-line"></div>
+      <p>This replaces the working copy with the immutable history-0 baseline. Any edits since are discarded.</p>
+      <p class="reset-safety">Your current state is captured as a fresh snapshot before the reset — recoverable via the <strong>History</strong> dropdown.</p>
+      <div class="reset-actions">
+        <button type="button" class="btn-secondary" id="reset-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="reset-confirm">Reset to baseline</button>
       </div>
     </dialog>
     <div id="new-doc-overlay" class="new-doc-overlay" hidden>
@@ -2275,12 +2332,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   });
 
-  resetDocBtn.addEventListener('click', async () => {
+  const resetConfirmDlg = document.getElementById('reset-confirm-dlg');
+  const resetDocLine = document.getElementById('reset-doc-line');
+  const resetCancelBtn = document.getElementById('reset-cancel');
+  const resetConfirmBtn = document.getElementById('reset-confirm');
+
+  async function performReset() {
     if (!currentDoc) return;
-    if (!confirm('Reset `' + currentDoc + '` to history-0 (the earliest snapshot)?\n' +
-                 'All edits since that snapshot will be discarded. ' +
-                 'For the version shipped with this clone of the repo, ' +
-                 'use `git checkout ' + currentDoc + '` from the command line instead.')) return;
     try {
       const resp = await fetch('/reset?doc=' + encodeURIComponent(currentDoc),
                                { method: 'POST' });
@@ -2294,6 +2352,31 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     } catch (err) {
       appendMessage('error', 'reset error: ' + (err.message || err));
     }
+  }
+
+  resetDocBtn.addEventListener('click', () => {
+    if (!currentDoc) return;
+    resetDocLine.textContent = `docs/${currentDoc}/current.md  ←  baseline.md`;
+    if (typeof resetConfirmDlg.showModal === 'function') {
+      resetConfirmDlg.showModal();
+      // Focus Cancel by default — destructive action shouldn't be one-tap
+      // from the keyboard. The user has to deliberately tab to Reset.
+      setTimeout(() => resetCancelBtn.focus(), 0);
+    } else {
+      // Pre-<dialog>-support fallback (very old browsers): native confirm.
+      if (confirm(`Reset docs/${currentDoc}/current.md to baseline.md?`)) {
+        performReset();
+      }
+    }
+  });
+  resetCancelBtn.addEventListener('click', () => resetConfirmDlg.close('cancel'));
+  resetConfirmBtn.addEventListener('click', async () => {
+    resetConfirmDlg.close('confirm');
+    await performReset();
+  });
+  // Backdrop click closes the dialog (matches the rest of the viewer UX).
+  resetConfirmDlg.addEventListener('click', (e) => {
+    if (e.target === resetConfirmDlg) resetConfirmDlg.close('backdrop');
   });
 
   // ---- Drop-to-upload ------------------------------------------------------
