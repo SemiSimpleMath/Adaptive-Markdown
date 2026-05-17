@@ -12,7 +12,6 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 
 <script src="https://cdn.jsdelivr.net/npm/markdown-it@13.0.2/dist/markdown-it.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/markdown-it-container@4.0.0/dist/markdown-it-container.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/markdown-it-attrs@4.1.6/markdown-it-attrs.browser.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 
@@ -344,7 +343,8 @@ article h4 { font-size: 1rem;    }
   border-left: 3px solid var(--example-bd);
   padding: .5rem .75rem;
 }
-.directive.note, .directive.aside, .directive.remark {
+/* Callouts — agents express these as <aside class="note|aside|remark"> */
+aside.note, aside.aside, aside.remark, .note, .aside, .remark {
   font-style: italic; color: var(--muted);
   background: #fafaf6; border-left: 3px solid #999;
   padding: 0.5em 0.9em; margin: 1em 0;
@@ -360,21 +360,18 @@ article h4 { font-size: 1rem;    }
 a[href^="#"] { color: var(--accent); text-decoration: none; }
 a[href^="#"]:hover { text-decoration: underline; }
 
-/* Directive blocks */
-.directive { margin: 1.5rem 0; padding: 1rem 1.25rem; border-radius: 4px; }
-.directive.figure {
-  background: white;
-  border: 2px dashed var(--border);
-  text-align: center;
-}
-.directive.figure .figure-intent { font-style: italic; color: #333; }
-/* Hide intent caption once the figure has rendered content (matching the
-   iframe srcdoc rule). Caption is a placeholder affordance only. */
-.directive.figure:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table) .figure-intent {
-  display: none;
-}
-.directive.pinned { background: #fffaf3; border-left: 3px solid #c39548; }
-.directive.pinned::before {
+/* Figures — agents express these as <figure>[…]<figcaption>…</figcaption></figure>.
+   The caption is always visible (HTML5-semantic). Native <figure> needs
+   no extra class. */
+figure { margin: 1.5rem 0; padding: 1rem 1.25rem; border-radius: 4px;
+         background: white; border: 2px dashed var(--border);
+         text-align: center; }
+figure figcaption { font-style: italic; color: #333; padding-top: .35rem; }
+
+/* Pinned (author-locked) — agents express as <div class="pinned"> */
+.pinned { background: #fffaf3; border-left: 3px solid #c39548;
+          padding: 1rem 1.25rem; margin: 1.5rem 0; border-radius: 4px; }
+.pinned::before {
   content: "🔒 pinned";
   display: block;
   font-size: .7rem; text-transform: uppercase; letter-spacing: .08em;
@@ -799,178 +796,25 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return { frontmatter: fm, body: text.slice(m[0].length) };
   }
 
-  function parseDirectiveInfo(info) {
-    // Accept either canonical curly-brace form
-    //   :::name { key=value key=value }
-    // or HTML-attribute form (what agents naturally reach for)
-    //   :::name key=value key="quoted value"
-    // Both reduce to {name, attrs}. Anything else (e.g. ":::name some
-    // free-form text") doesn't match — it stays as a paragraph and the
-    // surface issue is visible to the reader.
-    const trimmed = info.trim();
-    const m = trimmed.match(
-      /^(\w[\w-]*)(?:\s*\{([^}]*)\}|\s+(\w[\w-]*\s*=.+))?$/,
-    );
-    if (!m) return { name: null, attrs: {} };
-    const name = m[1].toLowerCase();
-    const attrStr = (m[2] || m[3] || '').trim();
-    const attrs = {};
-    const re = /(\w[\w-]*)\s*=\s*("([^"]*)"|([^\s"]+))/g;
-    let am;
-    while ((am = re.exec(attrStr)) !== null) {
-      attrs[am[1]] = am[3] !== undefined ? am[3] : am[4];
-    }
-    return { name, attrs };
-  }
-
   function escapeAttr(s) {
     return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
                     .replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
   function escapeHtml(s) { return escapeAttr(s); }
 
-  // Render a directive's attrs into the HTML opener. Always emits a
-  // class="<base> [+ user class]". Passes through id, style, and any
-  // data-*/aria-*/role attribute. Inline event handlers (onclick etc.)
-  // are dropped — that's not what attrs are for, and the iframe sandbox
-  // already blunts them but cleanliness is cheap.
-  function directiveAttrsHtml(attrs, baseClass) {
-    const parts = [];
-    const userCls = (attrs && typeof attrs.class === 'string') ? attrs.class.trim() : '';
-    const cls = userCls ? `${baseClass} ${userCls}` : baseClass;
-    parts.push(` class="${escapeAttr(cls)}"`);
-    if (attrs && attrs.id) parts.push(` id="${escapeAttr(attrs.id)}"`);
-    if (attrs && typeof attrs.style === 'string') parts.push(` style="${escapeAttr(attrs.style)}"`);
-    if (attrs && typeof attrs.role === 'string') parts.push(` role="${escapeAttr(attrs.role)}"`);
-    for (const key of Object.keys(attrs || {})) {
-      if (/^(data|aria)-[a-zA-Z0-9_-]+$/.test(key)) {
-        parts.push(` ${key}="${escapeAttr(attrs[key])}"`);
-      }
-    }
-    return parts.join('');
-  }
-
-  // markdown-it-attrs (also loaded) intercepts `{ key=value }` markers on
-  // container opener lines and moves them onto the token's `t.attrs`
-  // array, stripping them from `t.info` in the process. We have to merge
-  // both — info covers the HTML-attribute form (`:::name k=v`), t.attrs
-  // covers the canonical curly-brace form (`:::name { k=v }`).
-  function mergeTokenAttrs(infoAttrs, tokenAttrs) {
-    const out = Object.assign({}, infoAttrs);
-    if (Array.isArray(tokenAttrs)) {
-      for (const pair of tokenAttrs) {
-        if (Array.isArray(pair) && pair.length >= 2 && !(pair[0] in out)) {
-          out[pair[0]] = pair[1];
-        }
-      }
-    }
-    return out;
-  }
-
-  function registerContainer(md, name, render) {
-    md.use(window.markdownitContainer, name, {
-      validate(params) {
-        const p = parseDirectiveInfo(params);
-        return p.name === name;
-      },
-      render(tokens, idx) {
-        const t = tokens[idx];
-        if (t.nesting === 1) {
-          const { attrs } = parseDirectiveInfo(t.info);
-          return render(mergeTokenAttrs(attrs, t.attrs), true);
-        }
-        return render(null, false);
-      },
-    });
-  }
-
   function buildMd() {
+    // Structured content (callouts, figures, theorems, locked blocks) is
+    // expressed as raw HTML blocks in the source — <aside class="note">,
+    // <figure>, <section class="theorem">, <div class="pinned">. The
+    // CommonMark HTML-block rule passes them through verbatim; CSS
+    // targets the resulting class names directly. No directive plugin
+    // needed — that whole parallel grammar is gone.
     const md = window.markdownit({
       // typographer OFF — it converts straight apostrophes to curly,
       // which breaks KaTeX's prime notation (f' becomes f' which KaTeX
       // doesn't recognize as a derivative).
       html: true, linkify: true, breaks: false, typographer: false,
     }).use(window.markdownItAttrs);
-
-    // Kind-blocks: structured statements (theorem, definition, example,
-    // proof, abstract...). Render as <section class="kind-X kind-block">
-    // because they semantically wrap a numbered/named statement, not a
-    // styled callout.
-    for (const kind of ['theorem', 'lemma', 'proposition', 'corollary',
-                        'definition', 'example',
-                        'proof', 'solution', 'abstract']) {
-      registerContainer(md, kind, (attrs, open) => {
-        if (open) {
-          const name = attrs && attrs.name ? ` data-name="${escapeAttr(attrs.name)}"` : '';
-          return `<section${directiveAttrsHtml(attrs, `kind-${kind} kind-block`)}${name}>\n`;
-        }
-        return `</section>\n`;
-      });
-    }
-
-    // Note-family directives: callouts, not structured statements. Render
-    // as <div class="directive note"> alongside figure / pinned, so the
-    // .directive.X CSS rules actually target what the renderer emits.
-    for (const name of ['note', 'aside', 'remark']) {
-      registerContainer(md, name, (attrs, open) => {
-        if (open) {
-          return `<div${directiveAttrsHtml(attrs, `directive ${name}`)}>\n`;
-        }
-        return `</div>\n`;
-      });
-    }
-
-    registerContainer(md, 'figure', (attrs, open) => {
-      if (open) {
-        const renderer = attrs && attrs.renderer ? attrs.renderer : 'svg';
-        const intent = attrs && attrs.intent ? attrs.intent : '';
-        // The intent text is rendered as a caption only when the figure body
-        // is empty (CSS `:has()` rule hides it once real content is inside).
-        // Always set aria-label so screen readers have the description, even
-        // when the visible caption is hidden behind the rendered figure.
-        const aria = intent ? ` aria-label="${escapeAttr(intent)}"` : '';
-        return (
-          `<div class="directive figure" data-renderer="${escapeAttr(renderer)}"${aria}>` +
-          (intent ? `<div class="figure-intent">${escapeHtml(intent)}</div>` : '') +
-          `<div class="figure-body">`
-        );
-      }
-      return `</div></div>\n`;
-    });
-
-    registerContainer(md, 'pinned', (attrs, open) => {
-      if (open) return `<div${directiveAttrsHtml(attrs, 'directive pinned')}>\n`;
-      return `</div>\n`;
-    });
-
-    // Catch-all: any directive whose name isn't one of the specific names
-    // above must still render as a plain `<div class="directive NAME">`,
-    // never leak its `:::` markers into the rendered DOM. Matches the
-    // contract FORMAT.md states ("any other directive name renders as a
-    // div with that class"). Registered last so specific handlers take
-    // precedence on their own names.
-    const KNOWN_DIRECTIVES = new Set([
-      'theorem', 'lemma', 'proposition', 'corollary',
-      'definition', 'example', 'remark', 'note', 'aside',
-      'proof', 'solution', 'abstract',
-      'figure', 'pinned',
-    ]);
-    md.use(window.markdownitContainer, 'directive_unknown', {
-      validate(params) {
-        const p = parseDirectiveInfo(params);
-        return !!p.name && !KNOWN_DIRECTIVES.has(p.name);
-      },
-      render(tokens, idx) {
-        const t = tokens[idx];
-        if (t.nesting === 1) {
-          const { name, attrs } = parseDirectiveInfo(t.info);
-          const merged = mergeTokenAttrs(attrs, t.attrs);
-          return `<div${directiveAttrsHtml(merged, `directive ${escapeAttr(name)}`)}>\n`;
-        }
-        return `</div>\n`;
-      },
-    });
-
     return md;
   }
   const md = buildMd();
@@ -1102,31 +946,35 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       'article#body pre { background: var(--am-pre-bg); padding: 0.8em; border-radius: 3px; overflow-x: auto; }',
       'article#body pre code { background: transparent; padding: 0; }',
       'article#body a { color: var(--am-link); }',
-      'article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,article,section,div.directive) { cursor: pointer; }',
+      'article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,article,section,aside,figure,div.pinned) { cursor: pointer; }',
       'article#body .hover-block { outline: 1px dashed var(--am-hover-outline); outline-offset: 6px; }',
       'article#body .selected-block, article#body .selected-block.hover-block { outline: 2px solid var(--am-selection-outline); outline-offset: 6px; border-radius: 2px; }',
       // Insertion marker — appears when the reader clicks in a gap between
       // blocks. A slim horizontal line at the chosen insertion point.
       'article#body .insertion-marker { height: 2px; background: var(--am-selection-outline); margin: 6px 0; border-radius: 1px; pointer-events: none; opacity: 0.85; }',
+      // Heading-form kind-blocks: the iframe-side annotateHs() tags
+      // headings whose first word matches a kind, so `## Theorem (Rolle)`
+      // becomes `<h2 data-kind="theorem">`. Section-form kind-blocks
+      // (`<section class="theorem"><h2>…</h2>…</section>`) target the
+      // <section> directly for boundary visualization.
       'article#body [data-kind="theorem"], article#body [data-kind="lemma"], article#body [data-kind="proposition"], article#body [data-kind="corollary"] { color: var(--am-theorem-color); font-style: italic; }',
       'article#body [data-kind="definition"] { color: var(--am-definition-color); font-style: italic; }',
       'article#body [data-kind="example"], article#body [data-kind="solution"], article#body [data-kind="proof"] { color: var(--am-example-color); font-style: italic; }',
-      '.directive { padding: 0.8em 1.2em; margin: 1em 0; border-left: 3px solid; }',
-      '.directive.note, .directive.aside, .directive.remark { border-color: var(--am-note-border); background: var(--am-note-bg); }',
-      '.directive.pinned { border-color: var(--am-pinned-border); background: var(--am-pinned-bg); }',
-      '.directive.figure { padding: 0.6em; text-align: center; }',
-      '/* Only empty / intent-only figures get the dashed placeholder border; ',
-      '   real figures with rendered content render cleanly. */',
-      '.directive.figure:not(:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table)) {',
-      '  border: 1px dashed var(--am-figure-placeholder-border);',
-      '}',
-      '/* Show the intent caption only on placeholder figures. Once the figure ',
-      '   has rendered content the caption becomes noise — the figure speaks ',
-      '   for itself, and the intent stays accessible via the aria-label. */',
-      '.directive.figure:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table) .figure-intent {',
-      '  display: none;',
-      '}',
-      '.directive.figure .figure-intent { font-style: italic; color: var(--am-figure-caption); padding: 0.3em 0; }',
+      'article#body section.theorem, article#body section.lemma, article#body section.proposition, article#body section.corollary { border-left: 3px solid var(--am-theorem-color); padding: 0.4em 0.9em; margin: 1em 0; }',
+      'article#body section.definition { border-left: 3px solid var(--am-definition-color); padding: 0.4em 0.9em; margin: 1em 0; }',
+      'article#body section.example, article#body section.solution, article#body section.proof { border-left: 3px solid var(--am-example-color); padding: 0.4em 0.9em; margin: 1em 0; }',
+      // Callouts — agents emit <aside class="note|aside|remark"> (or
+      // a plain <div> with one of those classes). The class is the
+      // semantic anchor; the element is whatever the agent chose.
+      'aside.note, aside.aside, aside.remark, .note, .aside, .remark { border-left: 3px solid var(--am-note-border); background: var(--am-note-bg); padding: 0.8em 1.2em; margin: 1em 0; }',
+      // Pinned (author-locked) — agents emit <div class="pinned">.
+      '.pinned { border-left: 3px solid var(--am-pinned-border); background: var(--am-pinned-bg); padding: 0.8em 1.2em; margin: 1em 0; }',
+      // Figures — semantic HTML5. <figure>...</figure> with optional
+      // <figcaption>. The dashed placeholder border shows when the
+      // figure has no rendered content yet (just text).
+      'figure { padding: 0.6em; margin: 1em 0; text-align: center; border-radius: 4px; }',
+      'figure:not(:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table)) { border: 1px dashed var(--am-figure-placeholder-border); }',
+      'figure figcaption { font-style: italic; color: var(--am-figure-caption); padding-top: 0.35em; }',
       '.error-banner { background: var(--am-error-bg); border: 1px solid var(--am-error-border); border-radius: 4px; padding: 0.75rem 1rem; color: var(--am-error-text); font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }',
       '</style></head><body>',
       '<div class="meta" id="meta"></div>',
@@ -1801,15 +1649,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
 
   // ---- Selection ----------------------------------------------------------
-  const BLOCK_KINDS = ['theorem','lemma','proposition','corollary','definition',
-                       'example','proof','solution','remark','note','aside','abstract'];
+  // Block-level identifiers that the selection logic should treat as a
+  // unit. <aside>/<figure> are semantic HTML; .pinned is the locked
+  // marker; class names match the kind-block conventions.
+  const BLOCK_CLASSES = ['theorem','lemma','proposition','corollary','definition',
+                         'example','proof','solution','remark','note','aside','abstract',
+                         'pinned'];
+  const BLOCK_TAGS = ['ASIDE', 'FIGURE', 'SECTION'];
 
   function findBlock(el) {
     while (el && el !== body && el.nodeType === 1) {
+      if (BLOCK_TAGS.includes(el.tagName)) return el;
       if (el.classList) {
-        if (el.classList.contains('directive')) return el;
-        for (const k of BLOCK_KINDS) {
-          if (el.classList.contains('kind-' + k)) return el;
+        for (const c of BLOCK_CLASSES) {
+          if (el.classList.contains(c) || el.classList.contains('kind-' + c)) return el;
         }
       }
       if (/^H[1-6]$/.test(el.tagName) && el.id) return el;

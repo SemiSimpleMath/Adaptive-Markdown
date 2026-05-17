@@ -35,7 +35,7 @@ The **unit circle** is the set of points $(x, y)$ in the plane satisfying $x^2 +
 
 > Click this section. Then ask: **"Add a figure that draws the unit circle and animates a point tracing it as $\theta$ increases."**
 
-The agent edits the source to add a `:::figure` block containing a `<canvas>` and the JavaScript that draws on it. Open the **Source** tab to see exactly what got inserted — no hidden framework, no component palette. Just markdown with an embedded `<script>`.
+The agent edits the source to add a `<figure>` block containing a `<canvas>` and the JavaScript that draws on it. Open the **Source** tab to see exactly what got inserted — no hidden framework, no component palette. Just markdown with embedded HTML and `<script>`.
 
 ## Try 4 — Change the page itself {#try-page}
 
@@ -50,11 +50,13 @@ Try one of these (you don't need to click anything first — these are page-wide
 
 When the agent is done, open the **Source** tab and scroll to the bottom. You'll see a literal `<script>` block (or `<style>`) that the agent wrote. This page isn't a render of a doc — it *is* the doc, executing.
 
-::: pinned
-This block is author-locked. The agent may restyle and augment the surrounding tutorial, but the words inside `:::pinned` directives won't be rewritten.
+<div class="pinned">
+
+This block is author-locked. The agent may restyle and augment the surrounding tutorial, but the words inside `<div class="pinned">` blocks won't be rewritten.
 
 Authors can choose what sections are non-editable. The entire document history is also carried, and the original document is the provenance.
-:::
+
+</div>
 
 ## Future
 In a few years, no one will be reading journals on paper. Everyone will be interacting with articles, translating them instantly, exploring alternative proofs, asking questions, writing code on the spot into the document. This is Adaptive Markdown.

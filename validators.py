@@ -216,36 +216,16 @@ def _check_svg(body: str, line: int) -> ValidationError | None:
         }
 
 
-def _check_directives(src: str) -> list[ValidationError]:
-    """Count :::name opens vs ::: closes; skip fenced ``` blocks."""
-    errors: list[ValidationError] = []
-    in_fence = False
-    opens: list[dict] = []
-    for i, raw in enumerate(src.split("\n")):
-        if raw.strip().startswith("```"):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        open_m = re.match(r"^\s*:::\s*(\w[\w-]*)", raw)
-        close_m = re.match(r"^\s*:::\s*$", raw)
-        if open_m:
-            opens.append({"name": open_m.group(1), "line": i + 1})
-        elif close_m and opens:
-            opens.pop()
-    for o in opens:
-        errors.append({
-            "kind": "directive", "line": o["line"],
-            "message": (
-                f"unclosed :::{o['name']} (no matching ::: to close it)"
-            ),
-        })
-    return errors
-
-
 def validate_doc(text: str) -> list[ValidationError]:
     """Run all validators on a markdown source string. Returns a flat list
-    of errors with kind / line / message — empty list means valid."""
+    of errors with kind / line / message — empty list means valid.
+
+    Structured content (callouts, figures, theorems, locked blocks) is
+    plain HTML in the source — markdown-it passes those blocks through
+    verbatim and the renderer applies CSS by class. There is no
+    directive grammar to police here; if the agent writes malformed
+    HTML the browser is forgiving and the user sees a visual glitch
+    rather than a hard failure."""
     errors: list[ValidationError] = []
     for s in _extract_blocks(text, "script"):
         e = _check_js(s["body"], s["line"])
@@ -259,7 +239,6 @@ def validate_doc(text: str) -> list[ValidationError]:
         e = _check_svg(s["body"], s["line"])
         if e:
             errors.append(e)
-    errors.extend(_check_directives(text))
     return errors
 
 
