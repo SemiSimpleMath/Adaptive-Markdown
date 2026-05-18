@@ -85,6 +85,13 @@ figure { padding: 0.6em; margin: 1em 0; text-align: center; border-radius: 4px; 
 figure:not(:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table)) { border: 1px dashed var(--am-figure-placeholder-border); }
 figure figcaption { font-style: italic; color: var(--am-figure-caption); padding-top: 0.35em; }
 .error-banner { background: var(--am-error-bg); border: 1px solid var(--am-error-border); border-radius: 4px; padding: 0.75rem 1rem; color: var(--am-error-text); font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }
+/* Music figures: the renderer replaces the inner source with notation +
+   audio. We don't want the figure's dashed-placeholder border showing
+   through, and we want a bit of breathing room above the audio widget. */
+figure.music { text-align: left; border: 0; padding: 0.4em 0; }
+figure.music .abc-notation, figure.music .musicxml-render { background: white; padding: 0.5em; border-radius: 4px; overflow-x: auto; }
+figure.music .abc-audio { margin-top: 0.6em; }
+figure.music midi-player { display: block; margin: 0.4em 0; }
 </style>
 </head>
 <body>
@@ -230,6 +237,150 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
       const parent = node.parentNode;
       for (const o of out) parent.insertBefore(o, node);
       parent.removeChild(node);
+    }
+  }
+
+  // ---- Music rendering -----------------------------------------------
+  // Convention: `<figure class="music">` containing one of
+  //   - `<div class="abc">…ABC notation…</div>`
+  //   - `<div class="musicxml">…XML…</div>`
+  //   - `<midi-player src="assets/song.mid" sound-font>`
+  // Each renderer lazy-loads its CDN library only when the doc actually
+  // contains music — empty cost for docs that don't use it.
+  //
+  // morphdom would normally replace our rendered notation with the
+  // markdown source on every setContent. We mark rendered divs with
+  // `data-am-music-source` (the source text we rendered from) and the
+  // morphdom onBeforeElUpdated check below uses it to skip morph when
+  // the source hasn't changed.
+
+  const _scriptLoadPromises = new Map();
+  function loadScriptOnce(src) {
+    if (_scriptLoadPromises.has(src)) return _scriptLoadPromises.get(src);
+    const p = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('failed to load ' + src));
+      document.head.appendChild(s);
+    });
+    _scriptLoadPromises.set(src, p);
+    return p;
+  }
+
+  const _styleLoadPromises = new Map();
+  function loadStylesheetOnce(href) {
+    if (_styleLoadPromises.has(href)) return _styleLoadPromises.get(href);
+    const p = new Promise((resolve, reject) => {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = href;
+      link.onload = () => resolve();
+      link.onerror = () => reject(new Error('failed to load ' + href));
+      document.head.appendChild(link);
+    });
+    _styleLoadPromises.set(href, p);
+    return p;
+  }
+
+  async function renderMusicBlocks(root) {
+    // --- ABC ---
+    const abcDivs = Array.from(root.querySelectorAll('figure.music div.abc'));
+    const abcTodo = abcDivs.filter(d =>
+      d.dataset.amMusicSource !== (d.textContent || '').trim()
+    );
+    if (abcTodo.length) {
+      try {
+        // abcjs ships its audio-widget CSS separately; without it the
+        // play widget renders as "CSS required: load abcjs-audio.css".
+        loadStylesheetOnce(
+          'https://cdn.jsdelivr.net/npm/abcjs@6/abcjs-audio.css',
+        ).catch(() => {});
+        await loadScriptOnce(
+          'https://cdn.jsdelivr.net/npm/abcjs@6/dist/abcjs-basic-min.min.js',
+        );
+        for (const div of abcTodo) {
+          const source = (div.textContent || '').trim();
+          div.dataset.amMusicSource = source;
+          div.innerHTML = '';
+          const notation = document.createElement('div');
+          notation.className = 'abc-notation';
+          div.appendChild(notation);
+          try {
+            const visual = window.ABCJS.renderAbc(notation, source, {
+              responsive: 'resize',
+            });
+            if (window.ABCJS.synth && window.ABCJS.synth.supportsAudio()) {
+              const audio = document.createElement('div');
+              audio.className = 'abc-audio';
+              div.appendChild(audio);
+              const synth = new window.ABCJS.synth.SynthController();
+              synth.load(audio, null, {
+                displayLoop: false, displayRestart: true,
+                displayPlay: true, displayProgress: true, displayWarp: true,
+              });
+              const midiBuffer = new window.ABCJS.synth.CreateSynth();
+              midiBuffer.init({ visualObj: visual[0] })
+                .then(() => synth.setTune(visual[0], false))
+                .catch(err => console.warn('abc audio init:', err));
+            }
+          } catch (e) {
+            notation.innerHTML =
+              '<div class="error-banner">ABC render failed: '
+              + (e.message || e) + '</div>';
+          }
+        }
+      } catch (e) {
+        console.warn('abcjs failed to load:', e);
+      }
+    }
+
+    // --- MusicXML ---
+    const xmlDivs = Array.from(root.querySelectorAll('figure.music div.musicxml'));
+    const xmlTodo = xmlDivs.filter(d =>
+      d.dataset.amMusicSource !== (d.textContent || '').trim()
+    );
+    if (xmlTodo.length) {
+      try {
+        await loadScriptOnce(
+          'https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.9.0/build/opensheetmusicdisplay.min.js',
+        );
+        for (const div of xmlTodo) {
+          const source = (div.textContent || '').trim();
+          div.dataset.amMusicSource = source;
+          div.innerHTML = '';
+          const target = document.createElement('div');
+          target.className = 'musicxml-render';
+          div.appendChild(target);
+          try {
+            const osmd = new window.opensheetmusicdisplay.OpenSheetMusicDisplay(target);
+            await osmd.load(source);
+            osmd.render();
+          } catch (e) {
+            target.innerHTML =
+              '<div class="error-banner">MusicXML render failed: '
+              + (e.message || e) + '</div>';
+          }
+        }
+      } catch (e) {
+        console.warn('OpenSheetMusicDisplay failed to load:', e);
+      }
+    }
+
+    // --- MIDI (web component upgrades automatically once the script loads) ---
+    const midiTags = root.querySelectorAll(
+      'figure.music midi-player:not([data-am-music-loaded])',
+    );
+    if (midiTags.length) {
+      try {
+        await loadScriptOnce(
+          'https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0',
+        );
+        midiTags.forEach(el => { el.dataset.amMusicLoaded = '1'; });
+      } catch (e) {
+        console.warn('html-midi-player failed to load:', e);
+      }
     }
   }
 
@@ -540,7 +691,18 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     if (window.morphdom) {
       window.morphdom(body, tmp, {
         childrenOnly: true,
-        onBeforeElUpdated(f, t) { if (f.isEqualNode(t)) return false; return true; },
+        onBeforeElUpdated(f, t) {
+          // Music blocks: when the source hasn't changed, leave the
+          // rendered notation alone instead of letting morphdom overwrite
+          // it with the raw markdown source. We re-render only when the
+          // source genuinely differs.
+          if (f.dataset && f.dataset.amMusicSource !== undefined) {
+            const newSource = (t.textContent || '').trim();
+            if (f.dataset.amMusicSource === newSource) return false;
+          }
+          if (f.isEqualNode(t)) return false;
+          return true;
+        },
       });
     } else {
       body.innerHTML = html || '';
@@ -555,6 +717,7 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     applySelection();
     applyEditableMode();
     renderMath();
+    renderMusicBlocks(body).catch(e => console.warn('music render:', e));
     se.scrollTop = sy;
   }
 

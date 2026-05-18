@@ -785,8 +785,16 @@ class State:
         dead = []
         async with self.client_lock:
             for ws in self.clients:
+                if ws.closed:
+                    dead.append(ws)
+                    continue
                 try:
-                    await ws.send_str(text)
+                    # 2s per-client timeout: an orphaned WS whose browser
+                    # navigated away can keep the TCP send buffer full
+                    # until the heartbeat (30s) detects it. Holding the
+                    # client_lock that long blocks every new WS handshake
+                    # downstream. Treat slow sends as dead and move on.
+                    await asyncio.wait_for(ws.send_str(text), timeout=2.0)
                 except Exception:
                     dead.append(ws)
             for ws in dead:
@@ -1832,6 +1840,124 @@ _ASSET_EXTS = {
 }
 
 
+# Music file imports: .abc / .musicxml are text source we just wrap in a
+# <figure class="music"> block; .mid / .midi are binary, saved as an
+# asset that a <midi-player> references. All renderers lazy-load their
+# CDN library only when a doc contains music, so zero cost when not used.
+_MUSIC_TEXT_EXTS = {".abc", ".musicxml", ".mxl", ".xml"}
+_MUSIC_BINARY_EXTS = {".mid", ".midi"}
+_MUSIC_TEXT_MAX_BYTES = 2 * 1024 * 1024   # 2MB cap on music source text
+_MUSIC_BINARY_MAX_BYTES = 5 * 1024 * 1024  # 5MB cap on MIDI binaries
+
+
+def _music_inner_div_class(ext: str) -> str:
+    """Map the upload extension to the inner div class the iframe runtime
+    recognizes. .xml is treated as MusicXML when accompanied by an
+    .mxl/.musicxml-style structure — there's no portable way to tell from
+    extension alone, so we default to musicxml for .xml in this music
+    upload path."""
+    if ext == ".abc":
+        return "abc"
+    return "musicxml"
+
+
+async def _upload_music_doc(
+    request: web.Request,
+    field: "web.BodyPartReader",
+    raw_name: str,
+    ext: str,
+) -> web.Response:
+    """Drop a .abc / .musicxml / .mid file onto +Doc and you get a new
+    doc whose body is a single `<figure class="music">` block. The iframe
+    runtime renders it via abcjs / OSMD / html-midi-player on first view."""
+    is_binary = ext in _MUSIC_BINARY_EXTS
+    cap = _MUSIC_BINARY_MAX_BYTES if is_binary else _MUSIC_TEXT_MAX_BYTES
+
+    total = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = await field.read_chunk(size=64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            return web.json_response(
+                {"error": f"file too large (max {cap // (1024 * 1024)}MB "
+                          f"for {ext} imports)"},
+                status=413,
+            )
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    if total == 0:
+        return web.json_response({"error": "empty file"}, status=400)
+
+    # Slug derivation matches the rest of the upload paths.
+    raw_stem = Path(raw_name).stem
+    slug_base = re.sub(r"[^a-z0-9-]+", "-", raw_stem.lower()).strip("-")
+    if not slug_base or not _DOC_SLUG_RE.match(slug_base):
+        slug_base = "music"
+    slug = slug_base
+    counter = 1
+    while (DOCS_ROOT / slug).exists():
+        counter += 1
+        slug = f"{slug_base}-{counter}"
+    doc_dir = DOCS_ROOT / slug
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    title = raw_stem
+
+    if is_binary:
+        # MIDI: save as an asset, reference via <midi-player>.
+        assets_dir = doc_dir / "assets"
+        assets_dir.mkdir(exist_ok=True)
+        # Sanitize the original filename — same allowlist as upload_asset.
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(raw_name).name)
+        if not safe_name.lower().endswith(ext):
+            safe_name = f"score{ext}"
+        (assets_dir / safe_name).write_bytes(raw)
+        body_md = (
+            f'---\ntitle: "{title}"\n---\n\n'
+            f"# {title}\n\n"
+            '<figure class="music">\n'
+            f'<midi-player src="assets/{safe_name}" sound-font></midi-player>\n'
+            "<figcaption>MIDI playback — synthesized in-browser.</figcaption>\n"
+            "</figure>\n"
+        )
+    else:
+        text = raw.decode("utf-8", errors="replace")
+        text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        inner_cls = _music_inner_div_class(ext)
+        # Keep blank lines inside the music div from terminating the
+        # type-6 HTML block: wrap the source so the figure stays a
+        # single block to CommonMark. The source survives intact because
+        # textContent on the div preserves whitespace.
+        body_md = (
+            f'---\ntitle: "{title}"\n---\n\n'
+            f"# {title}\n\n"
+            '<figure class="music">\n'
+            f'<div class="{inner_cls}">\n{text}\n</div>\n'
+            "</figure>\n"
+        )
+
+    (doc_dir / "current.md").write_text(body_md, encoding="utf-8", newline="")
+    (doc_dir / "baseline.md").write_text(body_md, encoding="utf-8", newline="")
+    ensure_doc_ids()
+    await state.broadcast({
+        "type": "docs", "list": list_all_docs(), "doc": slug,
+    })
+    print(
+        f"[upload:music] docs/{slug}/current.md ({total}B {ext})",
+        flush=True,
+    )
+    return web.json_response({
+        "path": f"docs/{slug}/current.md",
+        "slug": slug,
+        "name": "current.md",
+        "kind": ext,
+        "converted": True,
+        "converter": "music",
+    })
+
+
 async def _upload_binary_doc(
     request: web.Request,
     field: "web.BodyPartReader",
@@ -1979,6 +2105,12 @@ async def upload_md(request: web.Request) -> web.Response:
 
     raw_name = field.filename or "uploaded.md"
     ext = Path(raw_name).suffix.lower()
+
+    # Music file imports: wrap source / MIDI binary in a `<figure class=
+    # "music">` block and save as a new doc. Iframe runtime lazy-loads
+    # the right renderer (abcjs / OSMD / html-midi-player) on view.
+    if ext in _MUSIC_TEXT_EXTS or ext in _MUSIC_BINARY_EXTS:
+        return await _upload_music_doc(request, field, raw_name, ext)
 
     # Binary-doc imports (PDF, DOCX, XLSX, PPTX) go through markitdown
     # server-side. They're not text and would fail the NUL-byte guard below;
