@@ -74,6 +74,13 @@ article#body section.definition { border-left: 3px solid var(--am-definition-col
 article#body section.example, article#body section.solution, article#body section.proof { border-left: 3px solid var(--am-example-color); padding: 0.4em 0.9em; margin: 1em 0; }
 aside.note, aside.aside, aside.remark, .note, .aside, .remark { border-left: 3px solid var(--am-note-border); background: var(--am-note-bg); padding: 0.8em 1.2em; margin: 1em 0; }
 .pinned { border-left: 3px solid var(--am-pinned-border); background: var(--am-pinned-bg); padding: 0.8em 1.2em; margin: 1em 0; }
+/* Per-doc agent skill: meta material authored for the agent's use, not for
+   the reader. Author writes it as a normal HTML block in the doc body
+   (so it ships with the file, survives Reset / export); the rendered Doc
+   view hides it. Source view shows it as-is, so the author can read and
+   edit it; the agent reads it via the chat preamble (which inlines the
+   raw source). */
+.agent-skill { display: none; }
 figure { padding: 0.6em; margin: 1em 0; text-align: center; border-radius: 4px; }
 figure:not(:has(canvas, svg, img, video, audio, iframe, .desmos-container, picture, table)) { border: 1px dashed var(--am-figure-placeholder-border); }
 figure figcaption { font-style: italic; color: var(--am-figure-caption); padding-top: 0.35em; }

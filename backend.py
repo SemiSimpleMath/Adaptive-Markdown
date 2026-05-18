@@ -1394,6 +1394,25 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                             f"=== doc:{rel_for_agent} ===\n{doc_text}\n=== end doc ==="
                         )
                         doc_inlined = True
+                        # Per-doc agent skill: any section in the body with
+                        # class="agent-skill" is meta authored for you, not
+                        # for the reader (the viewer hides it via CSS).
+                        # Surface it explicitly so you don't gloss over it
+                        # as "just a block in the doc."
+                        if 'class="agent-skill"' in doc_text \
+                                or "class='agent-skill'" in doc_text:
+                            preamble.append(
+                                "This doc carries one or more "
+                                "`<section class=\"agent-skill\">…</section>` "
+                                "blocks in its body. Those sections are the "
+                                "doc's working contract — voice, formatting, "
+                                "structural conventions specific to this doc. "
+                                "They override generic guidance in the global "
+                                "adaptive-markdown skill when they conflict. "
+                                "Treat them as authoritative; preserve them "
+                                "across edits unless the reader explicitly "
+                                "asks you to change them."
+                            )
                     elif doc_text is not None:
                         preamble.append(
                             f'The reader is viewing "{doc}" — file path '
