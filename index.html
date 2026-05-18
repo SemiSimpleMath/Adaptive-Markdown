@@ -2293,15 +2293,111 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     setAgentBusy(false);
   }
 
+  // ---- Slash commands ----------------------------------------------------
+  // Anything typed in chat that starts with "/" is intercepted here instead
+  // of being forwarded to the agent. Returns true if handled (caller clears
+  // input and returns); false to fall through to the normal chat path.
+  const SLASH_HELP = (
+    "**Slash commands**\n\n" +
+    "- `/cancel` — interrupt the agent's current turn\n" +
+    "- `/help` — show this list\n" +
+    "- `/reset` — restore the doc to its baseline (opens a confirmation)\n" +
+    "- `/undo` — revert the doc to its previous snapshot\n" +
+    "- `/model <name>` — switch model (e.g. `/model sonnet`); starts a fresh chat\n" +
+    "- `/new` (or `/clear`) — start a fresh conversation"
+  );
+
+  function runSlashCommand(text) {
+    const parts = text.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    const arg = parts.slice(1).join(' ').trim();
+
+    if (cmd === '/cancel') {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'cancel' }));
+      }
+      return true;
+    }
+    if (cmd === '/help') {
+      appendMessage('assistant', SLASH_HELP);
+      return true;
+    }
+    if (cmd === '/reset') {
+      // Route through the existing Reset button so the same confirmation
+      // dialog gates the destructive action — typing `/reset` is the
+      // hotkey, not a bypass.
+      if (resetDocBtn && !resetDocBtn.disabled) resetDocBtn.click();
+      else appendMessage('error', '/reset: no doc loaded');
+      return true;
+    }
+    if (cmd === '/undo') {
+      if (undoBtn && !undoBtn.disabled) undoBtn.click();
+      else appendMessage('error', '/undo: no doc loaded or undo already in flight');
+      return true;
+    }
+    if (cmd === '/new' || cmd === '/clear') {
+      // Skip the native confirm — typing the command IS the explicit
+      // confirmation. Same WS message + log clear the + New button uses.
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'new_chat' }));
+      }
+      log.innerHTML = '';
+      currentAssistantMsg = null;
+      hideActivity();
+      return true;
+    }
+    if (cmd === '/model') {
+      const wanted = arg.toLowerCase();
+      if (!wanted) {
+        appendMessage(
+          'assistant',
+          'Current model: `' + (currentModel || '?') + '`. Usage: `/model <name>` ' +
+          '(available: ' +
+          Array.from(modelSelect.options).map(o => '`' + o.value + '`').join(', ') +
+          ').',
+        );
+        return true;
+      }
+      const options = Array.from(modelSelect.options).map(o => o.value);
+      const match = options.find(o => o === wanted)
+        || options.find(o => o.startsWith(wanted));
+      if (!match) {
+        appendMessage(
+          'error',
+          `/model: unknown "${arg}". Available: ${options.join(', ')}.`,
+        );
+        return true;
+      }
+      if (match === currentModel) {
+        appendMessage('assistant', 'Already on `' + match + '`.');
+        return true;
+      }
+      currentModel = match;
+      modelSelect.value = match;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'new_chat', model: match }));
+      }
+      log.innerHTML = '';
+      currentAssistantMsg = null;
+      hideActivity();
+      appendMessage('assistant', '_Switched to `' + match + '`; fresh conversation._');
+      return true;
+    }
+    // Unknown slash command — be helpful but firm; don't silently forward
+    // it to the agent (which would try to interpret /weirdcmd as a request).
+    appendMessage(
+      'error',
+      `Unknown slash command: \`${cmd}\`. Type \`/help\` for the list.`,
+    );
+    return true;
+  }
+
   sendBtn.addEventListener('click', () => {
     const text = input.value.trim();
     if (!text || sendBtn.disabled) return;
     // Slash commands run client-side instead of being forwarded as a
-    // chat message. /cancel interrupts the in-flight turn.
-    if (text === '/cancel') {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'cancel' }));
-      }
+    // chat message. See runSlashCommand() for the full vocabulary.
+    if (text.startsWith('/') && runSlashCommand(text)) {
       input.value = '';
       return;
     }
