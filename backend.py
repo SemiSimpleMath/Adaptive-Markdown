@@ -2333,9 +2333,20 @@ async def undo_doc(request: web.Request) -> web.Response:
     _snapshot_if_changed(doc_path)
     doc_path.write_bytes(newest.read_bytes())
     slug = _doc_slug_from_path(doc_path) or doc_param
+    # Any pending entries referenced the just-overwritten current.md;
+    # they're now orphaned and would silently corrupt source on Reject
+    # (restoring an old_text that no longer matches reality). Clear them
+    # alongside the source restore.
+    cleared = clear_pending(slug) if slug else False
     await state.broadcast({"type": "doc_changed", "doc": slug})
+    if cleared:
+        await state.broadcast({"type": "pending_changed", "doc": slug})
     snap_id = newest.stem.replace("snap-", "")
-    print(f"[undo] docs/{slug}/current.md <- snap-{snap_id}", flush=True)
+    print(
+        f"[undo] docs/{slug}/current.md <- snap-{snap_id}"
+        f"{' (pending cleared)' if cleared else ''}",
+        flush=True,
+    )
     return web.json_response({"doc": slug, "snap_id": snap_id, "ok": True})
 
 
@@ -2355,8 +2366,17 @@ async def restore_snapshot(request: web.Request) -> web.Response:
     _snapshot_if_changed(doc_path)
     doc_path.write_bytes(snap_path.read_bytes())
     slug = _doc_slug_from_path(doc_path) or doc_param
+    # Same orphan-clear rationale as /undo: pending entries reference
+    # the current.md state we just overwrote.
+    cleared = clear_pending(slug) if slug else False
     await state.broadcast({"type": "doc_changed", "doc": slug})
-    print(f"[restore] docs/{slug}/current.md <- snap-{snap_id}", flush=True)
+    if cleared:
+        await state.broadcast({"type": "pending_changed", "doc": slug})
+    print(
+        f"[restore] docs/{slug}/current.md <- snap-{snap_id}"
+        f"{' (pending cleared)' if cleared else ''}",
+        flush=True,
+    )
     return web.json_response({"doc": slug, "snap_id": snap_id, "ok": True})
 
 
@@ -2620,8 +2640,17 @@ async def reset_doc(request: web.Request) -> web.Response:
     _snapshot_if_changed(doc_path)
     doc_path.write_bytes(history_zero.read_bytes())
     slug = _doc_slug_from_path(doc_path) or doc_param
+    # Pending entries reference the just-overwritten current.md and would
+    # corrupt source on Reject. Clear them.
+    cleared = clear_pending(slug) if slug else False
     await state.broadcast({"type": "doc_changed", "doc": slug})
-    print(f"[reset] docs/{slug}/current.md <- baseline.md", flush=True)
+    if cleared:
+        await state.broadcast({"type": "pending_changed", "doc": slug})
+    print(
+        f"[reset] docs/{slug}/current.md <- baseline.md"
+        f"{' (pending cleared)' if cleared else ''}",
+        flush=True,
+    )
     return web.json_response({"doc": slug, "snap_id": "baseline", "ok": True})
 
 
