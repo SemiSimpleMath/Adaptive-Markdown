@@ -2757,13 +2757,10 @@ async def add_doc_skill(request: web.Request) -> web.Response:
     if custom_content:
         skill_inner = custom_content
     else:
-        skill_inner = (
-            f"## SKILL: {name}\n\n"
-            "_Describe how the agent should work on this doc — voice, "
-            "formatting, conventions specific to this doc. This section is "
-            "hidden from readers; the agent reads it as authoritative for "
-            "this doc and preserves it across edits._"
-        )
+        # Just a heading line — the manager's editor is the place to
+        # write the actual content. No verbose placeholder cluttering
+        # the source / preview.
+        skill_inner = f"## SKILL: {name}"
     skill_block = _render_agent_skill_block(skill_inner) + "\n\n"
     # Insert right after the frontmatter (or at the very top if there's
     # none). The agent reads the doc top-down via the inlined preamble,
