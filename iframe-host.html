@@ -87,6 +87,7 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
 <script src="https://cdn.jsdelivr.net/npm/morphdom@2.7.4/dist/morphdom-umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
 
 <script>
 (function(){
@@ -166,8 +167,68 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
   }
   function scriptKey(s) { return (s.src || '') + '#' + s.textContent; }
 
+  // Wrap each `$...$` / `$$...$$` math source in a span carrying the
+  // original markdown delimiters as `data-source`. KaTeX still renders
+  // inside the wrapper (auto-render walks text nodes, doesn't care about
+  // the surrounding span); the wrapper's data-source attribute survives,
+  // and turndown's custom rule (see getTurndown) reads it back out so
+  // inline-edit round-trip preserves math instead of clobbering it with
+  // raw `<span class="katex">...` markup.
+  function protectMathSource(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        let p = node.parentElement;
+        while (p) {
+          const tag = p.tagName;
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'PRE'
+              || tag === 'CODE' || tag === 'TEXTAREA' || tag === 'NOSCRIPT') {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (p.classList && p.classList.contains('am-math-keep')) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          p = p.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes = [];
+    let n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    const RE = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
+    for (const node of nodes) {
+      const text = node.nodeValue;
+      if (!text || text.indexOf('$') === -1) continue;
+      RE.lastIndex = 0;
+      let lastIdx = 0;
+      const out = [];
+      let m;
+      while ((m = RE.exec(text)) !== null) {
+        const before = text.slice(lastIdx, m.index);
+        if (before) out.push(document.createTextNode(before));
+        const isDisplay = m[1] !== undefined;
+        const inner = isDisplay ? m[1] : m[2];
+        const source = isDisplay ? ('$$' + inner + '$$') : ('$' + inner + '$');
+        const span = document.createElement('span');
+        span.className = 'am-math-keep';
+        span.setAttribute('data-source', source);
+        if (isDisplay) span.setAttribute('data-display', '1');
+        span.appendChild(document.createTextNode(source));
+        out.push(span);
+        lastIdx = m.index + m[0].length;
+      }
+      if (out.length === 0) continue;
+      const remainder = text.slice(lastIdx);
+      if (remainder) out.push(document.createTextNode(remainder));
+      const parent = node.parentNode;
+      for (const o of out) parent.insertBefore(o, node);
+      parent.removeChild(node);
+    }
+  }
+
   function renderMath() {
     if (window.renderMathInElement) {
+      protectMathSource(body);
       window.renderMathInElement(body, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
@@ -181,6 +242,51 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     }
   }
 
+  // ---- turndown: HTML -> markdown for round-trip inline edits -----------
+  // Without this, inline edit replaces the entire block's markdown source
+  // with the plain-text content of the block — fine for simple prose, but
+  // any `**bold**`, `_italic_`, `[link]`, `` `code` `` in the block gets
+  // clobbered into plain text on the next blur. turndown converts the
+  // edited HTML back into markdown, so inline emphasis survives.
+  //
+  // Custom rule for `.am-math-keep` reads the `data-source` attribute set
+  // by protectMathSource so `$x^2$` and friends round-trip intact instead
+  // of becoming raw KaTeX HTML in the source.
+  let _turndown = null;
+  function getTurndown() {
+    if (_turndown !== null) return _turndown;
+    if (!window.TurndownService) { _turndown = false; return null; }
+    const td = new window.TurndownService({
+      headingStyle: 'atx',
+      bulletListMarker: '-',
+      codeBlockStyle: 'fenced',
+      emDelimiter: '_',
+      strongDelimiter: '**',
+      linkStyle: 'inlined',
+    });
+    td.addRule('am-math-keep', {
+      filter: function (node) {
+        return node.nodeType === 1
+          && node.classList && node.classList.contains('am-math-keep');
+      },
+      replacement: function (content, node) {
+        return node.getAttribute('data-source') || content;
+      },
+    });
+    _turndown = td;
+    return td;
+  }
+
+  function blockToMarkdown(block) {
+    const td = getTurndown();
+    if (!td) return block.innerText;
+    try {
+      return td.turndown(block.innerHTML).trim();
+    } catch (e) {
+      return block.innerText;
+    }
+  }
+
   // ---- Block / selection / insertion -------------------------------------
   function findBlock(el) {
     let c = el;
@@ -190,15 +296,37 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     }
     return null;
   }
+  // Source-equivalent text: like textContent, but for am-math-keep spans
+  // emit the `data-source` (the original `$...$` / `$$...$$`) instead of
+  // the rendered KaTeX glyph soup. This makes blockInfo's excerpt match
+  // the markdown source byte-for-byte where math is concerned, so backend
+  // signature-matching can locate the source span unambiguously.
+  function sourceEquivalentText(el) {
+    let out = '';
+    for (const child of el.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        out += child.nodeValue;
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.classList && child.classList.contains('am-math-keep')) {
+          out += child.getAttribute('data-source') || '';
+        } else {
+          out += sourceEquivalentText(child);
+        }
+      }
+    }
+    return out;
+  }
+
   function blockInfo(el) {
     const t = el.dataset.trackId || null;
     const a = el.id || null;
     const id = t || a || null;
     let label = '';
     const h = el.querySelector(':scope>h1,:scope>h2,:scope>h3,:scope>h4,:scope>h5,:scope>h6');
-    if (h) label = h.textContent.trim().replace(/\s+/g, ' ').slice(0, 60);
-    else label = el.textContent.replace(/\s+/g, ' ').trim().slice(0, 60);
-    const excerpt = el.textContent.replace(/\s+/g, ' ').trim().slice(0, 2000);
+    const labelSource = h ? sourceEquivalentText(h) : sourceEquivalentText(el);
+    label = labelSource.replace(/\s+/g, ' ').trim().slice(0, 60);
+    const excerpt = sourceEquivalentText(el)
+      .replace(/\s+/g, ' ').trim().slice(0, 2000);
     return { id, track_id: t, anchor_id: a, label, excerpt };
   }
   function keyOf(el) {
@@ -288,7 +416,7 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     if (!block || !block.hasAttribute('contenteditable')) return;
     if (!_editFocusInfo.has(block)) {
       _editFocusInfo.set(block, {
-        origText: block.innerText,
+        origMarkdown: blockToMarkdown(block),
         sig: blockInfo(block),
       });
     }
@@ -299,11 +427,15 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     if (!block) return;
     const info = _editFocusInfo.get(block);
     if (!info) return;
-    const next = block.innerText;
+    const next = blockToMarkdown(block);
     _editFocusInfo.delete(block);
-    if (next.trim() === info.origText.trim()) return;
-    // Drop the new text + the pre-edit signature to the parent. The parent
-    // POSTs to /edit-block, the backend writes through snapshot+validate.
+    if (next.trim() === info.origMarkdown.trim()) return;
+    // Drop the new markdown + the pre-edit signature to the parent. The
+    // parent POSTs to /edit-block, the backend writes through snapshot +
+    // validate. turndown gives us bold / italic / inline-code / links /
+    // math (via am-math-keep) preserved across the edit; whatever the
+    // browser puts in the DOM that turndown can't handle falls through
+    // as its underlying text.
     toParent({
       type: 'block_edit',
       block: info.sig,

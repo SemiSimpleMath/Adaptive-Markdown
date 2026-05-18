@@ -275,6 +275,28 @@ _HEADING_LINE_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s*\{([^}]+)\})?\s*$")
 _TRACK_COMMENT_RE = re.compile(r"^\s*<!--\s*id\s*:\s*(b-[A-Z0-9-]+)\s*-->\s*$", re.IGNORECASE)
 
 
+# Strip inline markdown markers for fuzzy block-matching. Source lines have
+# `**bold**` / `_italic_` / `[text](url)` / `` `code` ``; the frontend signature
+# is derived from the rendered DOM (which doesn't), so direct string-match
+# fails on any formatted block. Math `$...$` is handled separately via the
+# am-math-keep `data-source` mechanism on the frontend, so we leave it alone.
+_INLINE_MD_STRIP = (
+    (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),
+    (re.compile(r"__([^_]+)__"), r"\1"),
+    (re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)"), r"\1"),
+    (re.compile(r"(?<!_)_([^_\n]+)_(?!_)"), r"\1"),
+    (re.compile(r"`([^`]+)`"), r"\1"),
+    (re.compile(r"\[([^\]]+)\]\([^)]+\)"), r"\1"),
+)
+
+
+def _strip_inline_markdown(s: str) -> str:
+    out = s
+    for pat, repl in _INLINE_MD_STRIP:
+        out = pat.sub(repl, out)
+    return out
+
+
 def _find_block_line(lines: list[str], signature: dict) -> int | None:
     """Locate the line index where the block matching `signature` begins.
 
@@ -293,26 +315,34 @@ def _find_block_line(lines: list[str], signature: dict) -> int | None:
             if anchor_pat.search(line):
                 return i
 
-    # Heading match by text
+    # Heading match by text. Compare against both the raw heading text and
+    # an inline-markdown-stripped version so a heading like "## **Bold**
+    # Title" matches a frontend label of "Bold Title".
     if label:
         for i, line in enumerate(lines):
             m = _HEADING_LINE_RE.match(line)
             if not m:
                 continue
             heading_text = m.group(2).strip()
-            if heading_text == label or heading_text.startswith(label[:60]):
-                return i
+            heading_stripped = _strip_inline_markdown(heading_text)
+            for candidate in (heading_text, heading_stripped):
+                if candidate == label or candidate.startswith(label[:60]):
+                    return i
 
-    # Paragraph / list-item / other prose: match by first ~60 normalized chars
+    # Paragraph / list-item / other prose: match by first ~60 normalized chars.
+    # Compare against both raw and inline-markdown-stripped versions of the
+    # source line so a paragraph with `**bold**` matches the rendered
+    # frontend excerpt that has no asterisks.
     if excerpt:
         sig_first = re.sub(r"\s+", " ", excerpt[:80]).strip()
         for i, line in enumerate(lines):
             stripped = line.strip()
             if not stripped or stripped.startswith(("#", "<!--", ":::", "```")):
                 continue
-            line_first = re.sub(r"\s+", " ", stripped[:80]).strip()
-            if line_first.startswith(sig_first[:40]):
-                return i
+            for candidate in (stripped, _strip_inline_markdown(stripped)):
+                cand_first = re.sub(r"\s+", " ", candidate[:80]).strip()
+                if cand_first.startswith(sig_first[:40]):
+                    return i
 
     return None
 
