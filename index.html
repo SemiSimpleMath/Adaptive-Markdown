@@ -2246,6 +2246,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   sendBtn.addEventListener('click', () => {
     const text = input.value.trim();
     if (!text || sendBtn.disabled) return;
+    // Slash commands run client-side instead of being forwarded as a
+    // chat message. /cancel interrupts the in-flight turn.
+    if (text === '/cancel') {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'cancel' }));
+      }
+      input.value = '';
+      return;
+    }
     const payload = { type: 'chat', text, model: currentModel };
     if (currentDoc || currentSelections.length > 0 || currentInsertion) {
       payload.context = {

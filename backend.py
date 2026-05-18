@@ -462,6 +462,9 @@ class State:
         self.busy = asyncio.Lock()
         self.current_provider: str = DEFAULT_PROVIDER
         self.current_model: str = ""
+        # Reference to the in-flight `run_turn` task so /cancel can
+        # interrupt it. Cleared when the turn finishes (either way).
+        self.current_turn_task: asyncio.Task | None = None
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg)
@@ -882,6 +885,7 @@ async def run_turn(text: str):
         t0 = time.time()
         tool_count = 0
         cost: float | None = None
+        cancelled = False
         try:
             async for event in state.runtime.run_turn(text):
                 etype = event.get("type", "")
@@ -904,6 +908,17 @@ async def run_turn(text: str):
                     if isinstance(c, (int, float)):
                         cost = c
                 await state.broadcast(event)
+        except asyncio.CancelledError:
+            # Reader hit /cancel. Tell the UI, mark the turn done, and
+            # propagate so the surrounding task transitions to cancelled.
+            cancelled = True
+            print("[turn] cancelled by reader", flush=True)
+            await state.broadcast({
+                "role": "assistant", "type": "text",
+                "text": "_Turn cancelled by reader._",
+            })
+            await state.broadcast({"type": "turn_done", "cancelled": True})
+            raise
         except Exception as e:
             import traceback
             print(f"[turn] FAILED with {type(e).__name__}: {e}", flush=True)
@@ -915,7 +930,8 @@ async def run_turn(text: str):
         finally:
             dt = time.time() - t0
             cost_str = f", cost=${cost:.4f}" if cost is not None else ""
-            print(f"[turn] done in {dt:.1f}s, {tool_count} tool call(s){cost_str}",
+            tag = " (cancelled)" if cancelled else ""
+            print(f"[turn] done in {dt:.1f}s, {tool_count} tool call(s){cost_str}{tag}",
                   flush=True)
 
 
@@ -1125,7 +1141,27 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 print(f"[ws] chat doc={doc!r} selections={len(selections)}"
                       f"{' insertion' if insertion else ''}",
                       flush=True)
-                asyncio.create_task(run_turn(prompt))
+                turn_task = asyncio.create_task(run_turn(prompt))
+                state.current_turn_task = turn_task
+
+                def _clear_turn_task(t, _tt=turn_task):
+                    if state.current_turn_task is _tt:
+                        state.current_turn_task = None
+                turn_task.add_done_callback(_clear_turn_task)
+
+            elif data.get("type") == "cancel":
+                # /cancel from the reader — interrupt the in-flight turn.
+                # state.busy is held by run_turn for the whole turn, so this
+                # is the only way to free the agent without restarting.
+                t = state.current_turn_task
+                if t and not t.done():
+                    print("[ws] cancel requested", flush=True)
+                    t.cancel()
+                else:
+                    await state.broadcast({
+                        "role": "assistant", "type": "text",
+                        "text": "_Nothing to cancel — no turn is running._",
+                    })
 
             elif data.get("type") == "new_chat":
                 model = data.get("model")
