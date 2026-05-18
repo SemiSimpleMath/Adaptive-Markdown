@@ -2447,6 +2447,62 @@ async def edit_block(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "kind": kind})
 
 
+async def add_doc_skill(request: web.Request) -> web.Response:
+    """POST /add-doc-skill?doc=<slug> — append an empty agent-skill section
+    to the doc body so the author has somewhere to write working-contract
+    text without learning the `<section class="agent-skill">` wrapper by
+    hand. Body JSON `{ "name": "<short label>" }` is optional; defaults
+    to "untitled". The viewer typically follows up by switching to Source
+    view so the author can fill in the placeholder."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+
+    body: dict = {}
+    if request.content_length:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    name = (body.get("name") if isinstance(body, dict) else None) or ""
+    name = name.strip() or "untitled"
+
+    source = doc_path.read_text(encoding="utf-8")
+    skill_block = (
+        '\n<section class="agent-skill">\n\n'
+        f"## SKILL: {name}\n\n"
+        "_Describe how the agent should work on this doc — voice, "
+        "formatting, conventions specific to this doc. This section is "
+        "hidden from readers; the agent reads it as authoritative for "
+        "this doc and preserves it across edits._\n\n"
+        "</section>\n"
+    )
+    new_source = source.rstrip("\n") + "\n" + skill_block
+
+    errors = validators.validate_doc(new_source) if new_source.strip() else []
+    if errors:
+        return web.json_response(
+            {"error": "validation failed",
+             "details": [
+                 {"kind": e.get("kind"), "line": e.get("line"),
+                  "message": e.get("message")}
+                 for e in errors[:3]
+             ]},
+            status=422,
+        )
+
+    _snapshot_if_changed(doc_path)
+    with doc_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_source)
+    print(f"[add-doc-skill] docs/{slug}/current.md (name={name!r})", flush=True)
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    return web.json_response({"ok": True, "name": name})
+
+
 async def reset_doc(request: web.Request) -> web.Response:
     """POST /reset?doc=<slug> — restore current.md from baseline.md (history-0)."""
     _require_localhost_origin(request)
@@ -2568,6 +2624,7 @@ def make_app() -> web.Application:
     app.router.add_post("/restore_snapshot", restore_snapshot)
     app.router.add_post("/reset", reset_doc)
     app.router.add_post("/edit-block", edit_block)
+    app.router.add_post("/add-doc-skill", add_doc_skill)
     app.router.add_get("/{path:.+}", serve_static)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)

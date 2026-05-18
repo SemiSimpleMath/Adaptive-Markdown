@@ -693,6 +693,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         <button id="history-btn" class="btn-tiny" title="Browse pre-edit snapshots and restore an earlier version">History</button>
         <div id="history-panel" class="history-panel" hidden></div>
       </div>
+      <button id="add-skill-btn" class="btn-tiny" title="Append an agent-skill section (hidden from readers; the agent's working contract for this doc)">＋ Skill</button>
       <button id="reset-doc-btn" class="btn-tiny" title="Restore this document to its ship-with original">↺ Reset</button>
     </div>
     <iframe id="doc-frame" sandbox="allow-scripts allow-popups allow-same-origin" allow="encrypted-media; autoplay; fullscreen; picture-in-picture; clipboard-write; web-share" allowfullscreen title="Document"></iframe>
@@ -791,6 +792,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const historyBtn = document.getElementById('history-btn');
   const historyPanel = document.getElementById('history-panel');
   const undoBtn = document.getElementById('undo-btn');
+  const addSkillBtn = document.getElementById('add-skill-btn');
   const newDocBtn = document.getElementById('new-doc-btn');
   const newDocOverlay = document.getElementById('new-doc-overlay');
   const newDocClose = document.getElementById('new-doc-close');
@@ -2577,6 +2579,46 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       appendMessage('error', 'undo error: ' + (err.message || err));
     } finally {
       undoBtn.disabled = false;
+    }
+  });
+
+  // + Skill button: append an agent-skill section to the doc and drop the
+  // author into Source view so they can fill in the placeholder text. The
+  // agent can ALSO author skills via chat ("draft an agent-skill section
+  // for this doc that says ..."); this button is just the affordance for
+  // authors who'd rather type the contract directly.
+  addSkillBtn.addEventListener('click', async () => {
+    if (!currentDoc || addSkillBtn.disabled) return;
+    const name = (prompt(
+      'Short label for this skill (e.g. "voice rules", "math conventions"). ' +
+      'You can leave blank.',
+      '',
+    ) || '').trim();
+    addSkillBtn.disabled = true;
+    try {
+      const resp = await fetch(
+        '/add-doc-skill?doc=' + encodeURIComponent(currentDoc),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(name ? { name } : {}),
+        },
+      );
+      if (!resp.ok) {
+        let msg = `add-doc-skill: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
+        appendMessage('error', msg);
+        return;
+      }
+      // Switch to Source view so the author can fill in the placeholder
+      // text immediately — the rendered Doc view hides the new section.
+      currentView = 'source';
+      renderViewTabs();
+      renderCurrentView();
+    } catch (err) {
+      appendMessage('error', 'add-doc-skill error: ' + (err.message || err));
+    } finally {
+      addSkillBtn.disabled = false;
     }
   });
   document.addEventListener('click', (e) => {
