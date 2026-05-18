@@ -2447,6 +2447,102 @@ async def edit_block(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "kind": kind})
 
 
+async def list_pending(request: web.Request) -> web.Response:
+    """GET /pending?doc=<slug> — return the pending sidecar's contents
+    (or the empty shape if there's no sidecar yet). The viewer polls
+    this when a doc loads and when doc_changed broadcasts so it can
+    surface the Review tab + indicator."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    return web.json_response(load_pending(slug))
+
+
+async def accept_pending(request: web.Request) -> web.Response:
+    """POST /accept-pending?doc=<slug>[&id=<edit-id>] — accept one pending
+    entry (or all of them if id is omitted). Accept = keep current.md
+    as-is and drop the entry from the sidecar; the bytes are already on
+    disk per the bytes-land model. No source edits needed."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    edit_id = (request.query.get("id") or "").strip()
+    data = load_pending(slug)
+    if not data["edits"]:
+        return web.json_response({"ok": True, "accepted": 0})
+    if edit_id:
+        removed = remove_pending_edit(slug, edit_id)
+        accepted = 1 if removed else 0
+    else:
+        accepted = len(data["edits"])
+        clear_pending(slug)
+    print(f"[pending] accept slug={slug} id={edit_id or '*'} "
+          f"({accepted} entries cleared)", flush=True)
+    # Doc bytes didn't change, but the viewer needs to know pending is
+    # gone so it can hide the Review tab / indicator.
+    await state.broadcast({"type": "pending_changed", "doc": slug})
+    return web.json_response({"ok": True, "accepted": accepted})
+
+
+async def reject_pending(request: web.Request) -> web.Response:
+    """POST /reject-pending?doc=<slug>[&id=<edit-id>] — reject one pending
+    entry (or all if id omitted). Reject = restore the old_text recorded
+    with the entry into current.md, snapshot+broadcast, drop the entry."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    edit_id = (request.query.get("id") or "").strip()
+    data = load_pending(slug)
+    if not data["edits"]:
+        return web.json_response({"ok": True, "rejected": 0})
+
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+
+    entries = data["edits"]
+    if edit_id:
+        targets = [e for e in entries if e.get("id") == edit_id]
+        if not targets:
+            return web.json_response(
+                {"error": f"no pending entry with id {edit_id!r}"},
+                status=404,
+            )
+    else:
+        targets = list(entries)
+
+    # MVP: whole-doc kind entries. For each target, restore its old_text
+    # as the entire current.md. Multiple whole-doc entries shouldn't
+    # coexist because same-block replacement collapses them, but if we
+    # see more than one (other kinds in future) we walk them in reverse.
+    _snapshot_if_changed(doc_path)
+    for entry in reversed(targets):
+        kind = (entry.get("block") or {}).get("kind")
+        if kind == "doc":
+            old_text = entry.get("old_text") or ""
+            with doc_path.open("w", encoding="utf-8", newline="") as f:
+                f.write(old_text)
+        else:
+            # Per-block reject for non-"doc" kinds will land when phase 3+
+            # decomposes the granularity. For now, refuse rather than
+            # corrupt the source.
+            return web.json_response(
+                {"error": f"reject not yet implemented for block kind "
+                          f"{kind!r}; only 'doc' is supported in v0"},
+                status=422,
+            )
+        remove_pending_edit(slug, entry["id"])
+
+    print(f"[pending] reject slug={slug} id={edit_id or '*'} "
+          f"({len(targets)} entries reverted)", flush=True)
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    await state.broadcast({"type": "pending_changed", "doc": slug})
+    return web.json_response({"ok": True, "rejected": len(targets)})
+
+
 async def add_doc_skill(request: web.Request) -> web.Response:
     """POST /add-doc-skill?doc=<slug> — append an empty agent-skill section
     to the doc body so the author has somewhere to write working-contract
@@ -2625,6 +2721,9 @@ def make_app() -> web.Application:
     app.router.add_post("/reset", reset_doc)
     app.router.add_post("/edit-block", edit_block)
     app.router.add_post("/add-doc-skill", add_doc_skill)
+    app.router.add_get("/pending", list_pending)
+    app.router.add_post("/accept-pending", accept_pending)
+    app.router.add_post("/reject-pending", reject_pending)
     app.router.add_get("/{path:.+}", serve_static)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)

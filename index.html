@@ -148,6 +148,27 @@ body {
 }
 .overflow-item:hover { background: var(--accent-soft); color: var(--accent); }
 .overflow-item:disabled { opacity: 0.5; cursor: default; }
+
+/* Review view (phase 4 pending-changes UI) */
+.view-review { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; padding: 1rem 1.5rem; }
+.view-review .review-header { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
+.view-review .review-summary code { font-family: ui-monospace, monospace; background: var(--accent-soft); padding: 0.1em 0.4em; border-radius: 3px; }
+.view-review .review-all-btns { display: flex; gap: 0.4rem; }
+.view-review .review-empty { color: var(--muted); font-style: italic; padding: 2rem; text-align: center; }
+.view-review .review-card { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 1rem; overflow: hidden; }
+.view-review .review-card-meta { padding: 0.5rem 0.9rem; background: var(--accent-soft); color: var(--muted); font-size: 0.78rem; font-family: ui-monospace, monospace; }
+.view-review .review-card-meta .review-card-id { color: var(--accent); font-weight: 600; }
+.view-review .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); }
+.view-review .review-pane { background: white; padding: 0.6rem 0.8rem; min-width: 0; }
+.view-review .review-pane-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.4rem; }
+.view-review .review-before pre { background: #fdecec; }
+.view-review .review-after pre { background: #ecfdec; }
+.view-review .review-pane pre { font-family: ui-monospace, monospace; font-size: 0.78rem; white-space: pre-wrap; word-break: break-word; padding: 0.5rem; border-radius: 3px; margin: 0; max-height: 360px; overflow-y: auto; }
+.view-review .review-card-btns { display: flex; gap: 0.4rem; padding: 0.6rem 0.8rem; justify-content: flex-end; background: var(--accent-soft); border-top: 1px solid var(--border); }
+.view-review .btn-accept { color: #2a6a2a; border-color: #c0d0c0; }
+.view-review .btn-accept:hover { background: #ecfdec; border-color: #6a9255; color: #2a6a2a; }
+.view-review .btn-reject { color: #8a2a2a; border-color: #d0c0c0; }
+.view-review .btn-reject:hover { background: #fdecec; border-color: #d4a4a4; color: #8a2a2a; }
 .new-doc-overlay {
   position: absolute;
   inset: 0;
@@ -871,6 +892,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentFm = {};              // parsed frontmatter
   let currentBody = '';            // raw body after frontmatter strip
   let currentView = 'doc';
+  // Pending-changes substrate (phase 4): the most recent pending.json
+  // contents for the current doc, refreshed when the doc loads and when
+  // pending_changed broadcasts. Empty array means no Review tab.
+  let currentPending = [];
   let currentModel = '';           // backend-advertised model alias/id
   let currentAssistantMsg = null;
   let currentSelections = [];      // array of {id, label, excerpt, element}
@@ -893,7 +918,17 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const viewTabs = document.getElementById('view-tab-buttons');
   function renderViewTabs() {
     viewTabs.innerHTML = '';
-    for (const v of VIEW_TYPES) {
+    // Splice in a Review tab AFTER Doc when this doc has pending entries
+    // — review-mode docs that haven't accumulated any pending yet keep
+    // the same chrome as a plain doc.
+    const tabs = [...VIEW_TYPES];
+    if (Array.isArray(currentPending) && currentPending.length > 0) {
+      tabs.splice(
+        1, 0,
+        { id: 'review', label: `Review (${currentPending.length})` },
+      );
+    }
+    for (const v of tabs) {
       const btn = document.createElement('button');
       btn.className = 'view-tab' + (v.id === currentView && !v.action ? ' active' : '');
       btn.textContent = v.label;
@@ -1444,9 +1479,141 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       renderFrontmatter(frontmatter);
       renderCurrentView();
       setSelections([]);
+      // Refresh pending state alongside the doc so the Review tab updates
+      // in lockstep. Fire-and-forget; failures fall back to "no pending."
+      refreshPending();
     } catch (e) {
       body.innerHTML =
         `<div class="error-banner">load failed: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+  }
+
+  // ---- Pending-changes view (phase 4) ------------------------------------
+  // Refreshed when the doc loads and when pending_changed broadcasts.
+  // currentPending is the source of truth for the Review tab existence
+  // (renderViewTabs filters it in/out) and the tab's body.
+
+  async function refreshPending() {
+    if (!currentDoc) {
+      currentPending = [];
+      renderViewTabs();
+      return;
+    }
+    let edits = [];
+    try {
+      const resp = await fetch('/pending?doc=' + encodeURIComponent(currentDoc));
+      if (resp.ok) {
+        const data = await resp.json();
+        edits = Array.isArray(data.edits) ? data.edits : [];
+      }
+    } catch (_) { /* leave edits empty */ }
+    currentPending = edits;
+    // Pending just emptied while the Review tab was active — fall back
+    // to Doc so the reader isn't stuck on a blank tab.
+    if (currentView === 'review' && edits.length === 0) {
+      currentView = 'doc';
+    }
+    renderViewTabs();
+    if (currentView === 'review') renderCurrentView();
+  }
+
+  function renderReviewView() {
+    body.className = 'view-review';
+    body.innerHTML = '';
+    if (!currentPending.length) {
+      body.innerHTML = '<div class="review-empty">No pending changes.</div>';
+      return;
+    }
+    const header = document.createElement('div');
+    header.className = 'review-header';
+    header.innerHTML =
+      `<div class="review-summary"><strong>${currentPending.length}</strong> ` +
+      `pending change${currentPending.length === 1 ? '' : 's'} ` +
+      `for <code>${escapeHtml(currentDoc)}</code></div>`;
+    const allBtns = document.createElement('div');
+    allBtns.className = 'review-all-btns';
+    const acceptAll = document.createElement('button');
+    acceptAll.className = 'btn-tiny btn-accept';
+    acceptAll.textContent = 'Accept all';
+    acceptAll.addEventListener('click', () => decidePending(''));
+    const rejectAll = document.createElement('button');
+    rejectAll.className = 'btn-tiny btn-reject';
+    rejectAll.textContent = 'Reject all';
+    rejectAll.addEventListener('click', () => decidePending('', false));
+    allBtns.appendChild(acceptAll);
+    allBtns.appendChild(rejectAll);
+    header.appendChild(allBtns);
+    body.appendChild(header);
+
+    for (const entry of currentPending) {
+      const card = document.createElement('div');
+      card.className = 'review-card';
+
+      const meta = document.createElement('div');
+      meta.className = 'review-card-meta';
+      const agent = escapeHtml(entry.agent_label || 'agent');
+      const created = entry.created_at
+        ? new Date(entry.created_at).toLocaleString()
+        : '';
+      const kind = (entry.block && entry.block.kind) || 'unknown';
+      meta.innerHTML =
+        `<span class="review-card-id">${escapeHtml(entry.id || '?')}</span>` +
+        ` · <span>${agent}</span>` +
+        (created ? ` · <span>${escapeHtml(created)}</span>` : '') +
+        ` · <span>kind: ${escapeHtml(kind)}</span>`;
+      card.appendChild(meta);
+
+      const grid = document.createElement('div');
+      grid.className = 'review-grid';
+      const before = document.createElement('div');
+      before.className = 'review-pane review-before';
+      before.innerHTML =
+        '<div class="review-pane-label">Before</div>' +
+        `<pre>${escapeHtml(entry.old_text || '')}</pre>`;
+      const after = document.createElement('div');
+      after.className = 'review-pane review-after';
+      after.innerHTML =
+        '<div class="review-pane-label">Proposed</div>' +
+        `<pre>${escapeHtml(entry.new_text || '')}</pre>`;
+      grid.appendChild(before);
+      grid.appendChild(after);
+      card.appendChild(grid);
+
+      const btns = document.createElement('div');
+      btns.className = 'review-card-btns';
+      const ok = document.createElement('button');
+      ok.className = 'btn-tiny btn-accept';
+      ok.textContent = 'Accept';
+      ok.addEventListener('click', () => decidePending(entry.id, true));
+      const nope = document.createElement('button');
+      nope.className = 'btn-tiny btn-reject';
+      nope.textContent = 'Reject';
+      nope.addEventListener('click', () => decidePending(entry.id, false));
+      btns.appendChild(ok);
+      btns.appendChild(nope);
+      card.appendChild(btns);
+
+      body.appendChild(card);
+    }
+  }
+
+  async function decidePending(editId, accept = true) {
+    if (!currentDoc) return;
+    const path = accept ? '/accept-pending' : '/reject-pending';
+    const url = path + '?doc=' + encodeURIComponent(currentDoc)
+      + (editId ? '&id=' + encodeURIComponent(editId) : '');
+    try {
+      const resp = await fetch(url, { method: 'POST' });
+      if (!resp.ok) {
+        let msg = `${path}: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
+        appendMessage('error', msg);
+        return;
+      }
+      // doc_changed (on reject) reloads the doc; pending_changed (on
+      // both paths) refreshes the Review tab. Nothing to do here.
+    } catch (err) {
+      appendMessage('error', 'review error: ' + (err.message || err));
     }
   }
 
@@ -1500,6 +1667,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       renderGraphView();
     } else if (currentView === 'latex') {
       renderLatexView();
+    } else if (currentView === 'review') {
+      renderReviewView();
     }
   }
 
@@ -2183,6 +2352,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // Insertion is one-shot; once the doc has changed, the gap is stale.
       if (currentInsertion) clearInsertion();
       if (data.doc === currentDoc) loadDoc(docUrl(data.doc));
+      return;
+    }
+    if (data.type === 'pending_changed') {
+      // Bytes didn't move (we'd get doc_changed for that too) — just the
+      // pending sidecar changed for this doc. Refresh the Review tab.
+      if (data.doc === currentDoc) refreshPending();
       return;
     }
     if (data.type === 'chat_reset') {
