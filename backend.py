@@ -629,10 +629,19 @@ def clear_pending(slug: str) -> bool:
 def _pending_block_key(block: dict) -> str:
     """Stable key for a block signature, used to detect "same block" when
     deciding whether to replace an existing pending entry vs stack a new
-    one. Mirrors keyOf() on the iframe side: track_id > anchor_id > text
-    excerpt prefix."""
+    one. Mirrors keyOf() on the iframe side: kind > track_id > anchor_id
+    > text excerpt prefix.
+
+    The `kind: "doc"` key is the v0 whole-file granularity used by the
+    PostToolUse hook — every Edit/Write to a doc lands as a single
+    pending entry per doc, replacing the previous one. Sub-block keys
+    come in once we decompose edits by block in phase 3+.
+    """
     if not isinstance(block, dict):
         return ""
+    kind = block.get("kind")
+    if kind == "doc":
+        return "doc"
     track = block.get("track_id")
     if track:
         return f"t:{track}"
@@ -643,6 +652,42 @@ def _pending_block_key(block: dict) -> str:
     return f"x:{excerpt}"
 
 
+_REVIEW_MODE_TRUTHY = frozenset({
+    "pending", "review", "on", "true", "yes", "1",
+})
+
+
+def _read_review_mode(doc_path: Path) -> bool:
+    """Return True if the doc's frontmatter declares review_mode is on.
+
+    Per the design, review mode is per-doc — a paper-in-review is marked
+    once and stays that way across fresh chats, instead of forcing the
+    reader to remember per-session toggles. Frontmatter key:
+        review_mode: pending
+    Truthy values: pending / review / on / true / yes / 1. Anything else
+    (or missing) is off.
+    """
+    try:
+        text = doc_path.read_text(encoding="utf-8") if doc_path.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not text:
+        return False
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return False
+    fm_body = m.group(1)
+    for raw_line in fm_body.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("review_mode"):
+            continue
+        if ":" not in line:
+            continue
+        value = line.split(":", 1)[1].strip().strip('"').strip("'").lower()
+        return value in _REVIEW_MODE_TRUTHY
+    return False
+
+
 def add_pending_edit(slug: str, entry: dict) -> str:
     """Append (or replace) a pending edit for the doc. Returns the entry id.
 
@@ -650,6 +695,13 @@ def add_pending_edit(slug: str, entry: dict) -> str:
     rather than stack — otherwise the accept/reject UI has to expose a
     stack which is more cognitive load than it's worth in v0. Block
     identity comes from the signature via _pending_block_key.
+
+    Replacement semantics: the new entry inherits the ORIGINAL `old_text`
+    from the existing same-block entry — successive proposals on a block
+    update only the proposed `new_text`. Otherwise rejection couldn't
+    walk back to the true pre-pending state for that block (you'd revert
+    only to the previous proposal, not to the source-of-truth before
+    pending mode started touching this block).
 
     Raises ValueError on missing required fields or a bad slug.
     """
@@ -667,6 +719,17 @@ def add_pending_edit(slug: str, entry: dict) -> str:
         datetime.now(timezone.utc).isoformat(),
     )
     key = _pending_block_key(new_entry["block"])
+    existing_same_block = [
+        e for e in data["edits"]
+        if _pending_block_key(e.get("block", {})) == key
+    ]
+    if existing_same_block:
+        prior = existing_same_block[0]
+        new_entry["old_text"] = prior.get("old_text", new_entry["old_text"])
+        # Stable created_at across refinements so the UI doesn't see the
+        # entry "jump to the front" every time the agent refines it.
+        if "created_at" in prior:
+            new_entry["created_at"] = prior["created_at"]
     data["edits"] = [
         e for e in data["edits"]
         if _pending_block_key(e.get("block", {})) != key
@@ -995,6 +1058,39 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
         }
     # Clean edit — reset the consecutive-revert counter for this file.
     _validate_revert_count.pop(file_path, None)
+
+    # Pending-changes substrate (phase 2): if the doc declares
+    # `review_mode: pending` in its frontmatter, record this edit as a
+    # pending entry that the reader can later Accept (keep) or Reject
+    # (revert to old_text). The bytes still land on disk normally — the
+    # design's "current.md doesn't move" framing is dropped in favor of
+    # "bytes land, pending tracks revocability" so successive Edits in a
+    # turn see each other's effects and the SDK doesn't break.
+    #
+    # MVP granularity: one whole-file entry per doc, replacing on each
+    # subsequent edit. Phase 3+ will decompose into per-block entries.
+    if _read_review_mode(p):
+        slug = _doc_slug_from_path(p)
+        if slug:
+            try:
+                add_pending_edit(slug, {
+                    "tool_use_id": tool_use_id or "",
+                    "block": {"kind": "doc"},
+                    "old_text": before_text or "",
+                    "new_text": new_text,
+                    "agent_label": (
+                        f"{state.current_provider}:{state.current_model}"
+                    ),
+                })
+                print(
+                    f"[pending] recorded edit on docs/{slug}/current.md "
+                    f"(review_mode=on)",
+                    flush=True,
+                )
+            except Exception as e:
+                # Pending-recording is non-load-bearing — a failure here
+                # shouldn't abort the edit. The bytes are already on disk.
+                print(f"[pending] failed to record: {e!r}", flush=True)
 
     await finalize_md_edit(
         p,
