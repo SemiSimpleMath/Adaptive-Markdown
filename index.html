@@ -824,6 +824,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     { id: 'graph',  label: 'Graph'  },
     { id: 'source', label: 'Source' },
     { id: 'latex',  label: 'LaTeX'  },
+    { id: 'export', label: 'Export', action: 'export' },
     { id: 'print',  label: 'Print', action: 'print' },
   ];
   const viewTabs = document.getElementById('view-tab-buttons');
@@ -835,6 +836,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       btn.textContent = v.label;
       btn.addEventListener('click', () => {
         if (v.action === 'print') { window.print(); return; }
+        if (v.action === 'export') { exportDoc().catch(e => appendMessage('error', 'export failed: ' + e.message)); return; }
         if (v.id === currentView) return;
         currentView = v.id;
         renderViewTabs();
@@ -1399,6 +1401,178 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       renderLatexView();
     }
   }
+
+  // ---- Single-file HTML export -------------------------------------------
+  // Bundle the rendered doc + its scripts + assets (inlined as data URIs)
+  // + KaTeX + AM's typography CSS into one self-contained .html file.
+  // Reader opens it in any browser; math typesets, animations run, images
+  // resolve. No AM, no backend, no agent needed.
+
+  function blobToDataURI(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(fr.error || new Error('FileReader failed'));
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  async function inlineAssets(text) {
+    // Find every src="assets/<file>" / href="assets/<file>" / url(assets/<file>)
+    // and replace with a data: URI by fetching the bytes from the backend.
+    // The doc itself only sees /docs/<slug>/assets/<file> via its <base href>,
+    // so we resolve through that route here too.
+    if (!currentDoc) return text;
+    const seen = new Map(); // filename -> data URI
+    const re = /(src|href)\s*=\s*(["'])assets\/([^"']+)\2/gi;
+    const filenames = new Set();
+    let m;
+    while ((m = re.exec(text))) filenames.add(m[3]);
+    for (const name of filenames) {
+      try {
+        const resp = await fetch(`/docs/${currentDoc}/assets/${name}`);
+        if (!resp.ok) continue;
+        const blob = await resp.blob();
+        if (blob.size > 5 * 1024 * 1024) {
+          console.warn(`export: asset ${name} is ${blob.size}B — inlining anyway`);
+        }
+        seen.set(name, await blobToDataURI(blob));
+      } catch (e) {
+        console.warn(`export: could not inline ${name}:`, e);
+      }
+    }
+    return text.replace(re, (full, attr, quote, name) => {
+      const uri = seen.get(name);
+      return uri ? `${attr}=${quote}${uri}${quote}` : full;
+    });
+  }
+
+  // Pull the typography CSS from iframe-host.html so the export looks
+  // identical to what the reader saw in the viewer. The source of truth
+  // stays in one place (iframe-host.html) — no parallel copy to drift.
+  let _exportCssCache = null;
+  async function fetchExportCss() {
+    // Fetch /iframe-host from the same origin as the viewer to avoid CORS;
+    // the backend serves it on any host, so this works regardless of which
+    // hostname the user typed.
+    if (_exportCssCache !== null) return _exportCssCache;
+    const resp = await fetch('/iframe-host');
+    if (!resp.ok) throw new Error('failed to fetch iframe-host for CSS');
+    const html = await resp.text();
+    const m = html.match(/<style>([\s\S]*?)<\/style>/i);
+    _exportCssCache = m ? m[1] : '';
+    return _exportCssCache;
+  }
+
+  function buildExportHtml(title, bodyHtml, metaTxt, css) {
+    const esc = (s) => String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return [
+      '<!DOCTYPE html>',
+      '<html lang="en">',
+      '<head>',
+      '<meta charset="utf-8">',
+      `<title>${esc(title)}</title>`,
+      '<meta name="generator" content="adaptive-markdown export">',
+      '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">',
+      '<style>',
+      css,
+      '</style>',
+      '</head>',
+      '<body>',
+      metaTxt ? `<div class="meta">${esc(metaTxt)}</div>` : '',
+      '<article id="body">',
+      bodyHtml,
+      '</article>',
+      // Shim window.__doc so doc scripts that call __doc.cleanup don't error
+      // in the standalone export (no AM runtime here).
+      '<script>window.__doc = { cleanup: function () {} };<\/script>',
+      '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"><\/script>',
+      '<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"><\/script>',
+      '<script>',
+      'document.addEventListener("DOMContentLoaded", function () {',
+      '  if (window.renderMathInElement) {',
+      '    window.renderMathInElement(document.body, {',
+      '      delimiters: [',
+      '        { left: "$$", right: "$$", display: true },',
+      '        { left: "$",  right: "$",  display: false }',
+      '      ],',
+      '      throwOnError: false,',
+      '      ignoredTags: ["script","noscript","style","textarea","pre","code"]',
+      '    });',
+      '  }',
+      '});',
+      '<\/script>',
+      '</body>',
+      '</html>',
+      '',
+    ].join('\n');
+  }
+
+  async function exportDoc() {
+    if (!currentText) {
+      appendMessage('error', 'No doc loaded to export');
+      return;
+    }
+    appendMessage('user', 'Exporting `' + (currentDoc || 'doc') + '` as single-file HTML…');
+
+    // 1. Inline assets in the source so data URIs land inside the rendered HTML.
+    const inlinedBody = await inlineAssets(currentBody);
+
+    // 2. Run the same rendering pipeline as the viewer.
+    const { text: protectedText, ph } = protectMath(inlinedBody);
+    const preserved = preserveStructuralBlocks(protectedText);
+    let html = md.render(preserved);
+    html = restoreMath(html, ph);
+
+    // 3. Meta line mirrors what the viewer shows.
+    const metaBits = [];
+    const a = currentFm.authors || currentFm.author;
+    if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
+    if (currentFm.audience) metaBits.push('audience: ' + currentFm.audience);
+    if (currentFm.language) metaBits.push('language: ' + currentFm.language);
+    const metaTxt = metaBits.join(' · ');
+    const title = currentFm.title || currentDoc || 'document';
+
+    // 4. Pull CSS from iframe-host so the export looks identical to the viewer.
+    const css = await fetchExportCss();
+
+    // 5. Assemble the standalone HTML and trigger a download.
+    const exported = buildExportHtml(title, html, metaTxt, css);
+    const blob = new Blob([exported], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a2 = document.createElement('a');
+    a2.href = url;
+    a2.download = (currentDoc || 'document') + '.html';
+    document.body.appendChild(a2);
+    a2.click();
+    document.body.removeChild(a2);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  // Exposed for tests / scripting. previewExport returns the same HTML
+  // the Export button would download, without triggering a download.
+  async function previewExport() {
+    if (!currentText) throw new Error('no doc loaded');
+    const inlinedBody = await inlineAssets(currentBody);
+    const { text: pt, ph } = protectMath(inlinedBody);
+    const preserved = preserveStructuralBlocks(pt);
+    let html = md.render(preserved);
+    html = restoreMath(html, ph);
+    const metaBits = [];
+    const a = currentFm.authors || currentFm.author;
+    if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
+    if (currentFm.audience) metaBits.push('audience: ' + currentFm.audience);
+    if (currentFm.language) metaBits.push('language: ' + currentFm.language);
+    const css = await fetchExportCss();
+    return buildExportHtml(
+      currentFm.title || currentDoc || 'document',
+      html, metaBits.join(' · '), css,
+    );
+  }
+  window.__amExport = {
+    inlineAssets, buildExportHtml, exportDoc, fetchExportCss, previewExport,
+  };
 
   // Re-create <script> elements parsed via innerHTML so they actually execute.
   function activateScripts(container) {
