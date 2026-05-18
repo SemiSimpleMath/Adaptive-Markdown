@@ -117,6 +117,37 @@ body {
 }
 .view-tabs #reset-doc-btn { align-self: center; }
 .history-wrap { position: relative; align-self: center; }
+.overflow-wrap { position: relative; align-self: center; }
+.overflow-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 110;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  min-width: 160px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.overflow-menu[hidden] { display: none; }
+.overflow-item {
+  text-align: left;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  padding: 6px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  color: inherit;
+}
+.overflow-item:hover { background: var(--accent-soft); color: var(--accent); }
+.overflow-item:disabled { opacity: 0.5; cursor: default; }
 .new-doc-overlay {
   position: absolute;
   inset: 0;
@@ -688,13 +719,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="view-tab-buttons" id="view-tab-buttons"></div>
       <select id="doc-select" class="doc-select" title="Switch document"></select>
       <button id="new-doc-btn" class="btn-tiny" title="Add a new document — drop a file or browse">＋ Doc</button>
-      <button id="undo-btn" class="btn-tiny" title="Revert to the state before the last edit">↶ Undo</button>
-      <div class="history-wrap">
-        <button id="history-btn" class="btn-tiny" title="Browse pre-edit snapshots and restore an earlier version">History</button>
+      <div class="overflow-wrap">
+        <button id="overflow-btn" class="btn-tiny" title="More actions" aria-haspopup="true" aria-expanded="false">⋯</button>
+        <div id="overflow-menu" class="overflow-menu" hidden role="menu">
+          <button id="undo-btn" class="overflow-item" role="menuitem" title="Revert to the state before the last edit">↶ Undo</button>
+          <button id="history-btn" class="overflow-item" role="menuitem" title="Browse pre-edit snapshots and restore an earlier version">History…</button>
+          <button id="add-skill-btn" class="overflow-item" role="menuitem" title="Append an agent-skill section (hidden from readers; the agent's working contract for this doc)">＋ Skill</button>
+          <button id="reset-doc-btn" class="overflow-item" role="menuitem" title="Restore this document to its ship-with original">↺ Reset</button>
+        </div>
         <div id="history-panel" class="history-panel" hidden></div>
       </div>
-      <button id="add-skill-btn" class="btn-tiny" title="Append an agent-skill section (hidden from readers; the agent's working contract for this doc)">＋ Skill</button>
-      <button id="reset-doc-btn" class="btn-tiny" title="Restore this document to its ship-with original">↺ Reset</button>
     </div>
     <iframe id="doc-frame" sandbox="allow-scripts allow-popups allow-same-origin" allow="encrypted-media; autoplay; fullscreen; picture-in-picture; clipboard-write; web-share" allowfullscreen title="Document"></iframe>
     <dialog id="convert-preview-dlg" class="convert-preview-dlg">
@@ -793,6 +827,33 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const historyPanel = document.getElementById('history-panel');
   const undoBtn = document.getElementById('undo-btn');
   const addSkillBtn = document.getElementById('add-skill-btn');
+  const overflowBtn = document.getElementById('overflow-btn');
+  const overflowMenu = document.getElementById('overflow-menu');
+
+  function closeOverflowMenu() {
+    if (!overflowMenu.hidden) {
+      overflowMenu.hidden = true;
+      overflowBtn.setAttribute('aria-expanded', 'false');
+    }
+  }
+  function toggleOverflowMenu() {
+    const open = overflowMenu.hidden;
+    overflowMenu.hidden = !open;
+    overflowBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open && !historyPanel.hidden) historyPanel.hidden = true;
+  }
+  overflowBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleOverflowMenu();
+  });
+  // Every menu item closes the overflow menu when invoked. Item-specific
+  // handlers (Undo, History, +Skill, Reset) fire via their own click
+  // listeners on the same buttons, so the order is: their handler runs,
+  // then this one closes the menu.
+  overflowMenu.addEventListener('click', (e) => {
+    const btn = e.target.closest('.overflow-item');
+    if (btn) closeOverflowMenu();
+  });
   const newDocBtn = document.getElementById('new-doc-btn');
   const newDocOverlay = document.getElementById('new-doc-overlay');
   const newDocClose = document.getElementById('new-doc-close');
@@ -2625,6 +2686,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     if (!historyPanel.hidden && !historyPanel.contains(e.target) && e.target !== historyBtn) {
       historyPanel.hidden = true;
     }
+    // Overflow menu dismisses on any click outside its panel and outside
+    // its toggle button (the toggle handler stops propagation so this
+    // doesn't immediately close what it just opened).
+    if (!overflowMenu.hidden
+        && !overflowMenu.contains(e.target)
+        && e.target !== overflowBtn) {
+      closeOverflowMenu();
+    }
     // Clicks outside the + Doc overlay (chrome, chat) dismiss it.
     if (newDocOverlay && !newDocOverlay.hidden &&
         !newDocOverlay.contains(e.target) && e.target !== newDocBtn) {
@@ -2632,8 +2701,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !historyPanel.hidden) {
-      historyPanel.hidden = true;
+    if (e.key === 'Escape') {
+      if (!historyPanel.hidden) historyPanel.hidden = true;
+      if (!overflowMenu.hidden) closeOverflowMenu();
     }
   });
 
