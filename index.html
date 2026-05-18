@@ -1085,8 +1085,46 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     } else if (data.type === 'dragenter') {
       // mirror drop overlay onto parent so the dashed border shows
       document.body.classList.add('dropping');
+    } else if (data.type === 'block_edit') {
+      handleBlockEdit(data.block, data.new_text);
     }
   });
+
+  // Commit a reader's inline edit by POSTing to /edit-block. The backend
+  // runs the validator and snapshots; on success it broadcasts doc_changed
+  // and the viewer reloads. On failure we surface the error in chat — the
+  // visual state will revert on the next doc reload triggered by anything
+  // else, but for now the iframe shows the user-edited text until then.
+  async function handleBlockEdit(block, newText) {
+    if (!currentDoc) return;
+    try {
+      const resp = await fetch('/edit-block', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          doc: currentDoc, block: block || {}, new_text: newText || '',
+        }),
+      });
+      if (!resp.ok) {
+        let err = `edit-block: ${resp.status}`;
+        try {
+          const j = await resp.json();
+          if (j.error) err = j.error;
+          if (Array.isArray(j.details) && j.details.length) {
+            err += ' — ' + j.details
+              .map(d => `[${d.kind || '?'} line ${d.line}] ${d.message}`)
+              .join('; ');
+          }
+        } catch (_) {}
+        appendMessage('error', err);
+        // Revert by reloading the source.
+        if (currentDoc) loadDoc(docUrl(currentDoc));
+      }
+    } catch (e) {
+      appendMessage('error', 'edit-block failed: ' + (e.message || e));
+      if (currentDoc) loadDoc(docUrl(currentDoc));
+    }
+  }
 
   // Stable dedup key for a selection. When the block has no id yet
   // (unlabeled paragraph, no anchor, no track-id minted), falling back to
@@ -2219,6 +2257,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
     log.scrollTop = log.scrollHeight;
   }
+  // Inline-edit lock. The iframe makes paragraphs / headings contenteditable
+  // when this flag is false (agent idle). showActivity / hideActivity are
+  // the canonical agent-busy signal in the viewer, so we ride them.
+  let agentBusy = false;
+  function setAgentBusy(busy) {
+    if (agentBusy === !!busy) return;
+    agentBusy = !!busy;
+    sendToFrame({ type: 'setEditable', on: !agentBusy });
+  }
+
   function showActivity(initialText) {
     hideActivity();
     const div = document.createElement('div');
@@ -2230,6 +2278,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     div.appendChild(txt);
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
+    setAgentBusy(true);
   }
   function updateActivityStatus(text) {
     let el = document.getElementById('activity-indicator');
@@ -2241,6 +2290,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   function hideActivity() {
     const el = document.getElementById('activity-indicator');
     if (el) el.remove();
+    setAgentBusy(false);
   }
 
   sendBtn.addEventListener('click', () => {

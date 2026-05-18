@@ -249,6 +249,68 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     parent.postMessage(msg, PARENT_ORIGIN || '*');
   }
 
+  // ---- Inline edit (plaintext-only) --------------------------------------
+  // When the agent is idle, paragraphs and headings become contenteditable
+  // so the reader can correct typos, rewrite a sentence, etc., without
+  // routing through the chat. When the agent starts a turn, edits are
+  // locked. /cancel is the escape hatch if a turn gets stuck.
+  //
+  // Plaintext-only: the reader changes *text*, not formatting. Bold /
+  // italic / link markup in the source is replaced on commit if the
+  // reader touches that block. Source view is the path for formatting
+  // edits and for non-prose blocks (lists, code, tables).
+  let editableMode = true;
+  const EDITABLE_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+
+  function applyEditableMode() {
+    for (const block of body.children) {
+      if (editableMode && EDITABLE_TAGS.has(block.tagName)) {
+        block.setAttribute('contenteditable', 'plaintext-only');
+      } else {
+        block.removeAttribute('contenteditable');
+      }
+    }
+  }
+
+  function setEditable(on) {
+    editableMode = !!on;
+    applyEditableMode();
+  }
+
+  // Snapshot the block's original blockInfo signature when it gains focus.
+  // The signature (label / excerpt) is derived from the block's text, so
+  // capturing AFTER the edit makes the backend unable to find the source
+  // block. We stash the pre-edit signature on the element via a WeakMap.
+  const _editFocusInfo = new WeakMap();
+
+  body.addEventListener('focusin', e => {
+    const block = findBlock(e.target);
+    if (!block || !block.hasAttribute('contenteditable')) return;
+    if (!_editFocusInfo.has(block)) {
+      _editFocusInfo.set(block, {
+        origText: block.innerText,
+        sig: blockInfo(block),
+      });
+    }
+  });
+
+  body.addEventListener('focusout', e => {
+    const block = findBlock(e.target);
+    if (!block) return;
+    const info = _editFocusInfo.get(block);
+    if (!info) return;
+    const next = block.innerText;
+    _editFocusInfo.delete(block);
+    if (next.trim() === info.origText.trim()) return;
+    // Drop the new text + the pre-edit signature to the parent. The parent
+    // POSTs to /edit-block, the backend writes through snapshot+validate.
+    toParent({
+      type: 'block_edit',
+      block: info.sig,
+      new_text: next,
+    });
+  });
+
   // Distinguish "click to focus a block" from "click-and-drag to select
   // text" by checking the selection state at click time. By the time the
   // click event fires, mousedown→mousemove→mouseup has already populated
@@ -270,7 +332,11 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     if (userIsTextSelecting()) return; // let native selection survive
     const b = findBlock(e.target);
     const add = e.shiftKey || e.metaKey || e.ctrlKey;
-    e.preventDefault();
+    // preventDefault would cancel caret-placement on a contenteditable
+    // block, breaking inline edit. Block-focus still fires either way;
+    // for editable blocks the browser also places the caret naturally.
+    const isEditable = b && b.hasAttribute('contenteditable');
+    if (!isEditable) e.preventDefault();
     if (b) b.classList.remove('hover-block');
     if (b) {
       clearInsertionMarker();
@@ -348,6 +414,7 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     for (const [k, s] of oldScripts) { if (!newScripts.has(k)) runScriptCleanups(s); }
     for (const [k, s] of newScripts) { if (!oldScripts.has(k)) reExec(s); }
     applySelection();
+    applyEditableMode();
     renderMath();
     se.scrollTop = sy;
   }
@@ -385,6 +452,8 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
       applySelection();
     } else if (d.type === 'clearInsertion') {
       clearInsertionMarker();
+    } else if (d.type === 'setEditable') {
+      setEditable(d.on);
     } else if (d.type === 'scrollToAnchor') {
       const el = document.getElementById(d.id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });

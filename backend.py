@@ -426,6 +426,47 @@ async def detect_id_drift(doc_path: Path, before_text: str) -> None:
         save_aliases(doc_path, aliases)
 
 
+def _find_block_span(
+    lines: list[str], signature: dict,
+) -> tuple[int, int, str] | None:
+    """Locate (start_line, end_line_exclusive, kind) for the block matching
+    `signature`. Returns None if the block can't be located unambiguously.
+
+    Supported kinds (MVP): 'heading' (one line), 'paragraph' (consecutive
+    non-blank, non-special lines). Other block types (list, blockquote,
+    fenced code, table, HTML block) return None so the caller refuses
+    inline edit and the reader uses Source view for those.
+    """
+    idx = _find_block_line(lines, signature)
+    if idx is None:
+        return None
+    line = lines[idx]
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if _HEADING_LINE_RE.match(line):
+        return (idx, idx + 1, "heading")
+    # Refuse non-paragraph blocks: lists, fenced code, tables, HTML blocks,
+    # blockquotes, deprecated directives. Source view handles those.
+    refuse_prefixes = ("-", "*", "+", ">", "|", "<!--", "<", "```", ":::", "~~~")
+    if stripped.startswith(refuse_prefixes):
+        return None
+    if re.match(r"^\d+\.\s", stripped):  # numbered list
+        return None
+    # Paragraph: consume consecutive non-blank, non-special lines.
+    end = idx + 1
+    while end < len(lines):
+        nxt = lines[end].strip()
+        if not nxt:
+            break
+        if nxt.startswith(refuse_prefixes) or _HEADING_LINE_RE.match(lines[end]):
+            break
+        if re.match(r"^\d+\.\s", nxt):
+            break
+        end += 1
+    return (idx, end, "paragraph")
+
+
 def mint_track_id_for(doc_path: Path, signature: dict) -> str | None:
     """Insert `<!-- id:b-... -->` before the matching block. Returns the new
     track_id, or None if the block couldn't be located. If a tracking
@@ -1994,6 +2035,93 @@ async def restore_snapshot(request: web.Request) -> web.Response:
     return web.json_response({"doc": slug, "snap_id": snap_id, "ok": True})
 
 
+async def edit_block(request: web.Request) -> web.Response:
+    """POST /edit-block — replace a single block's source with plain text.
+
+    Body JSON: { doc: <slug>, block: <signature>, new_text: <plain text> }
+    where signature is the blockInfo the iframe posts for selections
+    (track_id / anchor_id / label / excerpt).
+
+    MVP scope: paragraphs and headings only. Lists, code, tables, raw HTML
+    blocks return 422 — the reader edits those via the Source view because
+    plaintext replacement would corrupt the source structure.
+    """
+    _require_localhost_origin(request)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    slug = (data.get("doc") or "").strip()
+    block = data.get("block") or {}
+    new_text = data.get("new_text", "")
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    if not isinstance(block, dict):
+        return web.json_response({"error": "block must be object"}, status=400)
+    if not isinstance(new_text, str):
+        return web.json_response({"error": "new_text must be string"}, status=400)
+    new_text = new_text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+
+    source = doc_path.read_text(encoding="utf-8")
+    lines = source.split("\n")
+    span = _find_block_span(lines, block)
+    if span is None:
+        return web.json_response(
+            {"error": "could not locate or refusing to inline-edit this block "
+                      "(supported: paragraphs and headings). Use the Source "
+                      "view for lists, code, tables, and HTML blocks."},
+            status=422,
+        )
+    start, end, kind = span
+
+    # Heading edit: keep the original `## ` prefix + optional `{#anchor}`
+    # suffix; replace only the visible text.
+    if kind == "heading":
+        m = _HEADING_LINE_RE.match(lines[start])
+        if m:
+            hashes = m.group(1)
+            anchor = m.group(3)
+            anchor_suffix = f" {{{anchor}}}" if anchor else ""
+            new_first_line = (
+                f"{hashes} {new_text.splitlines()[0] if new_text else ''}"
+                f"{anchor_suffix}"
+            )
+            new_lines = lines[:start] + [new_first_line] + lines[end:]
+        else:
+            new_lines = lines[:start] + [new_text] + lines[end:]
+    else:
+        new_lines = lines[:start] + [new_text] + lines[end:]
+    new_source = "\n".join(new_lines)
+
+    errors = validators.validate_doc(new_source) if new_source.strip() else []
+    if errors:
+        return web.json_response(
+            {"error": "validation failed",
+             "details": [
+                 {"kind": e.get("kind"), "line": e.get("line"),
+                  "message": e.get("message")}
+                 for e in errors[:5]
+             ]},
+            status=422,
+        )
+
+    _snapshot_if_changed(doc_path)
+    with doc_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_source)
+    print(
+        f"[edit-block] docs/{slug}/current.md ({kind}, "
+        f"start={start} end={end} → {len(new_text)} chars)",
+        flush=True,
+    )
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    return web.json_response({"ok": True, "kind": kind})
+
+
 async def reset_doc(request: web.Request) -> web.Response:
     """POST /reset?doc=<slug> — restore current.md from baseline.md (history-0)."""
     _require_localhost_origin(request)
@@ -2114,6 +2242,7 @@ def make_app() -> web.Application:
     app.router.add_post("/undo", undo_doc)
     app.router.add_post("/restore_snapshot", restore_snapshot)
     app.router.add_post("/reset", reset_doc)
+    app.router.add_post("/edit-block", edit_block)
     app.router.add_get("/{path:.+}", serve_static)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
