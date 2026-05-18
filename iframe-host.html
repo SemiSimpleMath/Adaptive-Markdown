@@ -249,12 +249,28 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
     parent.postMessage(msg, PARENT_ORIGIN || '*');
   }
 
+  // Distinguish "click to focus a block" from "click-and-drag to select
+  // text" by checking the selection state at click time. By the time the
+  // click event fires, mousedown→mousemove→mouseup has already populated
+  // the selection if the user dragged; if there's a non-collapsed
+  // selection now, the click is part of a text-select gesture and we
+  // leave the browser's native selection / copy behavior alone. Without
+  // this, the previous handler called removeAllRanges() unconditionally
+  // and killed text selection entirely — users couldn't even copy a
+  // paragraph.
+  function userIsTextSelecting() {
+    const s = document.getSelection();
+    if (!s || s.isCollapsed) return false;
+    const txt = s.toString();
+    return typeof txt === 'string' && txt.trim().length > 0;
+  }
+
   document.addEventListener('click', e => {
     if (e.target.closest('a')) return;
+    if (userIsTextSelecting()) return; // let native selection survive
     const b = findBlock(e.target);
     const add = e.shiftKey || e.metaKey || e.ctrlKey;
     e.preventDefault();
-    try { const s = document.getSelection(); if (s) s.removeAllRanges(); } catch (_) {}
     if (b) b.classList.remove('hover-block');
     if (b) {
       clearInsertionMarker();
