@@ -470,25 +470,50 @@ class CodexRuntime:
         assert proc.stdin is not None
         assert proc.stdout is not None
         assert proc.stderr is not None
-        proc.stdin.write(text.encode("utf-8"))
-        await proc.stdin.drain()
-        proc.stdin.close()
+        stderr_task: asyncio.Task | None = None
+        try:
+            proc.stdin.write(text.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
 
-        stderr_task = asyncio.create_task(self._collect_stderr(proc.stderr))
-        async for raw_line in proc.stdout:
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            event = self._jsonl_to_event(line)
-            if event:
-                emitted_text = emitted_text or (
-                    event.get("role") == "assistant" and event.get("type") == "text"
-                )
-                events.append(event)
+            stderr_task = asyncio.create_task(self._collect_stderr(proc.stderr))
+            async for raw_line in proc.stdout:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                event = self._jsonl_to_event(line)
+                if event:
+                    emitted_text = emitted_text or (
+                        event.get("role") == "assistant" and event.get("type") == "text"
+                    )
+                    events.append(event)
 
-        code = await proc.wait()
-        stderr = await stderr_task
-        return code, stderr, emitted_text, events
+            code = await proc.wait()
+            stderr = await stderr_task
+            return code, stderr, emitted_text, events
+        finally:
+            # If we exit via cancellation (reader hit /cancel) or any other
+            # exception, the codex subprocess may still be running. Without
+            # this kill the process keeps consuming the user's agent quota
+            # and writing to the workspace after we've stopped paying
+            # attention to its output. Codex parity with Claude's /cancel,
+            # which closes the SDK client cleanly via the SDK's own
+            # cancellation semantics.
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+                try:
+                    await proc.wait()
+                except BaseException:
+                    pass
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except BaseException:
+                    pass
 
     async def _collect_stderr(self, stream: asyncio.StreamReader) -> str:
         chunks = []
