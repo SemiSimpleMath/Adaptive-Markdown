@@ -1923,19 +1923,67 @@ async def _upload_music_doc(
             "</figure>\n"
         )
     else:
+        # .mxl is compressed MusicXML (zip with the .musicxml inside).
+        # Extract the main score file so we can wrap it in a script tag
+        # like a regular .musicxml upload.
+        if ext == ".mxl":
+            import io
+            import zipfile
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                    # META-INF/container.xml points at the main score,
+                    # but for v0 just pick the first non-META-INF .xml /
+                    # .musicxml entry — works for ~all real-world .mxl files.
+                    score_name = None
+                    for name in zf.namelist():
+                        if name.startswith("META-INF/"):
+                            continue
+                        if name.lower().endswith((".xml", ".musicxml")):
+                            score_name = name
+                            break
+                    if score_name is None:
+                        return web.json_response(
+                            {"error": "no .xml / .musicxml entry inside "
+                                      "the .mxl archive"},
+                            status=422,
+                        )
+                    raw = zf.read(score_name)
+            except (zipfile.BadZipFile, OSError) as e:
+                return web.json_response(
+                    {"error": f"could not read .mxl archive: {e}"},
+                    status=422,
+                )
+
         text = raw.decode("utf-8", errors="replace")
         text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-        inner_cls = _music_inner_div_class(ext)
-        # Keep blank lines inside the music div from terminating the
-        # type-6 HTML block: wrap the source so the figure stays a
-        # single block to CommonMark. The source survives intact because
-        # textContent on the div preserves whitespace.
+        if ext == ".abc":
+            # ABC content is plain ASCII (no `<` or `>`); the browser
+            # parses `<div class="abc">…</div>` cleanly and textContent
+            # returns the source verbatim. div is fine here.
+            inner = (
+                '<div class="abc">\n'
+                + text
+                + '\n</div>'
+            )
+        else:
+            # MusicXML / generic .xml: contains `<score-partwise>` and
+            # other tags the browser's HTML parser would consume,
+            # leaving textContent with no markup at all. A <script> with
+            # a non-JS type is treated as opaque data — the browser
+            # never parses its content as HTML, so textContent returns
+            # the XML byte-for-byte for OpenSheetMusicDisplay to chew on.
+            inner = (
+                '<script type="application/vnd.recordare.musicxml+xml" '
+                'class="music-musicxml-source">\n'
+                + text
+                + '\n</script>'
+            )
         body_md = (
             f'---\ntitle: "{title}"\n---\n\n'
             f"# {title}\n\n"
             '<figure class="music">\n'
-            f'<div class="{inner_cls}">\n{text}\n</div>\n'
-            "</figure>\n"
+            + inner
+            + "\n</figure>\n"
         )
 
     (doc_dir / "current.md").write_text(body_md, encoding="utf-8", newline="")

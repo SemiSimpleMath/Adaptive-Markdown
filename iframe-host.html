@@ -337,22 +337,35 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
     }
 
     // --- MusicXML ---
-    const xmlDivs = Array.from(root.querySelectorAll('figure.music div.musicxml'));
-    const xmlTodo = xmlDivs.filter(d =>
-      d.dataset.amMusicSource !== (d.textContent || '').trim()
+    // The XML lives inside a `<script type="application/vnd.recordare
+    // .musicxml+xml">…<\/script>` so the browser doesn't HTML-parse the
+    // `<score-partwise>` and friends. We read textContent from the
+    // script (returns the source verbatim) and render into a sibling
+    // div.musicxml-render so we don't try to mutate the script's body.
+    const xmlScripts = Array.from(root.querySelectorAll(
+      'figure.music script[type="application/vnd.recordare.musicxml+xml"]'
+    ));
+    const xmlTodo = xmlScripts.filter(s =>
+      s.dataset.amMusicSource !== (s.textContent || '').trim()
     );
     if (xmlTodo.length) {
       try {
         await loadScriptOnce(
           'https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.9.0/build/opensheetmusicdisplay.min.js',
         );
-        for (const div of xmlTodo) {
-          const source = (div.textContent || '').trim();
-          div.dataset.amMusicSource = source;
-          div.innerHTML = '';
-          const target = document.createElement('div');
-          target.className = 'musicxml-render';
-          div.appendChild(target);
+        for (const script of xmlTodo) {
+          const source = (script.textContent || '').trim();
+          script.dataset.amMusicSource = source;
+          // Reuse an existing sibling render target if morphdom left one;
+          // otherwise create one immediately after the script node.
+          let target = script.nextElementSibling;
+          if (!target || !target.classList.contains('musicxml-render')) {
+            target = document.createElement('div');
+            target.className = 'musicxml-render';
+            script.parentNode.insertBefore(target, script.nextSibling);
+          } else {
+            target.innerHTML = '';
+          }
           try {
             const osmd = new window.opensheetmusicdisplay.OpenSheetMusicDisplay(target);
             await osmd.load(source);
