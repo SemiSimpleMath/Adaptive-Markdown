@@ -2589,15 +2589,29 @@ async def add_doc_skill(request: web.Request) -> web.Response:
 
     source = doc_path.read_text(encoding="utf-8")
     skill_block = (
-        '\n<section class="agent-skill">\n\n'
+        '<section class="agent-skill">\n\n'
         f"## SKILL: {name}\n\n"
         "_Describe how the agent should work on this doc — voice, "
         "formatting, conventions specific to this doc. This section is "
         "hidden from readers; the agent reads it as authoritative for "
         "this doc and preserves it across edits._\n\n"
-        "</section>\n"
+        "</section>\n\n"
     )
-    new_source = source.rstrip("\n") + "\n" + skill_block
+    # Insert right after the frontmatter (or at the very top if there's
+    # none). The agent reads the doc top-down via the inlined preamble,
+    # so placing the contract near the top means the agent absorbs the
+    # contract before processing body content — putting it at the bottom
+    # forces the agent to read the body first under generic guidance,
+    # then learn the contract too late to influence anything. Also makes
+    # the skill discoverable in Source view without scrolling. Doc view
+    # is unchanged (display:none either way).
+    m = _FRONTMATTER_RE.match(source)
+    if m:
+        head = source[: m.end()]
+        tail = source[m.end():].lstrip("\n")
+        new_source = head + "\n" + skill_block + tail
+    else:
+        new_source = skill_block + source.lstrip("\n")
 
     errors = validators.validate_doc(new_source) if new_source.strip() else []
     if errors:

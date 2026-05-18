@@ -331,6 +331,29 @@ body {
   background: transparent; color: var(--muted); border: 1px solid var(--border);
 }
 .reset-confirm-dlg .btn-secondary:hover { background: #f3f3f1; }
+.reset-confirm-dlg .add-skill-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 0.5rem 0.7rem;
+  margin: 0 0 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: white;
+}
+.reset-confirm-dlg .add-skill-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(42, 77, 122, 0.12);
+}
+.reset-confirm-dlg code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  background: #f6f6f4;
+  padding: 0.05em 0.35em;
+  border-radius: 3px;
+}
 .history-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -776,6 +799,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="reset-actions">
         <button type="button" class="btn-secondary" id="reset-cancel">Cancel</button>
         <button type="button" class="btn-primary" id="reset-confirm">Reset to baseline</button>
+      </div>
+    </dialog>
+    <dialog id="add-skill-dlg" class="reset-confirm-dlg">
+      <h3>Add a doc skill</h3>
+      <p>A short label for this skill — the agent uses it to find this contract when working on the doc.</p>
+      <input type="text" id="add-skill-name" class="add-skill-input" placeholder='e.g. "voice rules", "math conventions"' autocomplete="off">
+      <p class="reset-safety">A new <code>&lt;section class="agent-skill"&gt;</code> with a placeholder body lands at the bottom of the doc. The viewer hides it; Source view shows it. You can fill in the placeholder there.</p>
+      <div class="reset-actions">
+        <button type="button" class="btn-secondary" id="add-skill-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="add-skill-create">Create</button>
       </div>
     </dialog>
     <div id="new-doc-overlay" class="new-doc-overlay" hidden>
@@ -2818,18 +2851,57 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   });
 
-  // + Skill button: append an agent-skill section to the doc and drop the
-  // author into Source view so they can fill in the placeholder text. The
-  // agent can ALSO author skills via chat ("draft an agent-skill section
-  // for this doc that says ..."); this button is just the affordance for
-  // authors who'd rather type the contract directly.
+  // + Skill button: open a styled modal that asks for an optional label,
+  // then POSTs to /add-doc-skill which appends a stock agent-skill section
+  // to the doc. After creation we drop the author into Source view so they
+  // can fill in the placeholder text. The agent can ALSO author skills via
+  // chat — this button is just the keyboard-discoverable affordance.
+  const addSkillDlg = document.getElementById('add-skill-dlg');
+  const addSkillNameInput = document.getElementById('add-skill-name');
+  const addSkillCancelBtn = document.getElementById('add-skill-cancel');
+  const addSkillCreateBtn = document.getElementById('add-skill-create');
+
+  function openAddSkillDialog() {
+    return new Promise((resolve) => {
+      addSkillNameInput.value = '';
+      function done(name) {
+        addSkillCreateBtn.removeEventListener('click', onCreate);
+        addSkillCancelBtn.removeEventListener('click', onCancel);
+        addSkillDlg.removeEventListener('cancel', onCancel);
+        addSkillDlg.removeEventListener('click', onBackdrop);
+        addSkillNameInput.removeEventListener('keydown', onKey);
+        if (addSkillDlg.open) addSkillDlg.close();
+        resolve(name);
+      }
+      function onCreate() {
+        done((addSkillNameInput.value || '').trim());
+      }
+      function onCancel(e) { if (e) e.preventDefault(); done(null); }
+      function onBackdrop(e) { if (e.target === addSkillDlg) done(null); }
+      function onKey(e) {
+        if (e.key === 'Enter') { e.preventDefault(); onCreate(); }
+        else if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      }
+      addSkillCreateBtn.addEventListener('click', onCreate);
+      addSkillCancelBtn.addEventListener('click', onCancel);
+      addSkillDlg.addEventListener('cancel', onCancel);
+      addSkillDlg.addEventListener('click', onBackdrop);
+      addSkillNameInput.addEventListener('keydown', onKey);
+      if (typeof addSkillDlg.showModal === 'function') {
+        addSkillDlg.showModal();
+        setTimeout(() => addSkillNameInput.focus(), 0);
+      } else {
+        // Pre-<dialog>-support fallback (very old browsers): native prompt.
+        const v = prompt('Skill label (optional)', '');
+        done(v === null ? null : v.trim());
+      }
+    });
+  }
+
   addSkillBtn.addEventListener('click', async () => {
     if (!currentDoc || addSkillBtn.disabled) return;
-    const name = (prompt(
-      'Short label for this skill (e.g. "voice rules", "math conventions"). ' +
-      'You can leave blank.',
-      '',
-    ) || '').trim();
+    const name = await openAddSkillDialog();
+    if (name === null) return;  // user cancelled
     addSkillBtn.disabled = true;
     try {
       const resp = await fetch(
