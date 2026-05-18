@@ -2563,6 +2563,166 @@ async def reject_pending(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "rejected": len(targets)})
 
 
+_AGENT_SKILL_RE = re.compile(
+    r'<section\s+class="agent-skill"[^>]*>([\s\S]*?)</section\s*>',
+    re.IGNORECASE,
+)
+_SKILL_NAME_RE = re.compile(
+    r'^\s*##+\s+SKILL\s*:\s*(.+?)\s*$', re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _find_agent_skill_blocks(source: str) -> list[dict]:
+    """Locate every <section class="agent-skill">...</section> block.
+    Returns one dict per block with byte offsets (`start`/`end` over the
+    whole block including tags), the inner content stripped of leading/
+    trailing whitespace, and a best-guess name pulled from the first
+    `## SKILL: <name>` heading inside the block (or "untitled #N"
+    fallback)."""
+    out = []
+    for i, m in enumerate(_AGENT_SKILL_RE.finditer(source)):
+        inner = m.group(1).strip("\n")
+        # Heading-based name extraction. If absent, fall back so the
+        # UI always has something to label the skill with.
+        nm = _SKILL_NAME_RE.search(inner)
+        name = nm.group(1).strip() if nm else f"untitled #{i + 1}"
+        out.append({
+            "index": i,
+            "name": name,
+            "content": inner,
+            "start": m.start(),
+            "end": m.end(),
+        })
+    return out
+
+
+def _render_agent_skill_block(content: str) -> str:
+    """Build the `<section class="agent-skill">...</section>` wrapper
+    around a body. Whitespace pattern matches what add_doc_skill / the
+    editor write so round-tripping through the parser stays clean."""
+    body = (content or "").strip("\n")
+    return (
+        '<section class="agent-skill">\n\n'
+        + body
+        + '\n\n</section>'
+    )
+
+
+async def list_doc_skills(request: web.Request) -> web.Response:
+    """GET /doc-skills?doc=<slug> — list every agent-skill section in
+    the doc with its label + content + position. Drives the Skills
+    manager modal."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    source = doc_path.read_text(encoding="utf-8")
+    skills = _find_agent_skill_blocks(source)
+    # Drop the byte offsets from the response — those are server-side
+    # only; the index is the stable handle for update/delete.
+    return web.json_response({
+        "skills": [
+            {"index": s["index"], "name": s["name"], "content": s["content"]}
+            for s in skills
+        ],
+    })
+
+
+async def update_doc_skill(request: web.Request) -> web.Response:
+    """POST /update-doc-skill?doc=<slug>&index=N — replace the Nth
+    agent-skill section's inner content with the body's `content`
+    field. The wrapping `<section class="agent-skill">…</section>`
+    is preserved."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    try:
+        idx = int(request.query.get("index", "-1"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "index must be an integer"}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    new_content = body.get("content")
+    if not isinstance(new_content, str):
+        return web.json_response({"error": "missing 'content'"}, status=400)
+
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    source = doc_path.read_text(encoding="utf-8")
+    blocks = _find_agent_skill_blocks(source)
+    if idx < 0 or idx >= len(blocks):
+        return web.json_response(
+            {"error": f"no agent-skill section at index {idx} "
+                      f"(this doc has {len(blocks)})"},
+            status=404,
+        )
+    block = blocks[idx]
+    new_block = _render_agent_skill_block(new_content)
+    new_source = source[: block["start"]] + new_block + source[block["end"]:]
+
+    errors = validators.validate_doc(new_source) if new_source.strip() else []
+    if errors:
+        return web.json_response(
+            {"error": "validation failed",
+             "details": [
+                 {"kind": e.get("kind"), "line": e.get("line"),
+                  "message": e.get("message")}
+                 for e in errors[:3]
+             ]},
+            status=422,
+        )
+
+    _snapshot_if_changed(doc_path)
+    with doc_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_source)
+    print(f"[update-doc-skill] docs/{slug}/current.md index={idx}", flush=True)
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    return web.json_response({"ok": True, "index": idx})
+
+
+async def delete_doc_skill(request: web.Request) -> web.Response:
+    """POST /delete-doc-skill?doc=<slug>&index=N — remove the Nth
+    agent-skill section entirely."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    try:
+        idx = int(request.query.get("index", "-1"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "index must be an integer"}, status=400)
+
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    source = doc_path.read_text(encoding="utf-8")
+    blocks = _find_agent_skill_blocks(source)
+    if idx < 0 or idx >= len(blocks):
+        return web.json_response(
+            {"error": f"no agent-skill section at index {idx}"},
+            status=404,
+        )
+    block = blocks[idx]
+    new_source = source[: block["start"]] + source[block["end"]:]
+    # Collapse runs of 3+ blank lines that the removal may have produced.
+    new_source = re.sub(r"\n{3,}", "\n\n", new_source)
+    _snapshot_if_changed(doc_path)
+    with doc_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_source)
+    print(f"[delete-doc-skill] docs/{slug}/current.md index={idx}", flush=True)
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    return web.json_response({"ok": True, "index": idx})
+
+
 async def add_doc_skill(request: web.Request) -> web.Response:
     """POST /add-doc-skill?doc=<slug> — append an empty agent-skill section
     to the doc body so the author has somewhere to write working-contract
@@ -2584,19 +2744,27 @@ async def add_doc_skill(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             body = {}
-    name = (body.get("name") if isinstance(body, dict) else None) or ""
-    name = name.strip() or "untitled"
+    if not isinstance(body, dict):
+        body = {}
+    name = (body.get("name") or "").strip() or "untitled"
+    # Optional pre-filled content from the Skills manager modal. If the
+    # caller didn't supply any, we fall back to the placeholder body so
+    # an empty + Skill click still gets a useful stub.
+    raw_content = body.get("content")
+    custom_content = raw_content.strip() if isinstance(raw_content, str) else ""
 
     source = doc_path.read_text(encoding="utf-8")
-    skill_block = (
-        '<section class="agent-skill">\n\n'
-        f"## SKILL: {name}\n\n"
-        "_Describe how the agent should work on this doc — voice, "
-        "formatting, conventions specific to this doc. This section is "
-        "hidden from readers; the agent reads it as authoritative for "
-        "this doc and preserves it across edits._\n\n"
-        "</section>\n\n"
-    )
+    if custom_content:
+        skill_inner = custom_content
+    else:
+        skill_inner = (
+            f"## SKILL: {name}\n\n"
+            "_Describe how the agent should work on this doc — voice, "
+            "formatting, conventions specific to this doc. This section is "
+            "hidden from readers; the agent reads it as authoritative for "
+            "this doc and preserves it across edits._"
+        )
+    skill_block = _render_agent_skill_block(skill_inner) + "\n\n"
     # Insert right after the frontmatter (or at the very top if there's
     # none). The agent reads the doc top-down via the inlined preamble,
     # so placing the contract near the top means the agent absorbs the
@@ -2764,6 +2932,9 @@ def make_app() -> web.Application:
     app.router.add_post("/reset", reset_doc)
     app.router.add_post("/edit-block", edit_block)
     app.router.add_post("/add-doc-skill", add_doc_skill)
+    app.router.add_get("/doc-skills", list_doc_skills)
+    app.router.add_post("/update-doc-skill", update_doc_skill)
+    app.router.add_post("/delete-doc-skill", delete_doc_skill)
     app.router.add_get("/pending", list_pending)
     app.router.add_post("/accept-pending", accept_pending)
     app.router.add_post("/reject-pending", reject_pending)

@@ -354,6 +354,23 @@ body {
   padding: 0.05em 0.35em;
   border-radius: 3px;
 }
+.skills-list-dlg { max-width: 640px; }
+.skills-list { display: flex; flex-direction: column; gap: 0.55rem; margin: 0.4rem 0 1rem; max-height: 50vh; overflow-y: auto; }
+.skills-list .skills-empty { color: var(--muted); font-style: italic; padding: 1.5rem; text-align: center; }
+.skills-list .skill-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.7rem 0.85rem; background: white; }
+.skills-list .skill-card-name { font-weight: 600; color: var(--accent); margin-bottom: 0.25rem; font-size: 0.92rem; }
+.skills-list .skill-card-preview { font-family: ui-monospace, monospace; font-size: 0.78rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 4.2em; overflow: hidden; line-height: 1.4; margin-bottom: 0.5rem; }
+.skills-list .skill-card-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+.skills-edit-dlg { max-width: 720px; }
+.skills-edit-textarea {
+  width: 100%; box-sizing: border-box;
+  min-height: 280px; max-height: 60vh;
+  font-family: ui-monospace, monospace; font-size: 0.85rem;
+  padding: 0.7rem 0.85rem; margin: 0 0 0.8rem;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: white; resize: vertical;
+}
+.skills-edit-textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(42, 77, 122, 0.12); }
 .history-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -768,7 +785,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         <div id="overflow-menu" class="overflow-menu" hidden role="menu">
           <button id="undo-btn" class="overflow-item" role="menuitem" title="Revert to the state before the last edit">↶ Undo</button>
           <button id="history-btn" class="overflow-item" role="menuitem" title="Browse pre-edit snapshots and restore an earlier version">History…</button>
-          <button id="add-skill-btn" class="overflow-item" role="menuitem" title="Append an agent-skill section (hidden from readers; the agent's working contract for this doc)">＋ Skill</button>
+          <button id="add-skill-btn" class="overflow-item" role="menuitem" title="View, edit, add doc skills — agent-skill sections that act as this doc's working contract (hidden from readers)">Skills…</button>
           <button id="reset-doc-btn" class="overflow-item" role="menuitem" title="Restore this document to its ship-with original">↺ Reset</button>
         </div>
         <div id="history-panel" class="history-panel" hidden></div>
@@ -801,14 +818,22 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         <button type="button" class="btn-primary" id="reset-confirm">Reset to baseline</button>
       </div>
     </dialog>
-    <dialog id="add-skill-dlg" class="reset-confirm-dlg">
-      <h3>Add a doc skill</h3>
-      <p>A short label for this skill — the agent uses it to find this contract when working on the doc.</p>
-      <input type="text" id="add-skill-name" class="add-skill-input" placeholder='e.g. "voice rules", "math conventions"' autocomplete="off">
-      <p class="reset-safety">A new <code>&lt;section class="agent-skill"&gt;</code> with a placeholder body lands at the bottom of the doc. The viewer hides it; Source view shows it. You can fill in the placeholder there.</p>
+    <dialog id="skills-list-dlg" class="reset-confirm-dlg skills-list-dlg">
+      <h3>Doc skills</h3>
+      <p>Agent-skill sections in this doc — the agent reads them as authoritative for this doc, hidden from readers in the rendered view.</p>
+      <div id="skills-list" class="skills-list"></div>
       <div class="reset-actions">
-        <button type="button" class="btn-secondary" id="add-skill-cancel">Cancel</button>
-        <button type="button" class="btn-primary" id="add-skill-create">Create</button>
+        <button type="button" class="btn-secondary" id="skills-close-btn">Close</button>
+        <button type="button" class="btn-primary" id="skills-add-new-btn">＋ Add new</button>
+      </div>
+    </dialog>
+    <dialog id="skills-edit-dlg" class="reset-confirm-dlg skills-edit-dlg">
+      <h3 id="skills-edit-title">Edit skill</h3>
+      <p>Markdown content. The wrapping <code>&lt;section class="agent-skill"&gt;</code> is added automatically; just write the body.</p>
+      <textarea id="skills-edit-content" class="skills-edit-textarea" spellcheck="false" placeholder="## SKILL: voice rules&#10;&#10;Use first-person plural throughout. Never the word 'comprehensive'."></textarea>
+      <div class="reset-actions">
+        <button type="button" class="btn-secondary" id="skills-edit-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="skills-edit-save">Save</button>
       </div>
     </dialog>
     <div id="new-doc-overlay" class="new-doc-overlay" hidden>
@@ -2851,83 +2876,174 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   });
 
-  // + Skill button: open a styled modal that asks for an optional label,
-  // then POSTs to /add-doc-skill which appends a stock agent-skill section
-  // to the doc. After creation we drop the author into Source view so they
-  // can fill in the placeholder text. The agent can ALSO author skills via
-  // chat — this button is just the keyboard-discoverable affordance.
-  const addSkillDlg = document.getElementById('add-skill-dlg');
-  const addSkillNameInput = document.getElementById('add-skill-name');
-  const addSkillCancelBtn = document.getElementById('add-skill-cancel');
-  const addSkillCreateBtn = document.getElementById('add-skill-create');
+  // Skills manager: a two-dialog flow that lists every agent-skill
+  // section in the current doc and lets the author view / edit / delete
+  // them, or add a new one with custom content. The substrate is the
+  // existing per-doc skill convention (<section class="agent-skill">…);
+  // these endpoints are just CRUD over those sections.
+  const skillsListDlg = document.getElementById('skills-list-dlg');
+  const skillsList = document.getElementById('skills-list');
+  const skillsCloseBtn = document.getElementById('skills-close-btn');
+  const skillsAddNewBtn = document.getElementById('skills-add-new-btn');
+  const skillsEditDlg = document.getElementById('skills-edit-dlg');
+  const skillsEditTitle = document.getElementById('skills-edit-title');
+  const skillsEditContent = document.getElementById('skills-edit-content');
+  const skillsEditCancelBtn = document.getElementById('skills-edit-cancel');
+  const skillsEditSaveBtn = document.getElementById('skills-edit-save');
+  // Track which skill index the editor is bound to (null = new skill).
+  let _editingSkillIndex = null;
 
-  function openAddSkillDialog() {
-    return new Promise((resolve) => {
-      addSkillNameInput.value = '';
-      function done(name) {
-        addSkillCreateBtn.removeEventListener('click', onCreate);
-        addSkillCancelBtn.removeEventListener('click', onCancel);
-        addSkillDlg.removeEventListener('cancel', onCancel);
-        addSkillDlg.removeEventListener('click', onBackdrop);
-        addSkillNameInput.removeEventListener('keydown', onKey);
-        if (addSkillDlg.open) addSkillDlg.close();
-        resolve(name);
-      }
-      function onCreate() {
-        done((addSkillNameInput.value || '').trim());
-      }
-      function onCancel(e) { if (e) e.preventDefault(); done(null); }
-      function onBackdrop(e) { if (e.target === addSkillDlg) done(null); }
-      function onKey(e) {
-        if (e.key === 'Enter') { e.preventDefault(); onCreate(); }
-        else if (e.key === 'Escape') { e.preventDefault(); done(null); }
-      }
-      addSkillCreateBtn.addEventListener('click', onCreate);
-      addSkillCancelBtn.addEventListener('click', onCancel);
-      addSkillDlg.addEventListener('cancel', onCancel);
-      addSkillDlg.addEventListener('click', onBackdrop);
-      addSkillNameInput.addEventListener('keydown', onKey);
-      if (typeof addSkillDlg.showModal === 'function') {
-        addSkillDlg.showModal();
-        setTimeout(() => addSkillNameInput.focus(), 0);
+  async function fetchSkills() {
+    if (!currentDoc) return [];
+    try {
+      const resp = await fetch(
+        '/doc-skills?doc=' + encodeURIComponent(currentDoc),
+      );
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return Array.isArray(data.skills) ? data.skills : [];
+    } catch (_) { return []; }
+  }
+
+  async function refreshSkillsList() {
+    const skills = await fetchSkills();
+    skillsList.innerHTML = '';
+    if (!skills.length) {
+      const empty = document.createElement('div');
+      empty.className = 'skills-empty';
+      empty.textContent =
+        'No skills for this doc yet. Add one to give the agent a working contract.';
+      skillsList.appendChild(empty);
+      return;
+    }
+    for (const s of skills) {
+      const card = document.createElement('div');
+      card.className = 'skill-card';
+      const name = document.createElement('div');
+      name.className = 'skill-card-name';
+      name.textContent = s.name;
+      const preview = document.createElement('div');
+      preview.className = 'skill-card-preview';
+      preview.textContent =
+        (s.content || '').replace(/^##+\s+SKILL\s*:.*$/im, '').trim().slice(0, 240)
+        + ((s.content || '').length > 240 ? '…' : '');
+      const actions = document.createElement('div');
+      actions.className = 'skill-card-actions';
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn-tiny';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', () => openSkillEditor(s));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn-tiny';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', async () => {
+        if (!confirm(`Delete skill "${s.name}"? This removes the section from the doc.`)) return;
+        try {
+          const resp = await fetch(
+            '/delete-doc-skill?doc=' + encodeURIComponent(currentDoc)
+            + '&index=' + s.index,
+            { method: 'POST' },
+          );
+          if (!resp.ok) {
+            let msg = `delete failed: ${resp.status}`;
+            try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
+            appendMessage('error', msg);
+            return;
+          }
+          await refreshSkillsList();
+        } catch (err) {
+          appendMessage('error', 'delete-doc-skill error: ' + (err.message || err));
+        }
+      });
+      actions.appendChild(editBtn);
+      actions.appendChild(delBtn);
+      card.appendChild(name);
+      card.appendChild(preview);
+      card.appendChild(actions);
+      skillsList.appendChild(card);
+    }
+  }
+
+  function openSkillsListDialog() {
+    if (!currentDoc) {
+      appendMessage('error', 'Skills: no doc loaded');
+      return;
+    }
+    refreshSkillsList().then(() => {
+      if (typeof skillsListDlg.showModal === 'function') {
+        skillsListDlg.showModal();
       } else {
-        // Pre-<dialog>-support fallback (very old browsers): native prompt.
-        const v = prompt('Skill label (optional)', '');
-        done(v === null ? null : v.trim());
+        appendMessage('error', 'Skills modal not supported in this browser');
       }
     });
   }
 
-  addSkillBtn.addEventListener('click', async () => {
-    if (!currentDoc || addSkillBtn.disabled) return;
-    const name = await openAddSkillDialog();
-    if (name === null) return;  // user cancelled
-    addSkillBtn.disabled = true;
+  function openSkillEditor(skill) {
+    // skill === null/undefined: new skill, empty editor
+    // skill === {index, name, content}: edit existing
+    _editingSkillIndex = skill ? skill.index : null;
+    skillsEditTitle.textContent = skill
+      ? `Edit skill: ${skill.name}`
+      : 'Add new skill';
+    skillsEditContent.value = skill ? (skill.content || '') : '';
+    if (typeof skillsEditDlg.showModal === 'function') {
+      skillsEditDlg.showModal();
+      setTimeout(() => skillsEditContent.focus(), 0);
+    }
+  }
+
+  async function saveSkillEditor() {
+    const content = skillsEditContent.value;
+    const isNew = _editingSkillIndex === null;
+    const url = isNew
+      ? '/add-doc-skill?doc=' + encodeURIComponent(currentDoc)
+      : '/update-doc-skill?doc=' + encodeURIComponent(currentDoc)
+        + '&index=' + _editingSkillIndex;
+    // Pull the name out of the first "## SKILL: <name>" heading so a
+    // new skill carries a sensible label even if the user didn't think
+    // about one explicitly.
+    const headingMatch = content.match(/^##+\s+SKILL\s*:\s*(.+?)\s*$/im);
+    const payload = { content };
+    if (isNew && headingMatch) payload.name = headingMatch[1].trim();
     try {
-      const resp = await fetch(
-        '/add-doc-skill?doc=' + encodeURIComponent(currentDoc),
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(name ? { name } : {}),
-        },
-      );
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
       if (!resp.ok) {
-        let msg = `add-doc-skill: ${resp.status}`;
-        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
+        let msg = `save failed: ${resp.status}`;
+        try {
+          const j = await resp.json();
+          if (j.error) msg = j.error;
+          if (Array.isArray(j.details)) {
+            msg += ' — ' + j.details.map(d => `[${d.kind} line ${d.line}] ${d.message}`).join('; ');
+          }
+        } catch (_) {}
         appendMessage('error', msg);
         return;
       }
-      // Switch to Source view so the author can fill in the placeholder
-      // text immediately — the rendered Doc view hides the new section.
-      currentView = 'source';
-      renderViewTabs();
-      renderCurrentView();
+      skillsEditDlg.close();
+      await refreshSkillsList();
     } catch (err) {
-      appendMessage('error', 'add-doc-skill error: ' + (err.message || err));
-    } finally {
-      addSkillBtn.disabled = false;
+      appendMessage('error', 'save skill error: ' + (err.message || err));
     }
+  }
+
+  skillsCloseBtn.addEventListener('click', () => skillsListDlg.close());
+  skillsListDlg.addEventListener('click', (e) => {
+    if (e.target === skillsListDlg) skillsListDlg.close();
+  });
+  skillsAddNewBtn.addEventListener('click', () => openSkillEditor(null));
+  skillsEditCancelBtn.addEventListener('click', () => skillsEditDlg.close());
+  skillsEditDlg.addEventListener('click', (e) => {
+    if (e.target === skillsEditDlg) skillsEditDlg.close();
+  });
+  skillsEditSaveBtn.addEventListener('click', saveSkillEditor);
+
+  addSkillBtn.addEventListener('click', () => {
+    if (!currentDoc || addSkillBtn.disabled) return;
+    openSkillsListDialog();
   });
   document.addEventListener('click', (e) => {
     if (!historyPanel.hidden && !historyPanel.contains(e.target) && e.target !== historyBtn) {
