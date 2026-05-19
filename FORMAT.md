@@ -169,7 +169,7 @@ $$
 
 ## Embedded `<style>` and `<script>`
 
-The viewer renders each doc inside a sandboxed `<iframe>` running at a **null origin** (`sandbox="allow-scripts allow-popups"`, no `allow-same-origin`). The iframe has its own `<html>`, `<head>`, `<body>`, JS context, and event listeners. Anything you embed in the source — `<style>`, `<script>`, `<canvas>`, `<svg>`, custom HTML — runs inside that sandbox.
+The viewer renders each doc inside a sandboxed `<iframe>` loaded from a **different origin than the parent viewer** (e.g. `localhost:<port>` while the viewer is on `127.0.0.1:<port>`). The sandbox is `allow-scripts allow-popups allow-same-origin`: `allow-same-origin` is safe here because the iframe is same-origin to *itself* (so YouTube / CodePen / Observable embeds bootstrap), but the cross-origin boundary still blocks any access to the parent's DOM, storage, or cookies. The iframe has its own `<html>`, `<head>`, `<body>`, JS context, and event listeners. Anything you embed in the source — `<style>`, `<script>`, `<canvas>`, `<svg>`, custom HTML — runs inside that sandbox.
 
 What this means in practice:
 

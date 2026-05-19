@@ -791,7 +791,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         <div id="history-panel" class="history-panel" hidden></div>
       </div>
     </div>
-    <iframe id="doc-frame" sandbox="allow-scripts allow-popups allow-same-origin" allow="encrypted-media; autoplay; fullscreen; picture-in-picture; clipboard-write; web-share" allowfullscreen title="Document"></iframe>
+    <!-- The iframe is fully cross-origin once loaded (`localhost` vs the
+         viewer's `127.0.0.1`), so `allow-same-origin` is safe there: it
+         gives the iframe access to *its own* storage, not the parent's.
+         But before JS runs, the iframe sits at `about:blank` which
+         inherits the parent origin, and Chrome warns loudly about
+         `allow-scripts + allow-same-origin` in that window. We omit
+         `allow-same-origin` here so `about:blank` is in an opaque origin
+         (no warning, nothing dangerous), then `initIframe()` re-adds it
+         on the same line as the cross-origin `src` assignment. -->
+    <iframe id="doc-frame" sandbox="allow-scripts allow-popups" allow="encrypted-media; autoplay; fullscreen; picture-in-picture; clipboard-write; web-share" title="Document"></iframe>
     <dialog id="convert-preview-dlg" class="convert-preview-dlg">
       <h3>Send this file to the agent?</h3>
       <div class="convert-meta" id="convert-preview-meta"></div>
@@ -1193,6 +1202,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 
   function initIframe() {
     docFrameReady = false;
+    // Add `allow-same-origin` only now, paired with the cross-origin
+    // navigation: the loaded doc gets it (needed for YouTube/CodePen/
+    // Observable embeds that bootstrap against their own origin), but
+    // the prior `about:blank` stage never saw the dangerous combo with
+    // `allow-scripts`. See the iframe element's comment in the HTML.
+    docFrame.setAttribute(
+      'sandbox', 'allow-scripts allow-popups allow-same-origin'
+    );
     docFrame.src = IFRAME_ORIGIN + '/iframe-host';
   }
 
