@@ -1082,11 +1082,23 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // narrower scope here keeps the script-body fix while letting
     // markdown render normally inside section / aside / details / div,
     // which is what readers expect for AM's kind-blocks and callouts.
+    // Only INTERIOR blank lines need preserving. Leading/trailing empty
+    // "lines" (artifacts of putting script content on a new line after
+    // <script>) must NOT be replaced — otherwise we prepend a sentinel
+    // to the script body, which corrupts data scripts whose consumers
+    // expect a specific first character (e.g. OSMD requires `<?xml` at
+    // position 0 of MusicXML; a leading `<!--am:keep-->` makes it bail
+    // with "Did not find <?xml at beginning.").
     return text.replace(
       /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>)/gi,
       (full, open, inner, close) => {
-        const fixed = inner.replace(/^[ \t]*\r?$/gm, '<!--am:keep-->');
-        return `${open}${fixed}${close}`;
+        const lines = inner.split('\n');
+        const last = lines.length - 1;
+        const out = lines.map((line, i) => {
+          if (i === 0 || i === last) return line;
+          return /^[ \t]*\r?$/.test(line) ? '<!--am:keep-->' : line;
+        });
+        return `${open}${out.join('\n')}${close}`;
       }
     );
   }

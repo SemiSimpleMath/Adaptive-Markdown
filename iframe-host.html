@@ -123,6 +123,16 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
   // keep their resources intact — timers, listeners, canvas animations.
   const SCRIPT_CLEANUPS = new WeakMap();
   let _currentScript = null;
+
+  // Per-figure stash of the active renderer instance. Populated by
+  // renderMusicBlocks after a successful render; read by widgets via
+  // window.__doc.getRenderer(figureEl). Lets a widget mutate the score
+  // via the library's own API (e.g. OSMD's `Sheet.Transpose`) instead
+  // of rewriting source and forcing a full reload — which is fragile
+  // because XML/JSON/etc. serializers don't round-trip byte-stably.
+  // WeakMap so the entry is GC'd when the figure leaves the DOM.
+  const FIGURE_RENDERERS = new WeakMap();
+
   window.__doc = {
     cleanup(fn) {
       if (typeof fn !== 'function') return;
@@ -130,6 +140,56 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
         const a = SCRIPT_CLEANUPS.get(_currentScript);
         if (a) a.push(fn);
       }
+    },
+    // Re-run the figure renderers (and KaTeX) over `el`. Use this from
+    // an in-doc widget that mutated a figure's source — change the
+    // <script class="music-musicxml-source"> body to a transposed XML,
+    // rewrite a .abc div's text, swap a math span's source — then call
+    // window.__doc.rerender(figureEl) to make the rendered output
+    // catch up. The renderer remains the single owner of how each
+    // figure type becomes a visual; widgets don't have to know which
+    // library (OSMD / abcjs / KaTeX) is in play.
+    //
+    // We deliberately clear the per-element "already rendered" markers
+    // so this is a *force* re-render: if a caller bothered to invoke
+    // it, they want the rerender. Without this, renderMusicBlocks's
+    // dataset.amMusicSource comparison would skip elements whose old
+    // textContent happened to match (or whose markers got copied).
+    async rerender(el) {
+      if (!el || el.nodeType !== 1) return;
+      el.querySelectorAll(
+        'figure.music .abc, ' +
+        'figure.music script[type="application/vnd.recordare.musicxml+xml"], ' +
+        'figure.music midi-player'
+      ).forEach(n => {
+        delete n.dataset.amMusicSource;
+        delete n.dataset.amMusicLoaded;
+      });
+      try { await renderMusicBlocks(el); }
+      catch (e) { console.warn('__doc.rerender music:', e); }
+      try { renderMath(el); }
+      catch (e) { console.warn('__doc.rerender math:', e); }
+    },
+    // Return the live renderer for a figure, or null if none is in
+    // play. Use this when you want to mutate the visual *without*
+    // rewriting source — e.g. transpose via `osmd.Sheet.Transpose`,
+    // change tempo, swap a colour map. The returned shape is:
+    //
+    //   { kind, instance, source }
+    //
+    // where `kind` is `'musicxml'` (instance = OSMD), `'abc'` (instance
+    // = abcjs visualObj), or a future renderer's tag. `source` is the
+    // string that was loaded into the instance — useful if you want to
+    // know what's in there without re-reading the script tag.
+    //
+    // For full rebuilds (you changed the source string and want the
+    // renderer to consume the new value), call `__doc.rerender(el)`
+    // instead. getRenderer is for *incremental* mutation, rerender is
+    // for *fresh* render.
+    getRenderer(el) {
+      const figure = el && el.closest ? el.closest('figure') : null;
+      if (!figure) return null;
+      return FIGURE_RENDERERS.get(figure) || null;
     }
   };
   function runScriptCleanups(s) {
@@ -311,6 +371,10 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
             const visual = window.ABCJS.renderAbc(notation, source, {
               responsive: 'resize',
             });
+            const fig = div.closest('figure');
+            if (fig) FIGURE_RENDERERS.set(fig, {
+              kind: 'abc', instance: visual && visual[0], source,
+            });
             if (window.ABCJS.synth && window.ABCJS.synth.supportsAudio()) {
               const audio = document.createElement('div');
               audio.className = 'abc-audio';
@@ -370,6 +434,10 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
             const osmd = new window.opensheetmusicdisplay.OpenSheetMusicDisplay(target);
             await osmd.load(source);
             osmd.render();
+            const fig = script.closest('figure');
+            if (fig) FIGURE_RENDERERS.set(fig, {
+              kind: 'musicxml', instance: osmd, source,
+            });
           } catch (e) {
             target.innerHTML =
               '<div class="error-banner">MusicXML render failed: '
@@ -397,10 +465,11 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
     }
   }
 
-  function renderMath() {
+  function renderMath(root) {
+    const target = root || body;
     if (window.renderMathInElement) {
-      protectMathSource(body);
-      window.renderMathInElement(body, {
+      protectMathSource(target);
+      window.renderMathInElement(target, {
         delimiters: [
           { left: '$$', right: '$$', display: true },
           { left: '$', right: '$', display: false },
@@ -408,7 +477,10 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
         throwOnError: false,
         ignoredTags: ['script','noscript','style','textarea','pre','code'],
       });
-    } else {
+    } else if (target === body) {
+      // KaTeX hasn't loaded yet — retry the doc-wide bootstrap.
+      // Scoped re-renders don't retry; the doc-wide initial pass
+      // will pick up unrendered math on its next tick.
       setTimeout(renderMath, 60);
     }
   }
@@ -714,6 +786,22 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
             if (f.dataset.amMusicSource === newSource) return false;
           }
           if (f.isEqualNode(t)) return false;
+          return true;
+        },
+        onBeforeNodeDiscarded(node) {
+          // Runtime-generated render targets aren't in the markdown
+          // source — renderMusicBlocks creates them as siblings of the
+          // music script/div. Without this keep-rule, every agent edit
+          // strips the rendered notation: morphdom sees the new HTML
+          // doesn't contain the target div, drops it, and the music
+          // visibly disappears until OSMD/abcjs runs again (and stays
+          // gone forever if dataset.amMusicSource was preserved and
+          // renderMusicBlocks short-circuits).
+          if (node && node.classList) {
+            if (node.classList.contains('musicxml-render')) return false;
+            if (node.classList.contains('abc-notation'))   return false;
+            if (node.classList.contains('abc-audio'))      return false;
+          }
           return true;
         },
       });

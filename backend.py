@@ -1921,6 +1921,69 @@ def _music_inner_div_class(ext: str) -> str:
     return "musicxml"
 
 
+# Per-doc agent-skill block we bake into freshly-uploaded music docs.
+# This is read by the agent in its chat preamble (via the
+# `<section class="agent-skill">` convention) and tells it the substrate
+# rules for THIS doc — saves it from re-deriving where the XML lives,
+# which library renders it, and how to mutate safely. The mechanism is
+# general (any auto-imported doc with a known renderer can ship its own
+# context block); this constant happens to cover music.
+_MUSIC_AGENT_SKILL = """<section class="agent-skill">
+
+**Music doc — substrate rules**
+
+This doc renders a music figure through the iframe runtime. The source
+lives inside `<figure class="music">` either as `<div class="abc">…</div>`
+(ABC notation, rendered by abcjs) or as
+`<script type="application/vnd.recordare.musicxml+xml">…</script>`
+(MusicXML, rendered by OpenSheetMusicDisplay 1.9, lazy-loaded). The
+visible notation is a runtime-generated sibling div (`.abc-notation` or
+`.musicxml-render`) — it isn't in the source, the renderer puts it there.
+
+**To mutate the score from a widget, pick ONE pattern.** Don't mix them
+in the same widget unless you have a reason — they have different
+semantics about what the source file ends up containing.
+
+1. *In-place transformation* — when the renderer has its own API for
+   what you want (e.g. transpose, key change in OSMD). Source XML stays
+   in the original key forever; the change is render-time only.
+
+   ```js
+   const r = window.__doc.getRenderer(figure);
+   if (r && r.kind === 'musicxml') {
+     const ns = window.opensheetmusicdisplay;
+     if (ns && ns.TransposeCalculator && !r.instance.TransposeCalculator) {
+       r.instance.TransposeCalculator = new ns.TransposeCalculator();
+     }
+     r.instance.Sheet.Transpose = semitones;
+     r.instance.UpdateGraphic();
+     r.instance.render();
+   }
+   ```
+
+2. *Source mutation + full re-render* — when the renderer has no
+   API and the source itself should change (edit specific notes, rewrite
+   lyrics, add chord symbols). Edit the script's `textContent` with
+   **string-level operations** (`String.prototype.replace`, regex), not
+   `DOMParser` + `XMLSerializer`. Serializers strip DOCTYPE, add
+   `xmlns=""`, reorder attributes, normalize whitespace — OSMD then
+   rejects the result with "Document is not a valid 'partwise' MusicXML".
+
+   ```js
+   const script = figure.querySelector(
+     'script[type="application/vnd.recordare.musicxml+xml"]'
+   );
+   script.textContent = script.textContent.replace(/<step>C<\\/step>/g, '<step>D</step>');
+   await window.__doc.rerender(figure);
+   ```
+
+`window.__doc.rerender(figureEl)` re-runs the music renderer on the
+figure; safe to call whenever the source changes.
+
+</section>
+"""
+
+
 async def _upload_music_doc(
     request: web.Request,
     field: "web.BodyPartReader",
@@ -1980,7 +2043,8 @@ async def _upload_music_doc(
             '<figure class="music">\n'
             f'<midi-player src="assets/{safe_name}" sound-font></midi-player>\n'
             "<figcaption>MIDI playback — synthesized in-browser.</figcaption>\n"
-            "</figure>\n"
+            "</figure>\n\n"
+            + _MUSIC_AGENT_SKILL
         )
     else:
         # .mxl is compressed MusicXML (zip with the .musicxml inside).
@@ -2043,7 +2107,8 @@ async def _upload_music_doc(
             f"# {title}\n\n"
             '<figure class="music">\n'
             + inner
-            + "\n</figure>\n"
+            + "\n</figure>\n\n"
+            + _MUSIC_AGENT_SKILL
         )
 
     (doc_dir / "current.md").write_text(body_md, encoding="utf-8", newline="")
