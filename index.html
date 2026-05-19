@@ -1089,7 +1089,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // expect a specific first character (e.g. OSMD requires `<?xml` at
     // position 0 of MusicXML; a leading `<!--am:keep-->` makes it bail
     // with "Did not find <?xml at beginning.").
-    return text.replace(
+    text = text.replace(
       /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>)/gi,
       (full, open, inner, close) => {
         const lines = inner.split('\n');
@@ -1097,6 +1097,24 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         const out = lines.map((line, i) => {
           if (i === 0 || i === last) return line;
           return /^[ \t]*\r?$/.test(line) ? '<!--am:keep-->' : line;
+        });
+        return `${open}${out.join('\n')}${close}`;
+      }
+    );
+    // Same trap applies to <style> bodies — CSS commonly has blank
+    // lines between rule blocks, and CommonMark terminates the type-6
+    // HTML block at the first blank line then re-parses the rest as
+    // paragraphs, wrapping CSS rules in <p> tags and breaking them.
+    // Use a CSS-safe sentinel (/*am:keep*/ is a CSS comment, silently
+    // dropped by the CSS parser — no renderer-side strip needed).
+    return text.replace(
+      /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi,
+      (full, open, inner, close) => {
+        const lines = inner.split('\n');
+        const last = lines.length - 1;
+        const out = lines.map((line, i) => {
+          if (i === 0 || i === last) return line;
+          return /^[ \t]*\r?$/.test(line) ? '/*am:keep*/' : line;
         });
         return `${open}${out.join('\n')}${close}`;
       }

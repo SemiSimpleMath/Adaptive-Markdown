@@ -547,8 +547,8 @@ the source). The visible diagram is a runtime-generated sibling
 (lazy-loaded from CDN). The script element stays in the DOM as the
 source of truth.
 
-**To mutate the diagram, edit the script's `textContent` with
-string-level operations on Mermaid DSL lines, then rerender:**
+**To mutate the diagram source, edit the script's `textContent`
+with string-level operations on Mermaid DSL lines, then rerender:**
 
 ```js
 const script = figure.querySelector('script[type="text/x-mermaid"]');
@@ -558,8 +558,8 @@ script.textContent = lines.join('\\n');
 await window.__doc.rerender(figure);
 ```
 
-Mermaid has no useful incremental-mutation API — re-render is the
-only path. `__doc.getRenderer(fig)` returns `{kind: 'mermaid',
+Mermaid has no useful incremental-mutation API for the DSL — re-render
+is the only path. `__doc.getRenderer(fig)` returns `{kind: 'mermaid',
 instance, source}` mainly so widgets can read the current source
 without re-querying the script.
 
@@ -569,11 +569,131 @@ Supported Mermaid diagram types (Mermaid 10.x): `flowchart` (and
 `quadrantChart`, `xychart-beta`, `sankey-beta`. Each takes its own
 DSL — see https://mermaid.js.org/intro/ for syntax.
 
-Trap: Mermaid's parser is strict. Comments inside the source use
-`%% comment` syntax. Trailing commas, mismatched arrows (`-->` vs
-`->`), and unterminated quoted labels all error. If `__doc.rerender`
-leaves the figure showing an error banner, check the script source
-for parser violations.
+DSL parser is strict: comments are `%% ...`, trailing commas error,
+arrow flavors don't mix (`-->` vs `->` matters per diagram type),
+quoted labels need balanced quotes. If `__doc.rerender` leaves the
+figure showing an error banner, the message names the offending line.
+
+---
+
+**Styling / interactivity over the rendered SVG (advanced)**
+
+When you want a hover effect, color override, or interactive overlay
+on the rendered diagram, you're working against Mermaid's generated
+SVG markup — which has surprises. Read this section before writing
+CSS / JS that targets Mermaid output.
+
+**1. Mermaid embeds its own stylesheet inside the SVG, ID-scoped.**
+Each render emits `<style>#mermaid-svg-N .actor { ... }</style>`
+where `N` is a unique counter per render. Those ID-scoped selectors
+beat any class-only rule on CSS specificity (id-1, class-1 vs
+class-2). To override, your CSS MUST use `!important`. Without it,
+your rule silently loses the cascade fight even though the selector
+matches and the class is on the element.
+
+**2. Class names per diagram type (Mermaid 10.9 emitted classes):**
+
+  - **sequenceDiagram**: `rect.actor.actor-top` / `.actor-bottom`
+    (participant boxes, duplicated top + bottom); `g.actor-man` for
+    the `actor` keyword (stick figure); `line.messageLine0`
+    (solid) / `.messageLine1` (dashed) + `text.messageText` for each
+    numbered step; `rect.note` + `text.noteText` for `Note over`;
+    `line.loopLine` (dashed border) + `text.loopText` for `loop`
+    blocks; `polygon.labelBox` + `text.labelText` for `alt`/`opt`
+    labels. **No class on lifelines** — they're bare `<line>` siblings;
+    pair to actors by spatial proximity if you need them.
+
+  - **flowchart** / **graph**: `g.node` per node, `g.edgePath` +
+    `path.flowchart-link` per edge, `g.edgeLabel` for edge labels;
+    nodes have data-id and data-node-id attributes that pair to DSL
+    identifiers.
+
+  - **classDiagram**: `g.classGroup` per class, `path.relation` per
+    relation, `g.label` for relation labels.
+
+  - **stateDiagram-v2**: `g.node.statediagram-state` per state,
+    `g.cluster` per nested state, `path.transition` per arrow.
+
+  - Verify in dev tools for other types — Mermaid's class names
+    drift between versions.
+
+**3. Pattern that works: hover effect with class toggling.**
+
+Bind handlers in an inline `<script>` next to the figure. Add the
+hover class **directly to the drawable element** (rect, path, line,
+text) — not to a wrapping `<g>`. Write CSS selectors that match the
+element with the class on it (`rect.am-hover-actor`), not as a
+descendant (`.am-hover-actor rect`).
+
+```html
+<figure class="diagram">
+<style>
+  /* Selector targets element WITH the class, !important to beat
+     Mermaid's ID-scoped stylesheet. */
+  figure.diagram svg rect.am-hover-actor {
+    stroke: #0078d7 !important;
+    stroke-width: 2.5 !important;
+    filter: drop-shadow(0 0 4px rgba(0, 120, 215, 0.55));
+  }
+  figure.diagram svg text.am-hover-actor {
+    fill: #0078d7 !important;
+    font-weight: 700 !important;
+  }
+</style>
+<script type="text/javascript">
+(function () {
+  function bind(attempt) {
+    const svg = document.querySelector('figure.diagram svg');
+    if (!svg) {
+      if (attempt < 60) setTimeout(() => bind(attempt + 1), 150);
+      return;
+    }
+    svg.querySelectorAll('rect.actor').forEach(box => {
+      const label = box.nextElementSibling; // text.actor is the sibling
+      const group = [box]; if (label) group.push(label);
+      group.forEach(el => {
+        el.addEventListener('mouseenter',
+          () => group.forEach(g => g.classList.add('am-hover-actor')));
+        el.addEventListener('mouseleave',
+          () => group.forEach(g => g.classList.remove('am-hover-actor')));
+      });
+    });
+  }
+  bind(0);
+})();
+</script>
+<script type="text/x-mermaid">
+sequenceDiagram
+  participant A
+  participant B
+  A->>B: hello
+</script>
+</figure>
+```
+
+**4. Re-binding after `__doc.rerender`.** When Mermaid re-renders
+(after a source edit or a manual rerender call), the SVG element is
+replaced — your event listeners are gone. If the diagram needs
+re-interactive after rerender, either bind via event delegation on
+a stable parent OR re-run your binder after rerender (poll for the
+new SVG and rebind).
+
+**5. mouseenter / mouseleave don't bubble.** They fire only on the
+exact element they're bound to. So bind a listener to EACH element
+in a hover group (not just the parent and rely on bubbling — that
+won't fire). The example above does this per drawable.
+
+**6. SVG `<style>` blocks in your doc must avoid bare interior blank
+lines.** They DO survive: `preserveStructuralBlocks` (in index.html)
+injects `/*am:keep*/` CSS comments where the blank would otherwise
+terminate the type-6 HTML block at markdown parse time. You don't
+have to do anything special; just write normal CSS.
+
+**7. Transitions can mask immediate computed-style checks.** A CSS
+`transition: stroke 0.15s` means `getComputedStyle(el).stroke` right
+after `classList.add(...)` still returns the START value. Real users
+won't notice (the transition runs and ends at the target color);
+just don't write smoke tests that sample computed style synchronously.
 
 </section>
 """
