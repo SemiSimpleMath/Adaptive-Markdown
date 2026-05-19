@@ -133,13 +133,11 @@ def _doc_slug_from_path(file_path: str | Path) -> str | None:
     return parts[0]
 
 
-# Origin enforcement (every state-mutating endpoint) and ULID-style sticky
-# id minting live in their own modules; re-exported here so existing call
-# sites and tests still find the names on `backend`.
-from am_origin import (  # noqa: E402
-    _is_localhost_origin, _require_localhost_origin, _check_static_origin,
-)
-from am_ids import gen_id, _b32_encode  # noqa: E402
+# Pure-logic helpers live in am_*.py modules. Import only what this file
+# uses; tests / external callers import the rest directly from the
+# canonical module (e.g. `from am_pending import save_pending`).
+from am_origin import _require_localhost_origin, _check_static_origin  # noqa: E402
+from am_ids import gen_id  # noqa: E402
 
 
 DEFAULT_DOC = "intro"  # slug; resolves to docs/intro/current.md
@@ -206,29 +204,18 @@ def ensure_working_copies() -> None:
         print(f"ensured working copies ({created} new)", flush=True)
 
 
-# Block-tracking machinery (find_block_line / find_block_span / aliases /
-# track-id mint + detect_id_drift) and the snapshot store both moved out
-# into their own modules. Re-export so existing call sites are unchanged.
 from am_tracking import (  # noqa: E402
-    _HEADING_LINE_RE, _TRACK_COMMENT_RE, _TRACK_ID_PATTERN,
-    _strip_inline_markdown, _find_block_line, _find_block_span,
-    _aliases_path, load_aliases, save_aliases, resolve_alias,
-    extract_track_ids, mint_track_id_for, detect_id_drift,
+    _HEADING_LINE_RE, _find_block_span, mint_track_id_for, detect_id_drift,
 )
-from am_snapshots import (  # noqa: E402
-    _history_dir_for, _history_zero_path, save_snapshot,
-)
+from am_snapshots import _history_dir_for, _history_zero_path, save_snapshot  # noqa: E402
 
 
-# Pending-changes substrate (disk + helpers) moved to am_pending. The
-# wiring — PreToolUse routing, preamble pending-apply, renderer overlay,
-# Accept/Reject UI, human-inline-edit-rejects-pending — still lives here.
+# Pending-changes substrate (disk + helpers) lives in am_pending; the
+# wiring (PreToolUse / preamble / overlay / accept/reject / human-edit-
+# rejects-pending) stays here.
 from am_pending import (  # noqa: E402
-    _PENDING_SCHEMA_VERSION, _PENDING_REQUIRED_FIELDS,
-    _pending_path, _empty_pending,
-    load_pending, save_pending, clear_pending,
-    _pending_block_key, _REVIEW_MODE_TRUTHY, _read_review_mode,
-    add_pending_edit, remove_pending_edit, find_pending_for_block,
+    load_pending, clear_pending, _read_review_mode,
+    add_pending_edit, remove_pending_edit,
 )
 
 
