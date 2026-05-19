@@ -92,10 +92,17 @@ class ClaudeRuntime:
         #     `python -m sandbox`, which runs it in a subprocess with
         #     curated env, scoped cwd, and timeout (best-effort; not
         #     airtight, see `sandbox.py`).
+        #
+        # Operator opt-out (any platform): when AM_UNSAFE_BASH=1, skip
+        # both sandboxing paths. The agent's Bash runs with the
+        # backend's full env, network, and filesystem. Set by
+        # `python start.py --unsafe-bash`. Out-of-band only; nothing
+        # in chat can flip it.
         is_windows = sys.platform.startswith("win")
+        unsafe_bash = os.environ.get("AM_UNSAFE_BASH") == "1"
 
         sandbox_cfg: SandboxSettings | None = None
-        if not is_windows:
+        if not is_windows and not unsafe_bash:
             sandbox_cfg = SandboxSettings(
                 enabled=True,
                 autoAllowBashIfSandboxed=True,
@@ -117,6 +124,11 @@ class ClaudeRuntime:
         pre_tool_use_hooks = [
             HookMatcher(matcher="Edit|Write", hooks=[self.pre_edit_hook])
         ]
+        # The Windows pre_bash_hook checks AM_UNSAFE_BASH internally and
+        # no-ops when it's set, so we still register the hook — keeping
+        # the registration unconditional means the wrap re-engages
+        # automatically if the env var ever flips off mid-process
+        # (defense in depth; not a flow the launcher actually exposes).
         if is_windows and self.pre_bash_hook is not None:
             pre_tool_use_hooks.append(
                 HookMatcher(matcher="Bash", hooks=[self.pre_bash_hook])

@@ -153,13 +153,18 @@ def main() -> None:
     parser.add_argument(
         "--unsafe-bash", action="store_true",
         help=(
-            "[WINDOWS ONLY] disable the subprocess sandbox around the "
-            "agent's Bash tool. The agent's Bash will run with your full "
-            "env (incl. API keys), unrestricted filesystem access, and "
-            "the open internet. Use only when you trust every doc in the "
+            "Disable the agent-Bash sandbox. On Windows, skips the "
+            "subprocess wrapper (curated env / scoped cwd / timeout); "
+            "on macOS / Linux / WSL2, skips the CLI's built-in sandbox "
+            "(network namespace + syscall filter). Either way the "
+            "agent's Bash then runs with your full env (incl. API "
+            "keys), unrestricted filesystem access, and the open "
+            "internet. Use only when you trust every doc in the "
             "workspace — a prompt-injected doc can exfiltrate or wreck "
-            "things in this mode. No effect on macOS/Linux/WSL2, where "
-            "the CLI's built-in sandbox is always on."
+            "things in this mode. Recommended host: WSL2 (or Linux / "
+            "macOS) — the OS-level isolation around the whole process "
+            "bounds blast radius better than running on the Windows "
+            "host directly."
         ),
     )
     args = parser.parse_args()
@@ -195,9 +200,11 @@ def main() -> None:
     port = int(os.environ.get("PORT", "8090"))
     print(f"[start] provider={chosen} ({source})", flush=True)
     print(f"Adaptive Markdown listening on http://127.0.0.1:{port}", flush=True)
-    if args.unsafe_bash and sys.platform.startswith("win"):
+    if args.unsafe_bash:
         # Out-of-band warning so it's impossible to miss in the launch
-        # output. Agent Bash will run with full env / network / FS.
+        # output. Agent Bash will run with full env / network / FS on
+        # whatever platform you're on. The box prints regardless of OS
+        # — every platform's sandbox path got skipped.
         print(
             "\n"
             "  +----------------------------------------------------------+\n"
@@ -209,12 +216,6 @@ def main() -> None:
             "  |                                                          |\n"
             "  |  Disable: restart without --unsafe-bash                  |\n"
             "  +----------------------------------------------------------+\n",
-            flush=True,
-        )
-    elif args.unsafe_bash:
-        print(
-            "[start] --unsafe-bash is a no-op on this platform (the CLI "
-            "sandbox is already in effect).",
             flush=True,
         )
     try:
