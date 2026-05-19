@@ -91,32 +91,34 @@ def _mask_markdown_code(src: str) -> str:
     return "".join(out)
 
 
+import am_html  # noqa: E402
+
+
 def _extract_blocks(src: str, tag: str) -> list[dict]:
     """Pull <tag>...</tag> bodies out of raw source. Records 1-indexed line
     of each opening tag for error reporting. Markdown code spans / fenced
     blocks / HTML comments are masked out first so literal `<script>`
     text inside them doesn't get treated as a real tag.
 
-    Returns dicts with `body`, `line`, and `attrs` (the raw attribute
-    string from the opening tag — callers can inspect e.g. `type=` to
-    decide whether the body is code or opaque data)."""
+    Returns dicts with `body`, `line`, and `attrs` (a parsed dict of
+    the opening tag's attributes — callers can inspect e.g. `type` to
+    decide whether the body is code or opaque data). Delegates the
+    actual HTML-block extraction to am_html.find_blocks, which handles
+    edge cases (script opacity per browser, `>` inside quoted attrs,
+    multi-line opening tags) that the previous regex pattern missed."""
+    # Mask code spans / fences / HTML comments so a literal `<script>`
+    # mentioned inside backticks or a code block doesn't get extracted
+    # as a real tag. _mask_markdown_code preserves length, so offsets
+    # from the masked source are valid in the original.
     masked = _mask_markdown_code(src)
-    pattern = re.compile(
-        rf"<{tag}\b([^>]*)>([\s\S]*?)</{tag}\s*>",
-        re.IGNORECASE,
-    )
     out = []
-    for m in pattern.finditer(masked):
-        line = masked[: m.start()].count("\n") + 1
-        # Pull the body from the ORIGINAL source (same offsets, since
-        # masking preserves length) so backtick-only-in-prose `<script>`
-        # mentions inside the real script body aren't blanked.
-        body_start = m.start(2)
-        body_end = m.end(2)
+    for b in am_html.find_blocks(masked, tag):
+        # Pull body from the ORIGINAL source so any backticks-mentioned
+        # tag names inside the real script body aren't blanked.
         out.append({
-            "body": src[body_start:body_end],
-            "line": line,
-            "attrs": m.group(1) or "",
+            "body": src[b.body_start:b.body_end],
+            "line": b.line,
+            "attrs": b.attrs,
         })
     return out
 
@@ -135,13 +137,8 @@ _JS_MIME_TYPES = frozenset({
     "text/livescript",
 })
 
-_TYPE_ATTR_RE = re.compile(
-    r"""type\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
-    re.IGNORECASE,
-)
 
-
-def _is_js_script(attrs: str) -> bool:
+def _is_js_script(attrs: dict) -> bool:
     """Whether a <script ...> tag's body should be parsed as JavaScript.
 
     Per HTML spec, a script is a classic JS script if `type` is missing,
@@ -151,10 +148,7 @@ def _is_js_script(attrs: str) -> bool:
     makes the tag a *data block*: the browser hands the body to whoever
     asks for it via DOM, never executes it. The validator must do the
     same and not run `node --check` on opaque data."""
-    m = _TYPE_ATTR_RE.search(attrs)
-    if not m:
-        return True
-    raw = (m.group(1) or m.group(2) or m.group(3) or "").strip().lower()
+    raw = (attrs.get("type") or "").strip().lower()
     if not raw or raw == "module":
         return True
     essence = raw.split(";", 1)[0].strip()
