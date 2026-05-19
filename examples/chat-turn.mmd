@@ -1,0 +1,48 @@
+%% A single chat turn: from reader's "send" click to the doc updating.
+%% Shows the WebSocket message types and the snapshot / validator path.
+
+sequenceDiagram
+  autonumber
+  actor Reader
+  participant Viewer
+  participant WS as WebSocket
+  participant Runtime as Agent runtime
+  participant SDK as Claude SDK
+  participant FS as docs/[slug]/
+
+  Reader->>Viewer: types prompt + clicks Send
+  Viewer->>WS: {type:"chat", text, context:{doc, selections}}
+  WS->>Runtime: run_turn(prompt)
+
+  Note over Runtime,SDK: Inline doc into preamble<br/>so agent skips a Read
+
+  Runtime->>SDK: query(prompt + doc context)
+
+  loop For each tool call
+    SDK->>Runtime: pre_tool_use_hook(Edit)
+    Runtime->>FS: save_snapshot(before_text)
+    Runtime-->>SDK: allow
+
+    SDK->>FS: write current.md
+    FS-->>SDK: ok
+
+    SDK->>Runtime: post_tool_use_hook
+    Runtime->>Runtime: validators.validate_doc(new_text)
+
+    alt Validation passes
+      Runtime->>FS: detect_id_drift + record pending
+      Runtime->>WS: broadcast({type:"doc_changed"})
+      WS->>Viewer: doc_changed
+      Viewer->>FS: GET current.md
+      FS-->>Viewer: latest text
+      Viewer->>Viewer: re-render doc
+    else Validation fails
+      Runtime->>FS: revert from snapshot
+      Runtime-->>SDK: additionalContext: error<br/>(agent retries)
+    end
+  end
+
+  SDK-->>Runtime: turn_done (cost_usd)
+  Runtime->>WS: broadcast(turn_done)
+  WS->>Viewer: turn_done
+  Viewer->>Reader: spinner stops

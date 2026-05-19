@@ -436,8 +436,13 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     const xmlScripts = Array.from(root.querySelectorAll(
       'figure.music script[type="application/vnd.recordare.musicxml+xml"]'
     ));
+    // Same am:keep strip as data/diagram renderers — preserveStructuralBlocks
+    // injects sentinels in place of blank lines inside any <script>, and
+    // OSMD's XML parser would barf on the sentinel text in a real-world
+    // MusicXML doc that happens to have blank lines for readability.
+    const xmlNormalize = (s) => (s || '').replace(/<!--am:keep-->/g, '').trim();
     const xmlTodo = xmlScripts.filter(s =>
-      s.dataset.amMusicSource !== (s.textContent || '').trim()
+      s.dataset.amMusicSource !== xmlNormalize(s.textContent)
     );
     if (xmlTodo.length) {
       try {
@@ -445,7 +450,7 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
           'https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.9.0/build/opensheetmusicdisplay.min.js',
         );
         for (const script of xmlTodo) {
-          const source = (script.textContent || '').trim();
+          const source = xmlNormalize(script.textContent);
           script.dataset.amMusicSource = source;
           // Reuse an existing sibling render target if morphdom left one;
           // otherwise create one immediately after the script node.
@@ -547,8 +552,13 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     const csvScripts = Array.from(root.querySelectorAll(
       'figure.data script[type="text/csv"]'
     ));
+    // preserveStructuralBlocks injects <!--am:keep--> in place of blank
+    // lines (to keep CommonMark's type-6 HTML block intact). Strip them
+    // here so the CSV parser sees the original blank rows. Without this
+    // strip, the marker comparison would also mismatch every re-render.
+    const normalize = (s) => (s || '').replace(/<!--am:keep-->/g, '').trim();
     const todo = csvScripts.filter(s =>
-      s.dataset.amDataSource !== (s.textContent || '').trim()
+      s.dataset.amDataSource !== normalize(s.textContent)
     );
     if (!todo.length) return;
 
@@ -567,7 +577,7 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     }
 
     for (const script of todo) {
-      const source = (script.textContent || '').trim();
+      const source = normalize(script.textContent);
       script.dataset.amDataSource = source;
       // Reuse a sibling render target if morphdom left one (preserved
       // via onBeforeNodeDiscarded); otherwise create one.
@@ -638,8 +648,13 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     const mermaidScripts = Array.from(root.querySelectorAll(
       'figure.diagram script[type="text/x-mermaid"]'
     ));
+    // Normalize the comparison source the same way we'll normalize for
+    // rendering (strip am:keep sentinels). Otherwise on every re-render
+    // the marker (post-strip) won't match textContent (with sentinels)
+    // and we'd loop forever re-rendering the same diagram.
+    const normalize = (s) => (s || '').replace(/<!--am:keep-->/g, '').trim();
     const todo = mermaidScripts.filter(s =>
-      s.dataset.amDiagramSource !== (s.textContent || '').trim()
+      s.dataset.amDiagramSource !== normalize(s.textContent)
     );
     if (!todo.length) return;
 
@@ -665,7 +680,7 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     }
 
     for (const script of todo) {
-      const source = (script.textContent || '').trim();
+      const source = normalize(script.textContent);
       script.dataset.amDiagramSource = source;
       let target = script.nextElementSibling;
       if (!target || !target.classList.contains('mermaid-render')) {

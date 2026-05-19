@@ -1,0 +1,62 @@
+%% Adaptive Markdown — high-level architecture.
+%% Drop this onto + Doc to render it as a flowchart.
+
+flowchart TB
+  Reader([Reader])
+
+  subgraph Browser["Browser tab"]
+    Viewer["Viewer (index.html)"]
+    Iframe["Doc iframe (iframe-host.html)"]
+    Viewer -- "setContent (postMessage)" --> Iframe
+  end
+
+  subgraph Backend["Local backend (aiohttp)"]
+    direction TB
+    WS["WebSocket /ws"]
+    Routes["HTTP routes<br/>(history / edit / pending / skills)"]
+    Upload["Upload routes<br/>(/upload / /upload-asset)"]
+    Hooks["Agent hooks<br/>(pre / post / bash)"]
+    State[(state singleton)]
+    WS --- State
+    Routes --- State
+    Upload --- State
+    Hooks --- State
+  end
+
+  subgraph Filesystem["docs/[slug]/"]
+    Baseline["baseline.md<br/>(history-0, immutable)"]
+    Current["current.md<br/>(working copy)"]
+    Snaps["snaps/<br/>(pre-edit captures)"]
+    Assets["assets/"]
+    Pending["pending.json"]
+  end
+
+  subgraph Agent["Agent runtime"]
+    SDK["Claude SDK / Codex CLI"]
+    Sandbox{"Bash sandbox<br/>(CLI on Unix,<br/>subprocess on Win)"}
+    SDK --> Sandbox
+  end
+
+  Reader -->|chat / drop / click| Viewer
+  Viewer <==> |WebSocket|WS
+  Viewer -->|HTTP| Routes
+  Viewer -->|HTTP| Upload
+
+  Hooks --> SDK
+  SDK -->|Edit/Write tool| Hooks
+  Hooks -->|writes after validate| Current
+  Hooks -->|snapshot| Snaps
+  Hooks -->|record| Pending
+
+  Upload --> Current
+  Upload --> Baseline
+  Routes --> Current
+  Routes --> Snaps
+
+  Iframe -.->|fetch doc| Current
+  Iframe -.->|fetch assets| Assets
+
+  classDef external fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef io fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+  class Reader external
+  class Baseline,Current,Snaps,Assets,Pending io

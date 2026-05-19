@@ -1,0 +1,31 @@
+%% Snapshot / undo / redo lifecycle for a doc.
+%% Captures how the History panel + Reset button + safety-snap interact.
+
+stateDiagram-v2
+  [*] --> Baseline: first clone / + Doc upload
+
+  Baseline --> Working: ensure_working_copies()<br/>copies baseline → current
+
+  state Working {
+    [*] --> Edited
+    Edited --> Edited: agent Edit/Write<br/>(pre-hook snapshots before)
+    Edited --> Edited: human inline edit<br/>(snapshot, then write)
+  }
+
+  Working --> SafetySnap: /reset OR /undo OR /restore<br/>(snapshot current first)
+  SafetySnap --> Restored: write new bytes from target snap
+
+  Restored --> Working: ready for next edit
+
+  Working --> Reviewing: review_mode=on<br/>+ agent edit
+  state Reviewing {
+    [*] --> PendingProposed
+    PendingProposed --> PendingProposed: agent refines<br/>(replaces same-block entry)
+    PendingProposed --> Accepted: reader clicks Accept
+    PendingProposed --> Rejected: reader clicks Reject<br/>(restore old_text)
+  }
+
+  Accepted --> Working: pending.json entry removed
+  Rejected --> Working: current.md restored<br/>+ entry removed
+
+  Working --> [*]: doc deleted
