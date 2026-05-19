@@ -1067,58 +1067,237 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   //
   // Only the structural type-6 tags need this; type-1 blocks (script,
   // style, pre) already tolerate blank lines per the spec.
+  // ---- am_html.js: HTML-block scanner (JS port of am_html.py) ---------
+  // Same semantics, same contract. The two are kept in sync so the
+  // server-side validator and the client-side preprocessor agree on
+  // what counts as a "block." See am_html.py's docstring for the full
+  // rationale; the short version:
+  //
+  //   - Script / style bodies are OPAQUE per HTML spec — only the
+  //     matching `</tag>` terminates, regardless of what's inside. The
+  //     scanner matches the browser parser exactly.
+  //   - Other tags allow same-tag nesting tracked via a stack.
+  //   - `>` inside quoted attribute values doesn't terminate the
+  //     opening tag.
+  //   - Returns top-level blocks only (nested same-tag is part of the
+  //     outer's body, not separate). Matches every real caller.
+  //
+  // Output shape per block: { tag, attrs, body, start, end, bodyStart,
+  // bodyEnd, line }. Byte offsets are characters (string indices) since
+  // we're operating on a JS string.
+
+  const _AM_HTML_OPAQUE = new Set(['script', 'style']);
+  const _AM_HTML_VOID = new Set([
+    'area','base','br','col','embed','hr','img','input',
+    'link','meta','source','track','wbr',
+  ]);
+  const _AM_ATTR_RE = /\s+([A-Za-z_:][\w:.\-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+
+  function parseHtmlAttrs(inner) {
+    const out = {};
+    let m;
+    _AM_ATTR_RE.lastIndex = 0;
+    while ((m = _AM_ATTR_RE.exec(inner)) !== null) {
+      const name = m[1].toLowerCase();
+      const value = m[2] !== undefined ? m[2]
+                  : (m[3] !== undefined ? m[3]
+                  : (m[4] !== undefined ? m[4] : ''));
+      out[name] = value;
+    }
+    return out;
+  }
+
+  function matchOpeningHtmlTag(source, i, target) {
+    if (i >= source.length || source[i] !== '<') return null;
+    if (source.startsWith('<!', i) || source.startsWith('<?', i)
+        || source.startsWith('</', i)) return null;
+    const tlen = target.length;
+    const head = source.substr(i + 1, tlen).toLowerCase();
+    if (head !== target.toLowerCase()) return null;
+    const nextIdx = i + 1 + tlen;
+    if (nextIdx >= source.length) return null;
+    const nc = source[nextIdx];
+    if (nc !== ' ' && nc !== '\t' && nc !== '\n' && nc !== '\r'
+        && nc !== '>' && nc !== '/') return null;
+    // Walk to closing '>', respecting quoted attr values
+    let j = nextIdx;
+    let inQuote = null;
+    while (j < source.length) {
+      const c = source[j];
+      if (inQuote) {
+        if (c === inQuote) inQuote = null;
+        j++;
+        continue;
+      }
+      if (c === '"' || c === "'") { inQuote = c; j++; continue; }
+      if (c === '>') {
+        let inner = source.substring(nextIdx, j);
+        const selfClosing = inner.endsWith('/');
+        if (selfClosing) inner = inner.slice(0, -1);
+        return {
+          end: j + 1,
+          attrs: parseHtmlAttrs(inner),
+          selfClosing: selfClosing,
+        };
+      }
+      j++;
+    }
+    return null;
+  }
+
+  function findCloseOpaque(source, startFrom, target) {
+    // For script/style: terminate at FIRST </target> token (matches
+    // browser parser — a `<\/script>` in a JS comment DOES end the script).
+    const needle = '</' + target.toLowerCase();
+    const srcLower = source.toLowerCase();
+    let i = startFrom;
+    for (;;) {
+      const idx = srcLower.indexOf(needle, i);
+      if (idx < 0) return -1;
+      const after = idx + needle.length;
+      if (after >= source.length) return -1;
+      const c = source[after];
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r'
+          || c === '>' || c === '/') return idx;
+      i = after;
+    }
+  }
+
+  function findCloseNesting(source, startFrom, target) {
+    const open = '<' + target.toLowerCase();
+    const close = '</' + target.toLowerCase();
+    const srcLower = source.toLowerCase();
+    let depth = 1;
+    let i = startFrom;
+    while (i < source.length) {
+      const nextOpen = srcLower.indexOf(open, i);
+      const nextClose = srcLower.indexOf(close, i);
+      if (nextClose < 0) return -1;
+      if (nextOpen >= 0 && nextOpen < nextClose) {
+        const m = matchOpeningHtmlTag(source, nextOpen, target);
+        if (m) {
+          depth++;
+          i = m.end;
+          continue;
+        }
+        i = nextOpen + open.length;
+        continue;
+      }
+      const after = nextClose + close.length;
+      if (after < source.length) {
+        const c = source[after];
+        if (c === ' ' || c === '\t' || c === '\n' || c === '\r'
+            || c === '>' || c === '/') {
+          depth--;
+          if (depth === 0) return nextClose;
+          i = after;
+          continue;
+        }
+      }
+      i = after;
+    }
+    return -1;
+  }
+
+  function findHtmlBlocks(source, tag, where) {
+    const target = tag.toLowerCase();
+    if (_AM_HTML_VOID.has(target)) return [];
+    if (!where) where = () => true;
+    const opaque = _AM_HTML_OPAQUE.has(target);
+    const out = [];
+    let i = 0;
+    let line = 1;
+    const len = source.length;
+    while (i < len) {
+      const c = source[i];
+      if (c === '\n') { line++; i++; continue; }
+      if (c !== '<') { i++; continue; }
+      const m = matchOpeningHtmlTag(source, i, target);
+      if (!m) { i++; continue; }
+      if (m.selfClosing) { i = m.end; continue; }
+      if (!where(m.attrs)) { i = m.end; continue; }
+      const start = i;
+      const bodyStart = m.end;
+      const openLine = line;
+      const bodyEnd = opaque
+        ? findCloseOpaque(source, bodyStart, target)
+        : findCloseNesting(source, bodyStart, target);
+      if (bodyEnd < 0) { i = bodyStart; continue; }
+      const closeGt = source.indexOf('>', bodyEnd);
+      const end = closeGt >= 0 ? closeGt + 1 : bodyEnd;
+      out.push({
+        tag: target,
+        attrs: m.attrs,
+        body: source.substring(bodyStart, bodyEnd),
+        start: start,
+        end: end,
+        bodyStart: bodyStart,
+        bodyEnd: bodyEnd,
+        line: openLine,
+      });
+      // Update line count for spanned region
+      const spanned = source.substring(start, end);
+      for (let k = 0; k < spanned.length; k++) {
+        if (spanned[k] === '\n') line++;
+      }
+      i = end;
+    }
+    return out;
+  }
+  window.__amHtml = { findHtmlBlocks, parseHtmlAttrs };
+
   function preserveStructuralBlocks(text) {
-    // The original bug was specifically about <script> bodies: a blank
-    // line inside an agent-authored script (very common — agents add them
-    // for readability) made CommonMark terminate the surrounding type-6
-    // HTML block at the blank line, dump remaining script source as
-    // markdown paragraphs, and corrupt the script. Replace such blank
-    // lines with an HTML-comment sentinel (also a legacy JS line comment,
-    // so script semantics are preserved).
+    // Replace interior blank lines inside <script> and <style> bodies
+    // with a sentinel comment so CommonMark's type-6 HTML block (which
+    // terminates at the first blank line) doesn't split the body.
+    // Without this, agent-authored scripts with blank-lines-for-
+    // readability get truncated at the first blank, the rest gets
+    // re-parsed as markdown paragraphs, the script breaks. Same trap
+    // for <style> with CSS rule blocks separated by blank lines.
     //
-    // We used to also strip blank lines inside <figure>, <aside>,
-    // <section>, etc. — but that prevented markdown from rendering inside
-    // those blocks (`### Heading` showed up as literal "###"). The
-    // narrower scope here keeps the script-body fix while letting
-    // markdown render normally inside section / aside / details / div,
-    // which is what readers expect for AM's kind-blocks and callouts.
-    // Only INTERIOR blank lines need preserving. Leading/trailing empty
-    // "lines" (artifacts of putting script content on a new line after
-    // <script>) must NOT be replaced — otherwise we prepend a sentinel
-    // to the script body, which corrupts data scripts whose consumers
-    // expect a specific first character (e.g. OSMD requires `<?xml` at
-    // position 0 of MusicXML; a leading `<!--am:keep-->` makes it bail
-    // with "Did not find <?xml at beginning.").
-    text = text.replace(
-      /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>)/gi,
-      (full, open, inner, close) => {
-        const lines = inner.split('\n');
+    // Sentinels are format-appropriate:
+    //   - <!--am:keep--> for <script> (HTML comment + legacy JS line
+    //     comment, so script semantics are preserved)
+    //   - /*am:keep*/ for <style> (CSS comment, silently dropped by
+    //     the CSS parser)
+    //
+    // Renderer-side: data-script renderers (CSV / MusicXML / Mermaid)
+    // strip <!--am:keep--> from textContent before parsing the body
+    // (see renderDataBlocks / renderDiagramBlocks / MusicXML path in
+    // iframe-host.html). Style sentinels need no strip — CSS ignores.
+    //
+    // Leading/trailing empty "lines" (from putting script content on a
+    // new line after the opening tag) must NOT be replaced — that
+    // would corrupt data scripts whose consumers expect a specific
+    // first byte (e.g., OSMD requires `<?xml` at position 0 of
+    // MusicXML — a leading sentinel makes it bail).
+    //
+    // We intentionally do NOT handle <figure>, <aside>, <section>,
+    // <details>, <div> the same way. Stripping their blank lines kills
+    // markdown rendering inside (`### Heading` shows up literal), and
+    // the readability-vs-fragility trade-off was made in favor of "let
+    // markdown render inside structural blocks." Documented in SKILL.
+    //
+    // Implementation: walk blocks in reverse so offset changes from
+    // earlier modifications don't invalidate later block offsets.
+    const passes = [
+      ['script', '<!--am:keep-->'],
+      ['style',  '/*am:keep*/'],
+    ];
+    for (const [tag, sentinel] of passes) {
+      const blocks = findHtmlBlocks(text, tag);
+      for (let bi = blocks.length - 1; bi >= 0; bi--) {
+        const b = blocks[bi];
+        const lines = b.body.split('\n');
         const last = lines.length - 1;
-        const out = lines.map((line, i) => {
-          if (i === 0 || i === last) return line;
-          return /^[ \t]*\r?$/.test(line) ? '<!--am:keep-->' : line;
+        const out = lines.map((line, idx) => {
+          if (idx === 0 || idx === last) return line;
+          return /^[ \t]*\r?$/.test(line) ? sentinel : line;
         });
-        return `${open}${out.join('\n')}${close}`;
+        text = text.slice(0, b.bodyStart) + out.join('\n') + text.slice(b.bodyEnd);
       }
-    );
-    // Same trap applies to <style> bodies — CSS commonly has blank
-    // lines between rule blocks, and CommonMark terminates the type-6
-    // HTML block at the first blank line then re-parses the rest as
-    // paragraphs, wrapping CSS rules in <p> tags and breaking them.
-    // Use a CSS-safe sentinel (/*am:keep*/ is a CSS comment, silently
-    // dropped by the CSS parser — no renderer-side strip needed).
-    return text.replace(
-      /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi,
-      (full, open, inner, close) => {
-        const lines = inner.split('\n');
-        const last = lines.length - 1;
-        const out = lines.map((line, i) => {
-          if (i === 0 || i === last) return line;
-          return /^[ \t]*\r?$/.test(line) ? '/*am:keep*/' : line;
-        });
-        return `${open}${out.join('\n')}${close}`;
-      }
-    );
+    }
+    return text;
   }
   window.__amPreserve = preserveStructuralBlocks;
 
@@ -1843,8 +2022,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const resp = await fetch('/iframe-host');
     if (!resp.ok) throw new Error('failed to fetch iframe-host for CSS');
     const html = await resp.text();
-    const m = html.match(/<style>([\s\S]*?)<\/style>/i);
-    _exportCssCache = m ? m[1] : '';
+    const blocks = findHtmlBlocks(html, 'style');
+    _exportCssCache = blocks.length > 0 ? blocks[0].body : '';
     return _exportCssCache;
   }
 
