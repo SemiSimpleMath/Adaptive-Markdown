@@ -59,6 +59,13 @@ keepers/
 # part of the published artifact. Run with `pytest tests/` locally.
 tests/
 
-# Local-only helpers (not part of the published artifact)
+# Local-only helpers (not part of the published artifact). Pattern is
+# `scripts/*` (not `scripts/`) so per-file allow-rules below work —
+# git won't honor `!scripts/foo` if the parent directory itself is
+# excluded.
 convert.py
-scripts/
+scripts/*
+# Exception: regression guards that protect EVERY contributor from a
+# recurring bug class belong in the repo even though most of scripts/
+# is local. List specific allow-rules here as they're needed.
+!scripts/check_inline_scripts.py
