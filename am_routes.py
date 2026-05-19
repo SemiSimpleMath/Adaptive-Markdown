@@ -1,0 +1,608 @@
+"""Per-doc HTTP route handlers.
+
+Snapshot history, undo / restore / reset, inline edit-block, pending
+accept / reject, and the agent-skill section CRUD. All share the same
+shape: parse query, resolve the slug, mutate or read the doc, snapshot
+if changed, broadcast doc_changed.
+
+Stays bundled because they all manipulate the doc + snapshot store
+through the same surface; splitting them would create
+am_routes_history / am_routes_pending / am_routes_skills modules that
+share the same imports and look identical at the top.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from aiohttp import web
+
+import validators
+from am_docs import (
+    DOC_SLUG_RE as _DOC_SLUG_RE,
+    DOCS_ROOT,
+    FRONTMATTER_RE as _FRONTMATTER_RE,
+    _doc_path_for,
+    _doc_slug_from_path,
+)
+from am_origin import _require_localhost_origin
+from am_pending import (
+    clear_pending,
+    load_pending,
+    remove_pending_edit,
+)
+from am_snapshots import (
+    _history_dir_for,
+    _history_zero_path,
+    save_snapshot,
+)
+from am_state import state
+from am_tracking import _HEADING_LINE_RE, _find_block_span
+
+
+async def list_history(request: web.Request) -> web.Response:
+    """GET /history?doc=<slug> — list snapshots captured by pre-edit hook."""
+    _require_localhost_origin(request)
+    doc_param = request.query.get("doc", "").strip()
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    hist = _history_dir_for(doc_path)
+    snaps = []
+    if hist.exists():
+        for p in sorted(hist.glob("snap-*.md"), reverse=True):
+            stat = p.stat()
+            snaps.append({
+                "snap_id": p.stem.replace("snap-", ""),
+                "ts_ms": int(stat.st_mtime * 1000),
+                "size": stat.st_size,
+            })
+    return web.json_response({"doc": doc_param, "snapshots": snaps})
+
+
+def _snapshot_if_changed(doc_path: Path) -> str | None:
+    """Capture current working-copy state as a fresh snap if it differs from
+    the newest existing snap. Used by /reset, /undo, /restore_snapshot so a
+    destructive UI action never silently destroys the user's current state —
+    they can always recover via the History panel.
+
+    Returns the new snap_id if a snapshot was taken, None if the working copy
+    already matches the newest snap (no-op).
+
+    Known limitation: with this in place, double-Undo can read the just-taken
+    safety snap as the newest, producing a "redo" instead of a deeper undo.
+    Acceptable v0 trade — losing recent work to a single Reset/Restore click
+    is the much more common surprise. The longer-term fix is a HEAD-pointer
+    or post-edit hook model (see ROADMAP, "Snapshot semantics")."""
+    try:
+        current = doc_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    hist = _history_dir_for(doc_path)
+    if hist.exists():
+        snaps = sorted(hist.glob("snap-*.md"))
+        if snaps:
+            try:
+                if snaps[-1].read_text(encoding="utf-8") == current:
+                    return None
+            except (OSError, UnicodeDecodeError):
+                pass  # treat as different and save defensively
+    return save_snapshot(doc_path, current)
+
+
+async def undo_doc(request: web.Request) -> web.Response:
+    """POST /undo?doc=<slug> — restore the most recent snapshot."""
+    _require_localhost_origin(request)
+    doc_param = request.query.get("doc", "").strip()
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    hist = _history_dir_for(doc_path)
+    if not hist.exists():
+        return web.json_response({"error": "no snapshots yet"}, status=404)
+    snaps = sorted(hist.glob("snap-*.md"), reverse=True)
+    if not snaps:
+        return web.json_response({"error": "no snapshots yet"}, status=404)
+    newest = snaps[0]  # bind BEFORE the safety snap so we restore to the
+                       # pre-existing newest, not to the safety snap itself
+    _snapshot_if_changed(doc_path)
+    doc_path.write_bytes(newest.read_bytes())
+    slug = _doc_slug_from_path(doc_path) or doc_param
+    # Any pending entries referenced the just-overwritten current.md;
+    # they're now orphaned and would silently corrupt source on Reject
+    # (restoring an old_text that no longer matches reality). Clear them
+    # alongside the source restore.
+    cleared = clear_pending(slug) if slug else False
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    if cleared:
+        await state.broadcast({"type": "pending_changed", "doc": slug})
+    snap_id = newest.stem.replace("snap-", "")
+    print(
+        f"[undo] docs/{slug}/current.md <- snap-{snap_id}"
+        f"{' (pending cleared)' if cleared else ''}",
+        flush=True,
+    )
+    return web.json_response({"doc": slug, "snap_id": snap_id, "ok": True})
+
+
+async def restore_snapshot(request: web.Request) -> web.Response:
+    """POST /restore_snapshot?doc=<slug>&snap_id=... — restore from a snap."""
+    _require_localhost_origin(request)
+    doc_param = request.query.get("doc", "").strip()
+    snap_id = request.query.get("snap_id", "").strip()
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    if not snap_id or not re.fullmatch(r"[A-Za-z0-9_-]{6,40}", snap_id):
+        return web.json_response({"error": "bad snap_id"}, status=400)
+    snap_path = _history_dir_for(doc_path) / f"snap-{snap_id}.md"
+    if not snap_path.exists():
+        return web.json_response({"error": "snapshot not found"}, status=404)
+    _snapshot_if_changed(doc_path)
+    doc_path.write_bytes(snap_path.read_bytes())
+    slug = _doc_slug_from_path(doc_path) or doc_param
+    # Same orphan-clear rationale as /undo: pending entries reference
+    # the current.md state we just overwrote.
+    cleared = clear_pending(slug) if slug else False
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    if cleared:
+        await state.broadcast({"type": "pending_changed", "doc": slug})
+    print(
+        f"[restore] docs/{slug}/current.md <- snap-{snap_id}"
+        f"{' (pending cleared)' if cleared else ''}",
+        flush=True,
+    )
+    return web.json_response({"doc": slug, "snap_id": snap_id, "ok": True})
+
+
+async def edit_block(request: web.Request) -> web.Response:
+    """POST /edit-block — replace a single block's source with plain text.
+
+    Body JSON: { doc: <slug>, block: <signature>, new_text: <plain text> }
+    where signature is the blockInfo the iframe posts for selections
+    (track_id / anchor_id / label / excerpt).
+
+    MVP scope: paragraphs and headings only. Lists, code, tables, raw HTML
+    blocks return 422 — the reader edits those via the Source view because
+    plaintext replacement would corrupt the source structure.
+    """
+    _require_localhost_origin(request)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    slug = (data.get("doc") or "").strip()
+    block = data.get("block") or {}
+    new_text = data.get("new_text", "")
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    if not isinstance(block, dict):
+        return web.json_response({"error": "block must be object"}, status=400)
+    if not isinstance(new_text, str):
+        return web.json_response({"error": "new_text must be string"}, status=400)
+    new_text = new_text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+
+    source = doc_path.read_text(encoding="utf-8")
+    lines = source.split("\n")
+    span = _find_block_span(lines, block)
+    if span is None:
+        return web.json_response(
+            {"error": "could not locate or refusing to inline-edit this block "
+                      "(supported: paragraphs and headings). Use the Source "
+                      "view for lists, code, tables, and HTML blocks."},
+            status=422,
+        )
+    start, end, kind = span
+
+    # Heading edit: keep the original `## ` prefix + optional `{#anchor}`
+    # suffix; replace only the visible text.
+    if kind == "heading":
+        m = _HEADING_LINE_RE.match(lines[start])
+        if m:
+            hashes = m.group(1)
+            anchor = m.group(3)
+            anchor_suffix = f" {{{anchor}}}" if anchor else ""
+            new_first_line = (
+                f"{hashes} {new_text.splitlines()[0] if new_text else ''}"
+                f"{anchor_suffix}"
+            )
+            new_lines = lines[:start] + [new_first_line] + lines[end:]
+        else:
+            new_lines = lines[:start] + [new_text] + lines[end:]
+    else:
+        new_lines = lines[:start] + [new_text] + lines[end:]
+    new_source = "\n".join(new_lines)
+
+    errors = validators.validate_doc(new_source) if new_source.strip() else []
+    if errors:
+        return web.json_response(
+            {"error": "validation failed",
+             "details": [
+                 {"kind": e.get("kind"), "line": e.get("line"),
+                  "message": e.get("message")}
+                 for e in errors[:5]
+             ]},
+            status=422,
+        )
+
+    _snapshot_if_changed(doc_path)
+    with doc_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_source)
+    print(
+        f"[edit-block] docs/{slug}/current.md ({kind}, "
+        f"start={start} end={end} → {len(new_text)} chars)",
+        flush=True,
+    )
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    return web.json_response({"ok": True, "kind": kind})
+
+
+async def list_pending(request: web.Request) -> web.Response:
+    """GET /pending?doc=<slug> — return the pending sidecar's contents
+    (or the empty shape if there's no sidecar yet). The viewer polls
+    this when a doc loads and when doc_changed broadcasts so it can
+    surface the Review tab + indicator."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    return web.json_response(load_pending(slug))
+
+
+async def accept_pending(request: web.Request) -> web.Response:
+    """POST /accept-pending?doc=<slug>[&id=<edit-id>] — accept one pending
+    entry (or all of them if id is omitted). Accept = keep current.md
+    as-is and drop the entry from the sidecar; the bytes are already on
+    disk per the bytes-land model. No source edits needed."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    edit_id = (request.query.get("id") or "").strip()
+    data = load_pending(slug)
+    if not data["edits"]:
+        return web.json_response({"ok": True, "accepted": 0})
+    if edit_id:
+        removed = remove_pending_edit(slug, edit_id)
+        accepted = 1 if removed else 0
+    else:
+        accepted = len(data["edits"])
+        clear_pending(slug)
+    print(f"[pending] accept slug={slug} id={edit_id or '*'} "
+          f"({accepted} entries cleared)", flush=True)
+    # Doc bytes didn't change, but the viewer needs to know pending is
+    # gone so it can hide the Review tab / indicator.
+    await state.broadcast({"type": "pending_changed", "doc": slug})
+    return web.json_response({"ok": True, "accepted": accepted})
+
+
+async def reject_pending(request: web.Request) -> web.Response:
+    """POST /reject-pending?doc=<slug>[&id=<edit-id>] — reject one pending
+    entry (or all if id omitted). Reject = restore the old_text recorded
+    with the entry into current.md, snapshot+broadcast, drop the entry."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    edit_id = (request.query.get("id") or "").strip()
+    data = load_pending(slug)
+    if not data["edits"]:
+        return web.json_response({"ok": True, "rejected": 0})
+
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+
+    entries = data["edits"]
+    if edit_id:
+        targets = [e for e in entries if e.get("id") == edit_id]
+        if not targets:
+            return web.json_response(
+                {"error": f"no pending entry with id {edit_id!r}"},
+                status=404,
+            )
+    else:
+        targets = list(entries)
+
+    # MVP: whole-doc kind entries. For each target, restore its old_text
+    # as the entire current.md. Multiple whole-doc entries shouldn't
+    # coexist because same-block replacement collapses them, but if we
+    # see more than one (other kinds in future) we walk them in reverse.
+    _snapshot_if_changed(doc_path)
+    for entry in reversed(targets):
+        kind = (entry.get("block") or {}).get("kind")
+        if kind == "doc":
+            old_text = entry.get("old_text") or ""
+            with doc_path.open("w", encoding="utf-8", newline="") as f:
+                f.write(old_text)
+        else:
+            # Per-block reject for non-"doc" kinds will land when phase 3+
+            # decomposes the granularity. For now, refuse rather than
+            # corrupt the source.
+            return web.json_response(
+                {"error": f"reject not yet implemented for block kind "
+                          f"{kind!r}; only 'doc' is supported in v0"},
+                status=422,
+            )
+        remove_pending_edit(slug, entry["id"])
+
+    print(f"[pending] reject slug={slug} id={edit_id or '*'} "
+          f"({len(targets)} entries reverted)", flush=True)
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    await state.broadcast({"type": "pending_changed", "doc": slug})
+    return web.json_response({"ok": True, "rejected": len(targets)})
+
+
+_AGENT_SKILL_RE = re.compile(
+    r'<section\s+class="agent-skill"[^>]*>([\s\S]*?)</section\s*>',
+    re.IGNORECASE,
+)
+_SKILL_NAME_RE = re.compile(
+    r'^\s*##+\s+SKILL\s*:\s*(.+?)\s*$', re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _find_agent_skill_blocks(source: str) -> list[dict]:
+    """Locate every <section class="agent-skill">...</section> block.
+    Returns one dict per block with byte offsets (`start`/`end` over the
+    whole block including tags), the inner content stripped of leading/
+    trailing whitespace, and a best-guess name pulled from the first
+    `## SKILL: <name>` heading inside the block (or "untitled #N"
+    fallback)."""
+    out = []
+    for i, m in enumerate(_AGENT_SKILL_RE.finditer(source)):
+        inner = m.group(1).strip("\n")
+        # Heading-based name extraction. If absent, fall back so the
+        # UI always has something to label the skill with.
+        nm = _SKILL_NAME_RE.search(inner)
+        name = nm.group(1).strip() if nm else f"untitled #{i + 1}"
+        out.append({
+            "index": i,
+            "name": name,
+            "content": inner,
+            "start": m.start(),
+            "end": m.end(),
+        })
+    return out
+
+
+def _render_agent_skill_block(content: str) -> str:
+    """Build the `<section class="agent-skill">...</section>` wrapper
+    around a body. Whitespace pattern matches what add_doc_skill / the
+    editor write so round-tripping through the parser stays clean."""
+    body = (content or "").strip("\n")
+    return (
+        '<section class="agent-skill">\n\n'
+        + body
+        + '\n\n</section>'
+    )
+
+
+async def list_doc_skills(request: web.Request) -> web.Response:
+    """GET /doc-skills?doc=<slug> — list every agent-skill section in
+    the doc with its label + content + position. Drives the Skills
+    manager modal."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    source = doc_path.read_text(encoding="utf-8")
+    skills = _find_agent_skill_blocks(source)
+    # Drop the byte offsets from the response — those are server-side
+    # only; the index is the stable handle for update/delete.
+    return web.json_response({
+        "skills": [
+            {"index": s["index"], "name": s["name"], "content": s["content"]}
+            for s in skills
+        ],
+    })
+
+
+async def update_doc_skill(request: web.Request) -> web.Response:
+    """POST /update-doc-skill?doc=<slug>&index=N — replace the Nth
+    agent-skill section's inner content with the body's `content`
+    field. The wrapping `<section class="agent-skill">…</section>`
+    is preserved."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    try:
+        idx = int(request.query.get("index", "-1"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "index must be an integer"}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    new_content = body.get("content")
+    if not isinstance(new_content, str):
+        return web.json_response({"error": "missing 'content'"}, status=400)
+
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    source = doc_path.read_text(encoding="utf-8")
+    blocks = _find_agent_skill_blocks(source)
+    if idx < 0 or idx >= len(blocks):
+        return web.json_response(
+            {"error": f"no agent-skill section at index {idx} "
+                      f"(this doc has {len(blocks)})"},
+            status=404,
+        )
+    block = blocks[idx]
+    new_block = _render_agent_skill_block(new_content)
+    new_source = source[: block["start"]] + new_block + source[block["end"]:]
+
+    errors = validators.validate_doc(new_source) if new_source.strip() else []
+    if errors:
+        return web.json_response(
+            {"error": "validation failed",
+             "details": [
+                 {"kind": e.get("kind"), "line": e.get("line"),
+                  "message": e.get("message")}
+                 for e in errors[:3]
+             ]},
+            status=422,
+        )
+
+    _snapshot_if_changed(doc_path)
+    with doc_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_source)
+    print(f"[update-doc-skill] docs/{slug}/current.md index={idx}", flush=True)
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    return web.json_response({"ok": True, "index": idx})
+
+
+async def delete_doc_skill(request: web.Request) -> web.Response:
+    """POST /delete-doc-skill?doc=<slug>&index=N — remove the Nth
+    agent-skill section entirely."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    try:
+        idx = int(request.query.get("index", "-1"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "index must be an integer"}, status=400)
+
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    source = doc_path.read_text(encoding="utf-8")
+    blocks = _find_agent_skill_blocks(source)
+    if idx < 0 or idx >= len(blocks):
+        return web.json_response(
+            {"error": f"no agent-skill section at index {idx}"},
+            status=404,
+        )
+    block = blocks[idx]
+    new_source = source[: block["start"]] + source[block["end"]:]
+    # Collapse runs of 3+ blank lines that the removal may have produced.
+    new_source = re.sub(r"\n{3,}", "\n\n", new_source)
+    _snapshot_if_changed(doc_path)
+    with doc_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_source)
+    print(f"[delete-doc-skill] docs/{slug}/current.md index={idx}", flush=True)
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    return web.json_response({"ok": True, "index": idx})
+
+
+async def add_doc_skill(request: web.Request) -> web.Response:
+    """POST /add-doc-skill?doc=<slug> — append an empty agent-skill section
+    to the doc body so the author has somewhere to write working-contract
+    text without learning the `<section class="agent-skill">` wrapper by
+    hand. Body JSON `{ "name": "<short label>" }` is optional; defaults
+    to "untitled". The viewer typically follows up by switching to Source
+    view so the author can fill in the placeholder."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+
+    body: dict = {}
+    if request.content_length:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    if not isinstance(body, dict):
+        body = {}
+    name = (body.get("name") or "").strip() or "untitled"
+    # Optional pre-filled content from the Skills manager modal. If the
+    # caller didn't supply any, we fall back to the placeholder body so
+    # an empty + Skill click still gets a useful stub.
+    raw_content = body.get("content")
+    custom_content = raw_content.strip() if isinstance(raw_content, str) else ""
+
+    source = doc_path.read_text(encoding="utf-8")
+    if custom_content:
+        skill_inner = custom_content
+    else:
+        # Just a heading line — the manager's editor is the place to
+        # write the actual content. No verbose placeholder cluttering
+        # the source / preview.
+        skill_inner = f"## SKILL: {name}"
+    skill_block = _render_agent_skill_block(skill_inner) + "\n\n"
+    # Insert right after the frontmatter (or at the very top if there's
+    # none). The agent reads the doc top-down via the inlined preamble,
+    # so placing the contract near the top means the agent absorbs the
+    # contract before processing body content — putting it at the bottom
+    # forces the agent to read the body first under generic guidance,
+    # then learn the contract too late to influence anything. Also makes
+    # the skill discoverable in Source view without scrolling. Doc view
+    # is unchanged (display:none either way).
+    m = _FRONTMATTER_RE.match(source)
+    if m:
+        head = source[: m.end()]
+        tail = source[m.end():].lstrip("\n")
+        new_source = head + "\n" + skill_block + tail
+    else:
+        new_source = skill_block + source.lstrip("\n")
+
+    errors = validators.validate_doc(new_source) if new_source.strip() else []
+    if errors:
+        return web.json_response(
+            {"error": "validation failed",
+             "details": [
+                 {"kind": e.get("kind"), "line": e.get("line"),
+                  "message": e.get("message")}
+                 for e in errors[:3]
+             ]},
+            status=422,
+        )
+
+    _snapshot_if_changed(doc_path)
+    with doc_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(new_source)
+    print(f"[add-doc-skill] docs/{slug}/current.md (name={name!r})", flush=True)
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    return web.json_response({"ok": True, "name": name})
+
+
+async def reset_doc(request: web.Request) -> web.Response:
+    """POST /reset?doc=<slug> — restore current.md from baseline.md (history-0)."""
+    _require_localhost_origin(request)
+    doc_param = request.query.get("doc", "").strip()
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    history_zero = _history_zero_path(doc_path)
+    if history_zero is None:
+        return web.json_response(
+            {"error": (
+                f"no baseline.md for {doc_param!r} — this doc has no "
+                "history-0 to reset to. For a user-created doc, save a "
+                "baseline first (future action); for a ship-with example, "
+                f"run `git checkout docs/{doc_param}/baseline.md`."
+            )},
+            status=404,
+        )
+    _snapshot_if_changed(doc_path)
+    doc_path.write_bytes(history_zero.read_bytes())
+    slug = _doc_slug_from_path(doc_path) or doc_param
+    # Pending entries reference the just-overwritten current.md and would
+    # corrupt source on Reject. Clear them.
+    cleared = clear_pending(slug) if slug else False
+    await state.broadcast({"type": "doc_changed", "doc": slug})
+    if cleared:
+        await state.broadcast({"type": "pending_changed", "doc": slug})
+    print(
+        f"[reset] docs/{slug}/current.md <- baseline.md"
+        f"{' (pending cleared)' if cleared else ''}",
+        flush=True,
+    )
+    return web.json_response({"doc": slug, "snap_id": "baseline", "ok": True})
