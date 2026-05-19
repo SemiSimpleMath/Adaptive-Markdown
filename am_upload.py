@@ -73,6 +73,15 @@ _DATA_BINARY_EXTS = {".xlsx"}
 _DATA_TEXT_MAX_BYTES = 5 * 1024 * 1024   # 5MB cap on CSV source
 _DATA_BINARY_MAX_BYTES = 25 * 1024 * 1024  # 25MB cap on XLSX binaries
 
+# Diagram imports: .mmd / .mermaid is Mermaid source text. We wrap it
+# in <figure class="diagram"><script type="text/x-mermaid">…</script>
+# </figure>; iframe runtime lazy-loads mermaid.js from CDN and renders
+# the SVG into a sibling .mermaid-render div. Source stays in the
+# script as the truth — agent edits via string-level operations on
+# the Mermaid DSL.
+_DIAGRAM_TEXT_EXTS = {".mmd", ".mermaid"}
+_DIAGRAM_TEXT_MAX_BYTES = 1 * 1024 * 1024  # 1MB cap on Mermaid source
+
 # Extensions that the doc-area drop UX treats as "asset" (lands under
 # docs/<slug>/assets/) rather than as a new-doc candidate. Anything not in
 # this set falls through to the existing new-doc / convert flow.
@@ -520,6 +529,143 @@ async def _upload_data_doc(
     })
 
 
+# Per-doc agent-skill for diagram docs. Same mechanism as music/data
+# — baked in at upload so the agent reads the substrate rules in the
+# chat preamble. Only one mutation pattern matters for Mermaid: edit
+# source, rerender. There's no incremental "change one node" API,
+# so the getRenderer surface is minimal.
+_DIAGRAM_AGENT_SKILL = """<section class="agent-skill">
+
+**Diagram doc — substrate rules**
+
+This doc renders a Mermaid diagram through the iframe runtime. The
+source lives inside `<figure class="diagram">` as
+`<script type="text/x-mermaid">…Mermaid DSL…</script>`
+(script-with-non-JS-type so the browser doesn't try to HTML-parse
+the source). The visible diagram is a runtime-generated sibling
+`.mermaid-render` div holding the SVG that Mermaid produces
+(lazy-loaded from CDN). The script element stays in the DOM as the
+source of truth.
+
+**To mutate the diagram, edit the script's `textContent` with
+string-level operations on Mermaid DSL lines, then rerender:**
+
+```js
+const script = figure.querySelector('script[type="text/x-mermaid"]');
+const lines = script.textContent.split('\\n');
+lines.push('  C[New Node] --> D[Another]');
+script.textContent = lines.join('\\n');
+await window.__doc.rerender(figure);
+```
+
+Mermaid has no useful incremental-mutation API — re-render is the
+only path. `__doc.getRenderer(fig)` returns `{kind: 'mermaid',
+instance, source}` mainly so widgets can read the current source
+without re-querying the script.
+
+Supported Mermaid diagram types (Mermaid 10.x): `flowchart` (and
+`graph`), `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`,
+`erDiagram`, `gantt`, `pie`, `journey`, `timeline`, `mindmap`,
+`quadrantChart`, `xychart-beta`, `sankey-beta`. Each takes its own
+DSL — see https://mermaid.js.org/intro/ for syntax.
+
+Trap: Mermaid's parser is strict. Comments inside the source use
+`%% comment` syntax. Trailing commas, mismatched arrows (`-->` vs
+`->`), and unterminated quoted labels all error. If `__doc.rerender`
+leaves the figure showing an error banner, check the script source
+for parser violations.
+
+</section>
+"""
+
+
+async def _upload_diagram_doc(
+    request: web.Request,
+    field: "web.BodyPartReader",
+    raw_name: str,
+    ext: str,
+) -> web.Response:
+    """Drop a .mmd / .mermaid file onto +Doc → new doc whose body is a
+    single <figure class="diagram"> wrapping the Mermaid source. The
+    iframe runtime renders via mermaid.js on first view."""
+    total = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = await field.read_chunk(size=64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _DIAGRAM_TEXT_MAX_BYTES:
+            return web.json_response(
+                {"error": f"file too large (max "
+                          f"{_DIAGRAM_TEXT_MAX_BYTES // (1024 * 1024)}MB "
+                          f"for {ext} imports)"},
+                status=413,
+            )
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    if total == 0:
+        return web.json_response({"error": "empty file"}, status=400)
+
+    # Strip BOM, normalize line endings, trim trailing whitespace.
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    elif raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        raw = raw.decode("utf-16").encode("utf-8")
+    source = (raw.decode("utf-8", errors="replace")
+              .replace("\r\n", "\n").replace("\r", "\n")
+              .strip())
+    if not source:
+        return web.json_response(
+            {"error": "Mermaid source is empty after decoding"}, status=400,
+        )
+
+    # Slug derivation matches the rest of the upload paths.
+    raw_stem = Path(raw_name).stem
+    slug_base = re.sub(r"[^a-z0-9-]+", "-", raw_stem.lower()).strip("-")
+    if not slug_base or not DOC_SLUG_RE.match(slug_base):
+        slug_base = "diagram"
+    slug = slug_base
+    counter = 1
+    while (DOCS_ROOT / slug).exists():
+        counter += 1
+        slug = f"{slug_base}-{counter}"
+    doc_dir = DOCS_ROOT / slug
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    title = raw_stem
+
+    body_md = (
+        f'---\ntitle: "{title}"\n---\n\n'
+        f"# {title}\n\n"
+        '<figure class="diagram">\n'
+        '<script type="text/x-mermaid">\n'
+        + source
+        + '\n</script>\n'
+        "</figure>\n\n"
+        + _DIAGRAM_AGENT_SKILL
+    )
+
+    (doc_dir / "current.md").write_text(body_md, encoding="utf-8", newline="")
+    (doc_dir / "baseline.md").write_text(body_md, encoding="utf-8", newline="")
+    ensure_doc_ids()
+    await state.broadcast({
+        "type": "docs", "list": list_all_docs(), "doc": slug,
+    })
+    print(
+        f"[upload:diagram] docs/{slug}/current.md "
+        f"({total}B {ext} → {len(source)} chars Mermaid)",
+        flush=True,
+    )
+    return web.json_response({
+        "path": f"docs/{slug}/current.md",
+        "slug": slug,
+        "name": "current.md",
+        "kind": ext,
+        "converted": True,
+        "converter": "diagram",
+    })
+
+
 async def _upload_binary_doc(
     request: web.Request,
     field: "web.BodyPartReader",
@@ -681,6 +827,11 @@ async def upload_md(request: web.Request) -> web.Response:
     # with install instructions in that case.
     if ext in _DATA_TEXT_EXTS or ext in _DATA_BINARY_EXTS:
         return await _upload_data_doc(request, field, raw_name, ext)
+
+    # Diagram imports: .mmd / .mermaid → `<figure class="diagram">` with
+    # Mermaid source, rendered live by mermaid.js in the iframe.
+    if ext in _DIAGRAM_TEXT_EXTS:
+        return await _upload_diagram_doc(request, field, raw_name, ext)
 
     # Binary-doc imports (PDF, DOCX, PPTX) go through markitdown server-side.
     # They're not text and would fail the NUL-byte guard below; branch out

@@ -98,6 +98,13 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
 figure.data { text-align: left; border: 0; padding: 0.4em 0; }
 figure.data .data-grid { background: white; border-radius: 4px; overflow: hidden; max-height: 60vh; }
 figure.data script[type="text/csv"] { display: none; }
+/* Diagram figures: Mermaid renders SVG into the sibling div. White
+   background + padding keeps the diagram readable across themes;
+   max-width caps width on portrait viewports while preserving aspect. */
+figure.diagram { text-align: left; border: 0; padding: 0.4em 0; }
+figure.diagram .mermaid-render { background: white; padding: 0.5em; border-radius: 4px; overflow-x: auto; text-align: center; }
+figure.diagram .mermaid-render svg { max-width: 100%; height: auto; }
+figure.diagram script[type="text/x-mermaid"] { display: none; }
 </style>
 </head>
 <body>
@@ -176,10 +183,17 @@ figure.data script[type="text/csv"] { display: none; }
       ).forEach(n => {
         delete n.dataset.amDataSource;
       });
+      el.querySelectorAll(
+        'figure.diagram script[type="text/x-mermaid"]'
+      ).forEach(n => {
+        delete n.dataset.amDiagramSource;
+      });
       try { await renderMusicBlocks(el); }
       catch (e) { console.warn('__doc.rerender music:', e); }
       try { await renderDataBlocks(el); }
       catch (e) { console.warn('__doc.rerender data:', e); }
+      try { await renderDiagramBlocks(el); }
+      catch (e) { console.warn('__doc.rerender diagram:', e); }
       try { renderMath(el); }
       catch (e) { console.warn('__doc.rerender math:', e); }
     },
@@ -610,6 +624,83 @@ figure.data script[type="text/csv"] { display: none; }
     }
   }
 
+  // Monotonic id for Mermaid render calls — Mermaid uses the id for
+  // internal SVG element ids, so collisions across re-renders cause
+  // the lib to throw "id already exists in DOM". Bumping per call.
+  let _mermaidCounter = 0;
+
+  async function renderDiagramBlocks(root) {
+    // Source lives in <figure class="diagram"><script type="text/x-mermaid">
+    // tag (script-with-non-JS-type, same trap-avoidance as MusicXML / CSV).
+    // We read textContent for the source and render into a sibling
+    // .mermaid-render div via mermaid.render(), which returns an SVG
+    // string we inject as innerHTML.
+    const mermaidScripts = Array.from(root.querySelectorAll(
+      'figure.diagram script[type="text/x-mermaid"]'
+    ));
+    const todo = mermaidScripts.filter(s =>
+      s.dataset.amDiagramSource !== (s.textContent || '').trim()
+    );
+    if (!todo.length) return;
+
+    try {
+      await loadScriptOnce(
+        'https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js',
+      );
+      // Initialize once globally. startOnLoad:false keeps mermaid from
+      // auto-scanning the DOM — we drive it via render() per figure.
+      // securityLevel:'strict' is the default but be explicit; it
+      // sanitizes any HTML inside diagram labels.
+      if (!window.__doc.__mermaidInitialized && window.mermaid) {
+        window.mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'default',
+        });
+        window.__doc.__mermaidInitialized = true;
+      }
+    } catch (e) {
+      console.warn('mermaid failed to load:', e);
+      return;
+    }
+
+    for (const script of todo) {
+      const source = (script.textContent || '').trim();
+      script.dataset.amDiagramSource = source;
+      let target = script.nextElementSibling;
+      if (!target || !target.classList.contains('mermaid-render')) {
+        target = document.createElement('div');
+        target.className = 'mermaid-render';
+        script.parentNode.insertBefore(target, script.nextSibling);
+      } else {
+        target.innerHTML = '';
+      }
+      if (!source) {
+        target.innerHTML =
+          '<div class="error-banner">Mermaid source is empty.</div>';
+        continue;
+      }
+      try {
+        _mermaidCounter += 1;
+        const id = 'mermaid-svg-' + _mermaidCounter;
+        // mermaid.render returns { svg, bindFunctions? }. We only use svg.
+        const { svg } = await window.mermaid.render(id, source);
+        target.innerHTML = svg;
+        const fig = script.closest('figure');
+        if (fig) FIGURE_RENDERERS.set(fig, {
+          kind: 'mermaid', instance: window.mermaid, source,
+        });
+      } catch (e) {
+        // Mermaid parse errors come back via thrown exception with a
+        // .message that names the line/column. Surface verbatim — the
+        // agent uses this to figure out what DSL it broke.
+        target.innerHTML =
+          '<div class="error-banner">Mermaid render failed: '
+          + ((e && e.message) || e) + '</div>';
+      }
+    }
+  }
+
   function renderMath(root) {
     const target = root || body;
     if (window.renderMathInElement) {
@@ -947,6 +1038,7 @@ figure.data script[type="text/csv"] { display: none; }
             if (node.classList.contains('abc-notation'))   return false;
             if (node.classList.contains('abc-audio'))      return false;
             if (node.classList.contains('data-grid'))      return false;
+            if (node.classList.contains('mermaid-render')) return false;
           }
           return true;
         },
@@ -966,6 +1058,7 @@ figure.data script[type="text/csv"] { display: none; }
     renderMath();
     renderMusicBlocks(body).catch(e => console.warn('music render:', e));
     renderDataBlocks(body).catch(e => console.warn('data render:', e));
+    renderDiagramBlocks(body).catch(e => console.warn('diagram render:', e));
     se.scrollTop = sy;
   }
 
