@@ -338,10 +338,8 @@ async def reject_pending(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "rejected": len(targets)})
 
 
-_AGENT_SKILL_RE = re.compile(
-    r'<section\s+class="agent-skill"[^>]*>([\s\S]*?)</section\s*>',
-    re.IGNORECASE,
-)
+import am_html
+
 _SKILL_NAME_RE = re.compile(
     r'^\s*##+\s+SKILL\s*:\s*(.+?)\s*$', re.IGNORECASE | re.MULTILINE,
 )
@@ -353,10 +351,21 @@ def _find_agent_skill_blocks(source: str) -> list[dict]:
     whole block including tags), the inner content stripped of leading/
     trailing whitespace, and a best-guess name pulled from the first
     `## SKILL: <name>` heading inside the block (or "untitled #N"
-    fallback)."""
+    fallback).
+
+    Delegates HTML-block extraction to am_html.find_blocks. The
+    previous regex required `class="agent-skill"` to be the literal
+    first attribute value; the new path uses real attr parsing so
+    multi-token class lists (`class="agent-skill highlighted"`),
+    other attribute orders (`<section id="x" class="agent-skill">`),
+    and single-quoted attrs all work."""
+    blocks = am_html.find_blocks(
+        source, "section",
+        where=lambda a: "agent-skill" in (a.get("class") or "").split(),
+    )
     out = []
-    for i, m in enumerate(_AGENT_SKILL_RE.finditer(source)):
-        inner = m.group(1).strip("\n")
+    for i, b in enumerate(blocks):
+        inner = b.body.strip("\n")
         # Heading-based name extraction. If absent, fall back so the
         # UI always has something to label the skill with.
         nm = _SKILL_NAME_RE.search(inner)
@@ -365,8 +374,8 @@ def _find_agent_skill_blocks(source: str) -> list[dict]:
             "index": i,
             "name": name,
             "content": inner,
-            "start": m.start(),
-            "end": m.end(),
+            "start": b.start,
+            "end": b.end,
         })
     return out
 
