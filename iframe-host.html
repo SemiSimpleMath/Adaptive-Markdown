@@ -521,11 +521,15 @@ figure.data script[type="text/csv"] { display: none; }
 
   async function renderDataBlocks(root) {
     // Source lives in <figure class="data"><script type="text/csv">…
-    // </script>. The script-with-non-JS-type trick (same as MusicXML)
+    // <\/script>. The script-with-non-JS-type trick (same as MusicXML)
     // makes the browser treat the body as opaque data — textContent
     // returns the CSV verbatim. We render to a sibling .data-grid div
     // so the agent can mutate the script's body without touching what
     // the user sees until __doc.rerender lands.
+    // (The `<\/script>` above is escaped: a literal end-script token
+    // inside ANY script-tag content, even in a JS comment, terminates
+    // the parent script tag at HTML-parser level. Same fix we made
+    // in renderMusicBlocks a few commits back.)
     const csvScripts = Array.from(root.querySelectorAll(
       'figure.data script[type="text/csv"]'
     ));
