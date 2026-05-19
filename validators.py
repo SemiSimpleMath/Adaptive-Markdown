@@ -95,10 +95,14 @@ def _extract_blocks(src: str, tag: str) -> list[dict]:
     """Pull <tag>...</tag> bodies out of raw source. Records 1-indexed line
     of each opening tag for error reporting. Markdown code spans / fenced
     blocks / HTML comments are masked out first so literal `<script>`
-    text inside them doesn't get treated as a real tag."""
+    text inside them doesn't get treated as a real tag.
+
+    Returns dicts with `body`, `line`, and `attrs` (the raw attribute
+    string from the opening tag — callers can inspect e.g. `type=` to
+    decide whether the body is code or opaque data)."""
     masked = _mask_markdown_code(src)
     pattern = re.compile(
-        rf"<{tag}\b[^>]*>([\s\S]*?)</{tag}\s*>",
+        rf"<{tag}\b([^>]*)>([\s\S]*?)</{tag}\s*>",
         re.IGNORECASE,
     )
     out = []
@@ -107,10 +111,54 @@ def _extract_blocks(src: str, tag: str) -> list[dict]:
         # Pull the body from the ORIGINAL source (same offsets, since
         # masking preserves length) so backtick-only-in-prose `<script>`
         # mentions inside the real script body aren't blanked.
-        body_start = m.start(1)
-        body_end = m.end(1)
-        out.append({"body": src[body_start:body_end], "line": line})
+        body_start = m.start(2)
+        body_end = m.end(2)
+        out.append({
+            "body": src[body_start:body_end],
+            "line": line,
+            "attrs": m.group(1) or "",
+        })
     return out
+
+
+# JS MIME types per HTML spec (whatwg, "JavaScript MIME type essence match").
+# Anything outside this set (and not "module" / empty / missing) is a "data
+# block" — the browser doesn't execute it, so we mustn't syntax-check it.
+_JS_MIME_TYPES = frozenset({
+    "text/javascript",
+    "application/javascript",
+    "text/ecmascript",
+    "application/ecmascript",
+    "application/x-javascript",
+    "text/x-javascript",
+    "text/jscript",
+    "text/livescript",
+})
+
+_TYPE_ATTR_RE = re.compile(
+    r"""type\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
+    re.IGNORECASE,
+)
+
+
+def _is_js_script(attrs: str) -> bool:
+    """Whether a <script ...> tag's body should be parsed as JavaScript.
+
+    Per HTML spec, a script is a classic JS script if `type` is missing,
+    empty, or a JS MIME type; `type="module"` is ESM (also JS). Any
+    other type (`application/json`, `application/ld+json`,
+    `application/vnd.recordare.musicxml+xml`, `text/x-handlebars`, …)
+    makes the tag a *data block*: the browser hands the body to whoever
+    asks for it via DOM, never executes it. The validator must do the
+    same and not run `node --check` on opaque data."""
+    m = _TYPE_ATTR_RE.search(attrs)
+    if not m:
+        return True
+    raw = (m.group(1) or m.group(2) or m.group(3) or "").strip().lower()
+    if not raw or raw == "module":
+        return True
+    essence = raw.split(";", 1)[0].strip()
+    return essence in _JS_MIME_TYPES
 
 
 _NODE_STDIN_LINE_RE = re.compile(r"^\[stdin\]:(\d+)$", re.MULTILINE)
@@ -228,6 +276,8 @@ def validate_doc(text: str) -> list[ValidationError]:
     rather than a hard failure."""
     errors: list[ValidationError] = []
     for s in _extract_blocks(text, "script"):
+        if not _is_js_script(s["attrs"]):
+            continue  # data block — body is opaque, not JS
         e = _check_js(s["body"], s["line"])
         if e:
             errors.append(e)

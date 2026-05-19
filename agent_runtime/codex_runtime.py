@@ -69,7 +69,11 @@ class CodexRuntime:
         pre_edit_hook=None,
         post_edit_hook=None,
         finalize_md_edit_fn=None,
+        pre_bash_hook=None,
     ) -> None:
+        # Codex doesn't (yet) expose Bash to the agent through this adapter,
+        # so the pre_bash_hook is accepted for signature parity and ignored.
+        _ = pre_bash_hook
         self.root = root
         self.pre_edit_hook = pre_edit_hook
         self.post_edit_hook = post_edit_hook

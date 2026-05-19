@@ -150,6 +150,18 @@ def main() -> None:
         "--port", type=int, default=None,
         help="override backend port (default: PORT env or 8090)",
     )
+    parser.add_argument(
+        "--unsafe-bash", action="store_true",
+        help=(
+            "[WINDOWS ONLY] disable the subprocess sandbox around the "
+            "agent's Bash tool. The agent's Bash will run with your full "
+            "env (incl. API keys), unrestricted filesystem access, and "
+            "the open internet. Use only when you trust every doc in the "
+            "workspace — a prompt-injected doc can exfiltrate or wreck "
+            "things in this mode. No effect on macOS/Linux/WSL2, where "
+            "the CLI's built-in sandbox is always on."
+        ),
+    )
     args = parser.parse_args()
 
     if args.provider:
@@ -169,6 +181,9 @@ def main() -> None:
     if args.port is not None:
         os.environ["PORT"] = str(args.port)
 
+    if args.unsafe_bash:
+        os.environ["AM_UNSAFE_BASH"] = "1"
+
     _install_sigint_watchdog(3.0)
 
     # Import backend AFTER setting env vars — DEFAULT_PROVIDER is captured at
@@ -180,6 +195,28 @@ def main() -> None:
     port = int(os.environ.get("PORT", "8090"))
     print(f"[start] provider={chosen} ({source})", flush=True)
     print(f"Adaptive Markdown listening on http://127.0.0.1:{port}", flush=True)
+    if args.unsafe_bash and sys.platform.startswith("win"):
+        # Out-of-band warning so it's impossible to miss in the launch
+        # output. Agent Bash will run with full env / network / FS.
+        print(
+            "\n"
+            "  +----------------------------------------------------------+\n"
+            "  |  UNSAFE-BASH MODE ENABLED                                |\n"
+            "  |                                                          |\n"
+            "  |  Agent Bash runs WITHOUT sandbox. A prompt-injected doc  |\n"
+            "  |  can exfiltrate files, env vars (incl. API keys), and    |\n"
+            "  |  reach the open internet from your machine.              |\n"
+            "  |                                                          |\n"
+            "  |  Disable: restart without --unsafe-bash                  |\n"
+            "  +----------------------------------------------------------+\n",
+            flush=True,
+        )
+    elif args.unsafe_bash:
+        print(
+            "[start] --unsafe-bash is a no-op on this platform (the CLI "
+            "sandbox is already in effect).",
+            flush=True,
+        )
     try:
         web.run_app(backend.make_app(), host="127.0.0.1", port=port, print=None)
     except KeyboardInterrupt:

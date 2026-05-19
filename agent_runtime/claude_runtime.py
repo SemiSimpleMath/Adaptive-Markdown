@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
@@ -11,6 +12,8 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     HookMatcher,
     ResultMessage,
+    SandboxNetworkConfig,
+    SandboxSettings,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -39,6 +42,7 @@ class ClaudeRuntime:
         pre_edit_hook: Callable[..., Any],
         post_edit_hook: Callable[..., Any],
         finalize_md_edit_fn: Callable[..., Any] | None = None,
+        pre_bash_hook: Callable[..., Any] | None = None,
     ) -> None:
         self.root = root
         self.pre_edit_hook = pre_edit_hook
@@ -46,6 +50,11 @@ class ClaudeRuntime:
         # Unused — the SDK's hook system handles the substrate per Edit/Write.
         # Accepted for signature parity with CodexRuntime.
         self.finalize_md_edit_fn = finalize_md_edit_fn
+        # Hooked on `Bash`. Used on Windows where the CLI sandbox no-ops; the
+        # hook rewrites the command through `python -m sandbox` so the agent
+        # runs in a subprocess with a curated env, scoped cwd, and timeout.
+        # No-op on macOS/Linux/WSL2 (CLI sandbox handles it).
+        self.pre_bash_hook = pre_bash_hook
         self.client: ClaudeSDKClient | None = None
         self._current_model = DEFAULT_MODEL
 
@@ -65,22 +74,65 @@ class ClaudeRuntime:
 
     async def start(self, model: str | None = None) -> None:
         chosen = self.resolve_model(model)
+
+        # The agent gets Read/Write/Edit/Glob/Grep + Bash. Bash unlocks
+        # structured-data transforms (MusicXML transpose, CSV pivot,
+        # image resize, etc.) that pure text editing can't do
+        # ergonomically.
+        #
+        # Platform split on enforcement:
+        #
+        #   macOS / Linux / WSL2 — the CLI binary's built-in sandbox
+        #     (Apple Seatbelt / bubblewrap) is real. Pass `sandbox=` and
+        #     trust it.
+        #
+        #   Windows — the CLI prints `Sandbox disabled: windows is not
+        #     supported` and runs commands unsandboxed. We instead wire a
+        #     PreToolUse hook on `Bash` that rewrites the command through
+        #     `python -m sandbox`, which runs it in a subprocess with
+        #     curated env, scoped cwd, and timeout (best-effort; not
+        #     airtight, see `sandbox.py`).
+        is_windows = sys.platform.startswith("win")
+
+        sandbox_cfg: SandboxSettings | None = None
+        if not is_windows:
+            sandbox_cfg = SandboxSettings(
+                enabled=True,
+                autoAllowBashIfSandboxed=True,
+                allowUnsandboxedCommands=False,
+                excludedCommands=[],
+                network=SandboxNetworkConfig(
+                    allowedDomains=[],
+                    deniedDomains=[],
+                    allowManagedDomainsOnly=False,
+                    allowLocalBinding=True,
+                    allowUnixSockets=[],
+                    allowAllUnixSockets=False,
+                    allowMachLookup=[],
+                    httpProxyPort=0,
+                    socksProxyPort=0,
+                ),
+            )
+
+        pre_tool_use_hooks = [
+            HookMatcher(matcher="Edit|Write", hooks=[self.pre_edit_hook])
+        ]
+        if is_windows and self.pre_bash_hook is not None:
+            pre_tool_use_hooks.append(
+                HookMatcher(matcher="Bash", hooks=[self.pre_bash_hook])
+            )
+
         options = ClaudeAgentOptions(
             cwd=str(self.root),
             setting_sources=["project"],
             skills="all",
-            # Intentionally no Bash / WebFetch: adaptive-markdown's workflow is
-            # doc-edit-only (Read/Edit/Write on .md files). Shell exec is the
-            # main blast-radius escalation path on a successful prompt injection
-            # from a hostile document — keep it off the tool surface entirely.
-            allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
+            allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+            sandbox=sandbox_cfg,
             permission_mode="acceptEdits",
             model=chosen,
             max_budget_usd=MAX_BUDGET_USD,
             hooks={
-                "PreToolUse": [
-                    HookMatcher(matcher="Edit|Write", hooks=[self.pre_edit_hook])
-                ],
+                "PreToolUse": pre_tool_use_hooks,
                 "PostToolUse": [
                     HookMatcher(matcher="Edit|Write", hooks=[self.post_edit_hook])
                 ],

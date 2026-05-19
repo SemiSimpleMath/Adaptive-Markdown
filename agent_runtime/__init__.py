@@ -23,6 +23,7 @@ def create_runtime(
     pre_edit_hook: Callable[..., Any],
     post_edit_hook: Callable[..., Any],
     finalize_md_edit_fn: Callable[..., Any] | None = None,
+    pre_bash_hook: Callable[..., Any] | None = None,
 ) -> AgentRuntime:
     """Create a provider-specific runtime at the single provider boundary.
 
@@ -30,6 +31,10 @@ def create_runtime(
     shared substrate hook used by providers that don't have per-edit hooks
     (e.g. Codex CLI). Claude's runtime ignores it — its hook system handles
     the substrate per Edit/Write tool call.
+
+    `pre_bash_hook` is the PreToolUse hook on `Bash`. Used by ClaudeRuntime
+    on Windows to wrap commands through the subprocess sandbox (since the
+    CLI's built-in sandbox is macOS/Linux/WSL2-only). Codex ignores it.
     """
     selected = (provider or DEFAULT_PROVIDER).lower()
     try:
@@ -41,4 +46,7 @@ def create_runtime(
         ) from exc
     module = import_module(module_name)
     runtime_cls = getattr(module, class_name)
-    return runtime_cls(root, pre_edit_hook, post_edit_hook, finalize_md_edit_fn)
+    return runtime_cls(
+        root, pre_edit_hook, post_edit_hook, finalize_md_edit_fn,
+        pre_bash_hook=pre_bash_hook,
+    )

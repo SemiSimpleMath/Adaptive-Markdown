@@ -779,6 +779,10 @@ class State:
         # Reference to the in-flight `run_turn` task so /cancel can
         # interrupt it. Cleared when the turn finishes (either way).
         self.current_turn_task: asyncio.Task | None = None
+        # Slug of the doc this turn is acting on, stashed before run_turn
+        # so the PreToolUse Bash hook can pin the sandbox cwd to the
+        # right doc folder. Cleared when the turn ends.
+        self.current_doc_slug: str | None = None
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg)
@@ -879,10 +883,9 @@ async def pre_tool_use_hook(input_data, tool_use_id, context):
     """Validate the target path, then capture pre-edit state for the .md
     snapshot/patch substrate.
 
-    Path validation is the security gate: even though `allowed_tools` excludes
-    Bash and the agent is told via SKILL.md to stay in the doc tree, a
-    successful prompt injection could still try to Edit/Write a sensitive
-    file. The hook is the last line of defense before bytes hit disk."""
+    Path validation is the security gate against a successful prompt
+    injection convincing the agent to clobber a file outside its lane —
+    the hook is the last line of defense before bytes hit disk."""
     tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
 
@@ -903,6 +906,55 @@ async def pre_tool_use_hook(input_data, tool_use_id, context):
     except Exception as e:
         print(f"[pre-edit] snapshot failed: {e}", flush=True)
     return {}
+
+
+UNSAFE_BASH = os.environ.get("AM_UNSAFE_BASH") == "1"
+
+
+async def pre_bash_hook(input_data, tool_use_id, context):
+    """Windows fallback: rewrite the agent's Bash command to run through
+    `python -m sandbox`, which pins cwd to the active doc folder, curates
+    env, and enforces a timeout. No-op on macOS/Linux/WSL2 where the CLI
+    binary's real sandbox is in play.
+
+    When the launcher passes `--unsafe-bash` (sets AM_UNSAFE_BASH=1),
+    the wrap is also skipped — the agent's command runs with the
+    backend's full env, network, and filesystem. Out-of-band activation
+    only: nothing the agent can do in chat enables this.
+
+    The hook rejects the call outright if no doc is active (defensive —
+    every chat turn pins `state.current_doc_slug` before scheduling, so
+    this should not normally happen)."""
+    if os.name != "nt":
+        return {}  # SDK sandbox handles enforcement on Unix-y systems
+
+    if UNSAFE_BASH:
+        return {}  # operator opted in at launch; let the command through
+
+    tool_input = input_data.get("tool_input", {}) or {}
+    cmd = tool_input.get("command", "")
+    if not cmd:
+        return {}
+
+    slug = state.current_doc_slug
+    if not slug:
+        return _deny_pre_tool_use(
+            "Bash refused: no active doc folder to scope the sandbox to. "
+            "Open a doc first."
+        )
+
+    wrapped = (
+        f'"{sys.executable}" -m sandbox '
+        f'--slug "{slug}" --timeout 30 --cmd {json.dumps(cmd)}'
+    )
+    print(f"[pre-bash] wrapping cmd in sandbox (slug={slug!r})", flush=True)
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {**tool_input, "command": wrapped},
+        }
+    }
 
 
 async def finalize_md_edit(
@@ -1116,6 +1168,7 @@ async def init_runtime(model: str | None = None):
         pre_tool_use_hook,
         post_tool_use_hook,
         finalize_md_edit,
+        pre_bash_hook=pre_bash_hook,
     )
     await state.runtime.start(model)
     state.current_model = state.runtime.current_model
@@ -1515,12 +1568,19 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 print(f"[ws] chat doc={doc!r} selections={len(selections)}"
                       f"{' insertion' if insertion else ''}",
                       flush=True)
+                # Pin the sandbox cwd to this turn's doc folder. The
+                # PreToolUse Bash hook reads this when wrapping the
+                # agent's command through `python -m sandbox`. Set BEFORE
+                # the task is scheduled so the hook never sees a stale
+                # (or None) slug from a previous turn.
+                state.current_doc_slug = doc if isinstance(doc, str) else None
                 turn_task = asyncio.create_task(run_turn(prompt))
                 state.current_turn_task = turn_task
 
                 def _clear_turn_task(t, _tt=turn_task):
                     if state.current_turn_task is _tt:
                         state.current_turn_task = None
+                    state.current_doc_slug = None
                 turn_task.add_done_callback(_clear_turn_task)
 
             elif data.get("type") == "cancel":
