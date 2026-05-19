@@ -51,7 +51,7 @@ _BINARY_CONVERT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB cap for PDF/DOCX/... impor
 # and the converter writes the resulting markdown to `current.md` +
 # `baseline.md`. Reader gets a fully-converted doc back — the agent is not
 # in the loop for the conversion itself.
-_BINARY_CONVERT_EXTS = {".pdf", ".docx", ".pptx", ".xlsx"}
+_BINARY_CONVERT_EXTS = {".pdf", ".docx", ".pptx"}  # .xlsx → data-figure path
 
 # Music file imports: .abc / .musicxml are text source we just wrap in a
 # <figure class="music"> block; .mid / .midi are binary, saved as an
@@ -61,6 +61,17 @@ _MUSIC_TEXT_EXTS = {".abc", ".musicxml", ".mxl", ".xml"}
 _MUSIC_BINARY_EXTS = {".mid", ".midi"}
 _MUSIC_TEXT_MAX_BYTES = 2 * 1024 * 1024   # 2MB cap on music source text
 _MUSIC_BINARY_MAX_BYTES = 5 * 1024 * 1024  # 5MB cap on MIDI binaries
+
+# Data-table imports: .csv is text source we wrap in <figure class="data">
+# with a <script type="text/csv"> inner element (script-with-non-JS-type
+# trick so the browser doesn't try to HTML-parse the CSV). .xlsx is binary;
+# the active sheet is extracted to CSV server-side via openpyxl and then
+# follows the same path. Live grid (Tabulator) loads lazily in the iframe
+# only when a doc contains data — zero cost when not used.
+_DATA_TEXT_EXTS = {".csv"}
+_DATA_BINARY_EXTS = {".xlsx"}
+_DATA_TEXT_MAX_BYTES = 5 * 1024 * 1024   # 5MB cap on CSV source
+_DATA_BINARY_MAX_BYTES = 25 * 1024 * 1024  # 25MB cap on XLSX binaries
 
 # Extensions that the doc-area drop UX treats as "asset" (lands under
 # docs/<slug>/assets/) rather than as a new-doc candidate. Anything not in
@@ -312,6 +323,203 @@ async def _upload_music_doc(
     })
 
 
+# Per-doc agent-skill for data-table docs. Same mechanism as
+# _MUSIC_AGENT_SKILL — baked in at upload so the agent reads the
+# substrate rules in the chat preamble and doesn't re-derive them.
+_DATA_AGENT_SKILL = """<section class="agent-skill">
+
+**Data-table doc — substrate rules**
+
+This doc renders a data table through the iframe runtime. The source
+lives inside `<figure class="data">` as
+`<script type="text/csv">…CSV…</script>` (script-with-non-JS-type so
+the browser doesn't HTML-parse the CSV content). The visible table is
+a runtime-generated sibling `.data-grid` div rendered via Tabulator
+(lazy-loaded from CDN). The script element stays in the DOM as the
+source of truth.
+
+**To mutate the table from a widget, pick ONE pattern.** Don't mix
+them in the same widget unless you have a reason — they have
+different semantics about what the source CSV ends up containing.
+
+1. *In-place transformation* — when the visible table should change
+   without rewriting the source (filter by column, sort, hide rows,
+   highlight cells). Use the Tabulator instance:
+
+   ```js
+   const r = window.__doc.getRenderer(figure);
+   if (r && r.kind === 'csv') {
+     r.instance.setFilter('status', '=', 'active');
+     // or: r.instance.setSort('name', 'asc');
+     // or: r.instance.selectRow([2, 5, 7]);
+   }
+   ```
+
+   Source CSV stays as-is. Tabulator API docs:
+   https://tabulator.info/docs/5.5
+
+2. *Source mutation + full re-render* — when the source CSV itself
+   should change (add/remove rows, edit cell values). Edit the
+   script's `textContent` with **string-level operations on CSV
+   lines** (split on `\\n`, rejoin), not by parsing into objects and
+   re-serializing — round-tripping through a parser loses quoting,
+   whitespace, and trailing-comma conventions.
+
+   ```js
+   const script = figure.querySelector('script[type="text/csv"]');
+   const lines = script.textContent.split('\\n');
+   lines.push('99,New Row,active');
+   script.textContent = lines.join('\\n');
+   await window.__doc.rerender(figure);
+   ```
+
+`window.__doc.rerender(figureEl)` re-runs the data renderer; safe to
+call whenever the source changes.
+
+</section>
+"""
+
+
+def _xlsx_to_csv(raw: bytes) -> tuple[str | None, str]:
+    """Extract the active sheet of an XLSX to a CSV string. Returns
+    (csv_text, error_message). csv_text is None if extraction failed;
+    error_message names the failure (missing-dep, parse-error, empty-sheet).
+
+    openpyxl is an optional dep — the data-figure path advertises XLSX
+    support only when it's importable, otherwise this returns a clear
+    install-instruction error and the caller responds 501."""
+    try:
+        import openpyxl  # type: ignore
+    except ImportError:
+        return None, (
+            "XLSX support requires openpyxl. "
+            "Install with `pip install openpyxl` and restart the server."
+        )
+    import csv as _csv
+    import io
+    try:
+        wb = openpyxl.load_workbook(
+            io.BytesIO(raw), data_only=True, read_only=True,
+        )
+    except Exception as e:
+        return None, f"could not read XLSX: {type(e).__name__}: {e}"
+    try:
+        ws = wb.active
+        if ws is None:
+            return None, "XLSX has no active sheet"
+        buf = io.StringIO()
+        writer = _csv.writer(buf, lineterminator="\n")
+        rows_written = 0
+        for row in ws.iter_rows(values_only=True):
+            writer.writerow(["" if c is None else c for c in row])
+            rows_written += 1
+        if rows_written == 0:
+            return None, "XLSX active sheet is empty"
+        return buf.getvalue().rstrip("\n"), ""
+    finally:
+        wb.close()
+
+
+async def _upload_data_doc(
+    request: web.Request,
+    field: "web.BodyPartReader",
+    raw_name: str,
+    ext: str,
+) -> web.Response:
+    """Drop a .csv or .xlsx file onto +Doc and you get a new doc whose
+    body is a single `<figure class="data">` block containing the CSV
+    source. The iframe runtime renders it via Tabulator on first view.
+    XLSX is server-side-extracted to CSV (active sheet, first sheet if
+    no active marker) via openpyxl before wrapping."""
+    is_binary = ext in _DATA_BINARY_EXTS
+    cap = _DATA_BINARY_MAX_BYTES if is_binary else _DATA_TEXT_MAX_BYTES
+
+    total = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = await field.read_chunk(size=64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            return web.json_response(
+                {"error": f"file too large (max {cap // (1024 * 1024)}MB "
+                          f"for {ext} imports)"},
+                status=413,
+            )
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    if total == 0:
+        return web.json_response({"error": "empty file"}, status=400)
+
+    if is_binary:
+        csv_text, err = _xlsx_to_csv(raw)
+        if csv_text is None:
+            status = 501 if "openpyxl" in err else 422
+            return web.json_response({"error": err}, status=status)
+    else:
+        # CSV text path: strip BOM, normalize line endings, trim trailing
+        # whitespace. NUL guard skipped — CSV files sometimes contain
+        # nothing-special-but-binary-looking bytes in fields; we trust
+        # the .csv extension here.
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        elif raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+            raw = raw.decode("utf-16").encode("utf-8")
+        csv_text = (raw.decode("utf-8", errors="replace")
+                    .replace("\r\n", "\n").replace("\r", "\n")
+                    .rstrip("\n"))
+        if not csv_text:
+            return web.json_response(
+                {"error": "CSV is empty after decoding"}, status=400,
+            )
+
+    # Slug derivation matches the rest of the upload paths.
+    raw_stem = Path(raw_name).stem
+    slug_base = re.sub(r"[^a-z0-9-]+", "-", raw_stem.lower()).strip("-")
+    if not slug_base or not DOC_SLUG_RE.match(slug_base):
+        slug_base = "data"
+    slug = slug_base
+    counter = 1
+    while (DOCS_ROOT / slug).exists():
+        counter += 1
+        slug = f"{slug_base}-{counter}"
+    doc_dir = DOCS_ROOT / slug
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    title = raw_stem
+
+    body_md = (
+        f'---\ntitle: "{title}"\n---\n\n'
+        f"# {title}\n\n"
+        '<figure class="data">\n'
+        '<script type="text/csv" class="data-csv-source">\n'
+        + csv_text
+        + '\n</script>\n'
+        "</figure>\n\n"
+        + _DATA_AGENT_SKILL
+    )
+
+    (doc_dir / "current.md").write_text(body_md, encoding="utf-8", newline="")
+    (doc_dir / "baseline.md").write_text(body_md, encoding="utf-8", newline="")
+    ensure_doc_ids()
+    await state.broadcast({
+        "type": "docs", "list": list_all_docs(), "doc": slug,
+    })
+    print(
+        f"[upload:data] docs/{slug}/current.md "
+        f"({total}B {ext} → {len(csv_text)} chars CSV)",
+        flush=True,
+    )
+    return web.json_response({
+        "path": f"docs/{slug}/current.md",
+        "slug": slug,
+        "name": "current.md",
+        "kind": ext,
+        "converted": True,
+        "converter": "data",
+    })
+
+
 async def _upload_binary_doc(
     request: web.Request,
     field: "web.BodyPartReader",
@@ -466,9 +674,17 @@ async def upload_md(request: web.Request) -> web.Response:
     if ext in _MUSIC_TEXT_EXTS or ext in _MUSIC_BINARY_EXTS:
         return await _upload_music_doc(request, field, raw_name, ext)
 
-    # Binary-doc imports (PDF, DOCX, XLSX, PPTX) go through markitdown
-    # server-side. They're not text and would fail the NUL-byte guard below;
-    # branch out before any of the text-handling.
+    # Data-table imports: .csv (text) or .xlsx (binary, extracted to CSV
+    # via openpyxl) → `<figure class="data">` rendered live via Tabulator.
+    # Sits before the binary-doc branch so .xlsx is owned here; falls back
+    # nowhere else if openpyxl is absent — _upload_data_doc returns a 501
+    # with install instructions in that case.
+    if ext in _DATA_TEXT_EXTS or ext in _DATA_BINARY_EXTS:
+        return await _upload_data_doc(request, field, raw_name, ext)
+
+    # Binary-doc imports (PDF, DOCX, PPTX) go through markitdown server-side.
+    # They're not text and would fail the NUL-byte guard below; branch out
+    # before any of the text-handling.
     if ext in _BINARY_CONVERT_EXTS:
         return await _upload_binary_doc(request, field, raw_name, ext)
 

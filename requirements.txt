@@ -4,7 +4,12 @@
 aiohttp>=3.8,<4
 claude-agent-sdk>=0.1.81,<0.2
 
-# Optional: enables server-side conversion of PDF / DOCX / XLSX / PPTX drops
+# Optional: enables server-side conversion of PDF / DOCX / PPTX drops
 # into adaptive-markdown. If absent, those uploads return 501; .md / .tex /
 # .txt / .rst / .org imports still work.
 markitdown[pdf]>=0.1,<0.2
+# Optional: .xlsx drops become live data-grid figures (active sheet
+# extracted to CSV server-side, rendered by Tabulator in the iframe).
+# Without openpyxl, .xlsx returns 501 with this install command in the
+# error. CSV drops always work — they use stdlib only.
+openpyxl>=3.1,<4

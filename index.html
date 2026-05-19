@@ -1499,6 +1499,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // happening during conversion.
     const isServerConvert = SERVER_CONVERT_EXTS.has(ext);
     const isMusic = ['.abc', '.musicxml', '.mxl', '.mid', '.midi'].includes(ext);
+    const isData = ['.csv', '.xlsx'].includes(ext);
     if (isServerConvert) {
       const hint = ext === '.pdf'
         ? 'this can take a couple of minutes — Claude is reading the rendered pages'
@@ -1506,7 +1507,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           ? 'Claude is rewriting LaTeX into adaptive-markdown'
           : isMusic
             ? 'wrapping in a music figure (renderer loads on first view)'
-            : 'converting via markitdown';
+            : isData
+              ? 'wrapping in a data figure (Tabulator loads on first view)'
+              : 'converting via markitdown';
       appendMessage('user', 'Converting `' + file.name + '`… ' + hint + '.');
     } else if (!isMarkdown) {
       const ok = await showConvertPreview(file, ext, !isKnown);
@@ -3153,13 +3156,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // Drop a .md and it loads directly. Drop a .tex/.txt/.rst/.org and the agent
   // is auto-prompted to convert it to adaptive markdown; the viewer switches
   // when the new file lands.
-  const SUPPORTED_DROP_EXTS = ['.md', '.tex', '.txt', '.rst', '.org', '.pdf', '.docx', '.xlsx', '.pptx', '.abc', '.musicxml', '.mxl', '.mid', '.midi'];
+  const SUPPORTED_DROP_EXTS = ['.md', '.tex', '.txt', '.rst', '.org', '.pdf', '.docx', '.xlsx', '.pptx', '.abc', '.musicxml', '.mxl', '.mid', '.midi', '.csv'];
   // Formats converted server-side (Claude vision for PDF, Claude text for
   // LaTeX, markitdown fallback for the Office binaries, music wrappers
-  // for ABC / MusicXML / MIDI). No preview dialog — for binaries the
-  // preview is gibberish; for music the source is meaningful but we
-  // don't need a gate. No agent involvement at import.
-  const SERVER_CONVERT_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.tex', '.abc', '.musicxml', '.mxl', '.mid', '.midi']);
+  // for ABC / MusicXML / MIDI, data-figure wrappers for CSV / XLSX). No
+  // preview dialog — for binaries the preview is gibberish; for the
+  // source-meaningful formats (music, CSV) we still skip the gate
+  // because the agent isn't involved at import time. No agent
+  // involvement at import.
+  const SERVER_CONVERT_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.tex', '.abc', '.musicxml', '.mxl', '.mid', '.midi', '.csv']);
   // Asset drop: when one of these lands on the doc area (NOT the + Doc
   // overlay), it goes to docs/<currentDoc>/assets/ rather than creating
   // a new doc. Mirror of _ASSET_EXTS in backend.py.

@@ -92,6 +92,12 @@ figure.music { text-align: left; border: 0; padding: 0.4em 0; }
 figure.music .abc-notation, figure.music .musicxml-render { background: white; padding: 0.5em; border-radius: 4px; overflow-x: auto; }
 figure.music .abc-audio { margin-top: 0.6em; }
 figure.music midi-player { display: block; margin: 0.4em 0; }
+/* Data figures: same logic as music — hide the dashed placeholder
+   since the renderer fills the figure, and give the live grid a
+   reasonable size. Tabulator brings its own CSS but we cap height. */
+figure.data { text-align: left; border: 0; padding: 0.4em 0; }
+figure.data .data-grid { background: white; border-radius: 4px; overflow: hidden; max-height: 60vh; }
+figure.data script[type="text/csv"] { display: none; }
 </style>
 </head>
 <body>
@@ -165,8 +171,15 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
         delete n.dataset.amMusicSource;
         delete n.dataset.amMusicLoaded;
       });
+      el.querySelectorAll(
+        'figure.data script[type="text/csv"]'
+      ).forEach(n => {
+        delete n.dataset.amDataSource;
+      });
       try { await renderMusicBlocks(el); }
       catch (e) { console.warn('__doc.rerender music:', e); }
+      try { await renderDataBlocks(el); }
+      catch (e) { console.warn('__doc.rerender data:', e); }
       try { renderMath(el); }
       catch (e) { console.warn('__doc.rerender math:', e); }
     },
@@ -461,6 +474,134 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
         midiTags.forEach(el => { el.dataset.amMusicLoaded = '1'; });
       } catch (e) {
         console.warn('html-midi-player failed to load:', e);
+      }
+    }
+  }
+
+  // RFC-4180-ish CSV parser. Handles quoted fields, escaped quotes
+  // ("""" → `"`), embedded commas, embedded newlines inside quoted
+  // fields, CRLF or LF line endings. Returns an array of arrays. Not
+  // a complete RFC implementation (no encoding sniffing, no UTF-16
+  // BOM detection — backend strips those before we ever see the text)
+  // but covers the 99% case for spreadsheet-exported CSVs.
+  function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let field = '';
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else { inQuotes = false; }
+        } else {
+          field += c;
+        }
+      } else {
+        if (c === '"' && field === '') { inQuotes = true; }
+        else if (c === ',') { row.push(field); field = ''; }
+        else if (c === '\n' || c === '\r') {
+          row.push(field);
+          rows.push(row);
+          row = [];
+          field = '';
+          if (c === '\r' && text[i + 1] === '\n') i++;
+        } else {
+          field += c;
+        }
+      }
+    }
+    if (field !== '' || row.length) {
+      row.push(field);
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  async function renderDataBlocks(root) {
+    // Source lives in <figure class="data"><script type="text/csv">…
+    // </script>. The script-with-non-JS-type trick (same as MusicXML)
+    // makes the browser treat the body as opaque data — textContent
+    // returns the CSV verbatim. We render to a sibling .data-grid div
+    // so the agent can mutate the script's body without touching what
+    // the user sees until __doc.rerender lands.
+    const csvScripts = Array.from(root.querySelectorAll(
+      'figure.data script[type="text/csv"]'
+    ));
+    const todo = csvScripts.filter(s =>
+      s.dataset.amDataSource !== (s.textContent || '').trim()
+    );
+    if (!todo.length) return;
+
+    try {
+      await Promise.all([
+        loadStylesheetOnce(
+          'https://cdn.jsdelivr.net/npm/tabulator-tables@5.5.4/dist/css/tabulator.min.css',
+        ),
+        loadScriptOnce(
+          'https://cdn.jsdelivr.net/npm/tabulator-tables@5.5.4/dist/js/tabulator.min.js',
+        ),
+      ]);
+    } catch (e) {
+      console.warn('tabulator failed to load:', e);
+      return;
+    }
+
+    for (const script of todo) {
+      const source = (script.textContent || '').trim();
+      script.dataset.amDataSource = source;
+      // Reuse a sibling render target if morphdom left one (preserved
+      // via onBeforeNodeDiscarded); otherwise create one.
+      let target = script.nextElementSibling;
+      if (!target || !target.classList.contains('data-grid')) {
+        target = document.createElement('div');
+        target.className = 'data-grid';
+        script.parentNode.insertBefore(target, script.nextSibling);
+      } else {
+        target.innerHTML = '';
+      }
+      try {
+        const rows = parseCSV(source);
+        if (rows.length < 1) {
+          target.innerHTML =
+            '<div class="error-banner">CSV is empty.</div>';
+          continue;
+        }
+        // First row = headers. Subsequent rows = data rows mapped to
+        // header keys. Tabulator wants `[{col1: v1, col2: v2}, ...]`
+        // with a parallel `columns` config naming each field.
+        const headers = rows[0].map((h, i) => h || `col${i + 1}`);
+        const data = rows.slice(1).map(r => {
+          const obj = {};
+          for (let i = 0; i < headers.length; i++) {
+            obj[headers[i]] = r[i] !== undefined ? r[i] : '';
+          }
+          return obj;
+        });
+        const columns = headers.map(h => ({
+          title: h, field: h,
+          // Headers get sort + a width hint so very-long fields don't
+          // explode the grid. Tabulator's `headerSort` defaults true.
+          headerFilter: 'input',
+        }));
+        const table = new window.Tabulator(target, {
+          data, columns,
+          layout: 'fitDataStretch',
+          // Reasonable defaults; the agent can mutate via
+          // __doc.getRenderer(fig).instance.setColumns(...) etc.
+          pagination: data.length > 100 ? 'local' : false,
+          paginationSize: 50,
+          height: data.length > 50 ? '60vh' : undefined,
+        });
+        const fig = script.closest('figure');
+        if (fig) FIGURE_RENDERERS.set(fig, {
+          kind: 'csv', instance: table, source,
+        });
+      } catch (e) {
+        target.innerHTML =
+          '<div class="error-banner">data-table render failed: '
+          + (e.message || e) + '</div>';
       }
     }
   }
@@ -801,6 +942,7 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
             if (node.classList.contains('musicxml-render')) return false;
             if (node.classList.contains('abc-notation'))   return false;
             if (node.classList.contains('abc-audio'))      return false;
+            if (node.classList.contains('data-grid'))      return false;
           }
           return true;
         },
@@ -819,6 +961,7 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
     applyEditableMode();
     renderMath();
     renderMusicBlocks(body).catch(e => console.warn('music render:', e));
+    renderDataBlocks(body).catch(e => console.warn('data render:', e));
     se.scrollTop = sy;
   }
 
