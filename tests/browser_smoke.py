@@ -716,13 +716,11 @@ def scenario_diagram_renders(page, base: str, r: Results) -> None:
 
 
 def scenario_structural_block_robustness(page, base: str, r: Results) -> None:
-    """Test the structural-block fix (window.__amStructuralBlocks=true):
+    """Test the structural-block path (now the default):
     blank lines inside <figure> / <section> / etc. don't terminate the
     block, AND inner markdown renders.
 
-    Runs the doc render via the exposed __amRenderDoc helper with the
-    flag toggled on. Doesn't need a real doc — we drive the renderer
-    directly with synthetic input."""
+    Drives the renderer directly with synthetic input via __amRenderDoc."""
     print("\n[scenario] structural-block robustness (blank lines + inner markdown)")
 
     page.goto(base + "/")
@@ -730,13 +728,8 @@ def scenario_structural_block_robustness(page, base: str, r: Results) -> None:
                             timeout=8000)
 
     def render_with_flag(text: str) -> str:
-        """Render via __amRenderDoc with the structural-block flag ON."""
-        return page.evaluate(
-            "(t) => { window.__amStructuralBlocks = true; "
-            "try { return window.__amRenderDoc(t); } "
-            "finally { window.__amStructuralBlocks = false; } }",
-            text,
-        )
+        """Render via __amRenderDoc on the default (structural-blocks-on) path."""
+        return page.evaluate("(t) => window.__amRenderDoc(t)", text)
 
     # ---- Test 1: blank lines inside <figure> ---------------------
     src1 = (

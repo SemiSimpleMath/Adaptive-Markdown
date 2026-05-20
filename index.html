@@ -1053,7 +1053,18 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }).use(window.markdownItAttrs);
     return md;
   }
+  function buildMdInner() {
+    // Used for recursive renders of structural-block bodies. Same as
+    // buildMd, but the indented-code-block rule is disabled — inner
+    // HTML inside <figure>/<div>/<section> is commonly pretty-printed
+    // with 2-4 space indents, and we don't want markdown-it turning
+    // that into <pre><code>. Fenced ``` blocks still work for code.
+    const m = buildMd();
+    m.disable('code');
+    return m;
+  }
   const md = buildMd();
+  const mdInner = buildMdInner();
   // Expose the markdown-it instance for the browser-smoke harness to
   // exercise directive parsing directly. Harmless namespace use; the
   // alternative (loading test fixtures through the upload endpoint) is
@@ -1268,10 +1279,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // sees), and inner markdown renders normally (we run markdown-it on
   // the body).
   //
-  // Disabled by default in this commit so behavior is unchanged until
-  // we've verified through smoke. Flip with `window.__amStructuralBlocks
-  // = true` to enable. Once smoke is clean, the flag default flips and
-  // the conditional gets removed.
+  // Enabled by default. The flag still exists as an escape hatch —
+  // set `window.__amStructuralBlocks = false` BEFORE the first render
+  // to fall back to the legacy type-6-only behavior (no recursive
+  // re-render, blank lines terminate structural blocks). Once we have
+  // confidence at scale, the flag and the legacy branch can be removed.
   const STRUCTURAL_TAGS = ['figure', 'section', 'aside', 'div', 'details', 'article'];
 
   // Sentinel format chosen to survive markdown-it 13 + markdown-it-attrs
@@ -1355,17 +1367,21 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
     const { text: pt, ph } = protectMath(text);
     const preserved = preserveStructuralBlocks(pt);
-    if (!window.__amStructuralBlocks) {
-      // Existing behavior — type-6 blocks terminate at blank lines,
-      // inner markdown doesn't render. Default until the flag flips.
+    if (window.__amStructuralBlocks === false) {
+      // Escape-hatch path — type-6 blocks terminate at blank lines,
+      // inner markdown doesn't render. Only triggers when the flag is
+      // explicitly set to false (opt-out).
       let html = md.render(preserved);
       return restoreMath(html, ph);
     }
-    // New path: extract structural blocks, render the rest with
+    // Default path: extract structural blocks, render the rest with
     // markdown-it (sentinels become standalone paragraphs), then
-    // reinsert each block by recursively rendering its body.
+    // reinsert each block by recursively rendering its body. Recursive
+    // renders use mdInner (indented-code-block rule disabled) so a
+    // pretty-printed `<div>` body doesn't get wrapped in <pre><code>.
+    const renderer = depth === 0 ? md : mdInner;
     const { source, placeholders } = extractStructuralBlocks(preserved);
-    let html = md.render(source);
+    let html = renderer.render(source);
     html = restoreMath(html, ph);
     html = reinsertStructuralBlocks(html, placeholders, depth);
     return html;
