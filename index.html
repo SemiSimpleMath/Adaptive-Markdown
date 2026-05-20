@@ -787,6 +787,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           <button id="history-btn" class="overflow-item" role="menuitem" title="Browse pre-edit snapshots and restore an earlier version">History…</button>
           <button id="add-skill-btn" class="overflow-item" role="menuitem" title="View, edit, add doc skills — agent-skill sections that act as this doc's working contract (hidden from readers)">Skills…</button>
           <button id="reset-doc-btn" class="overflow-item" role="menuitem" title="Restore this document to its ship-with original">↺ Reset</button>
+          <button id="save-baseline-btn" class="overflow-item" role="menuitem" title="Pin the current state as the new baseline — future Reset goes here">⤓ Save as baseline</button>
         </div>
         <div id="history-panel" class="history-panel" hidden></div>
       </div>
@@ -825,6 +826,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="reset-actions">
         <button type="button" class="btn-secondary" id="reset-cancel">Cancel</button>
         <button type="button" class="btn-primary" id="reset-confirm">Reset to baseline</button>
+      </div>
+    </dialog>
+    <dialog id="save-baseline-dlg" class="reset-confirm-dlg">
+      <h3>Save current state as baseline?</h3>
+      <div class="reset-doc-line" id="save-baseline-line"></div>
+      <p>The current working copy becomes the new immutable starting point. Future <strong>Reset</strong> returns here.</p>
+      <p class="reset-safety">The previous baseline is captured as a snapshot first — recoverable via the <strong>History</strong> dropdown.</p>
+      <div class="reset-actions">
+        <button type="button" class="btn-secondary" id="save-baseline-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="save-baseline-confirm">Save as baseline</button>
       </div>
     </dialog>
     <dialog id="skills-list-dlg" class="reset-confirm-dlg skills-list-dlg">
@@ -911,6 +922,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const modelSelect = document.getElementById('model-select');
   const newChatBtn = document.getElementById('new-chat-btn');
   const resetDocBtn = document.getElementById('reset-doc-btn');
+  const saveBaselineBtn = document.getElementById('save-baseline-btn');
   const historyBtn = document.getElementById('history-btn');
   const historyPanel = document.getElementById('history-panel');
   const undoBtn = document.getElementById('undo-btn');
@@ -2982,6 +2994,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     "- `/cancel` — interrupt the agent's current turn\n" +
     "- `/help` — show this list\n" +
     "- `/reset` — restore the doc to its baseline (opens a confirmation)\n" +
+    "- `/save-baseline` — pin the current state as the new baseline (opens a confirmation)\n" +
     "- `/undo` — revert the doc to its previous snapshot\n" +
     "- `/model <name>` — switch model (e.g. `/model sonnet`); starts a fresh chat\n" +
     "- `/new` (or `/clear`) — start a fresh conversation"
@@ -3008,6 +3021,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // hotkey, not a bypass.
       if (resetDocBtn && !resetDocBtn.disabled) resetDocBtn.click();
       else appendMessage('error', '/reset: no doc loaded');
+      return true;
+    }
+    if (cmd === '/save-baseline') {
+      if (saveBaselineBtn && !saveBaselineBtn.disabled) saveBaselineBtn.click();
+      else appendMessage('error', '/save-baseline: no doc loaded');
       return true;
     }
     if (cmd === '/undo') {
@@ -3499,6 +3517,51 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // Backdrop click closes the dialog (matches the rest of the viewer UX).
   resetConfirmDlg.addEventListener('click', (e) => {
     if (e.target === resetConfirmDlg) resetConfirmDlg.close('backdrop');
+  });
+
+  // ---- Save as baseline (inverse of Reset) ---------------------------------
+  const saveBaselineDlg = document.getElementById('save-baseline-dlg');
+  const saveBaselineLine = document.getElementById('save-baseline-line');
+  const saveBaselineCancelBtn = document.getElementById('save-baseline-cancel');
+  const saveBaselineConfirmBtn = document.getElementById('save-baseline-confirm');
+
+  async function performSaveBaseline() {
+    if (!currentDoc) return;
+    try {
+      const resp = await fetch('/save-baseline?doc=' + encodeURIComponent(currentDoc),
+                               { method: 'POST' });
+      if (!resp.ok) {
+        let msg = `save-baseline failed: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (e) {}
+        appendMessage('error', msg);
+        return;
+      }
+      appendMessage('system', `Saved current state as baseline for "${currentDoc}".`);
+    } catch (err) {
+      appendMessage('error', 'save-baseline error: ' + (err.message || err));
+    }
+  }
+
+  saveBaselineBtn.addEventListener('click', () => {
+    if (!currentDoc) return;
+    saveBaselineLine.textContent = `docs/${currentDoc}/baseline.md  ←  current.md`;
+    closeOverflowMenu();
+    if (typeof saveBaselineDlg.showModal === 'function') {
+      saveBaselineDlg.showModal();
+      setTimeout(() => saveBaselineCancelBtn.focus(), 0);
+    } else {
+      if (confirm(`Save docs/${currentDoc}/current.md as the new baseline?`)) {
+        performSaveBaseline();
+      }
+    }
+  });
+  saveBaselineCancelBtn.addEventListener('click', () => saveBaselineDlg.close('cancel'));
+  saveBaselineConfirmBtn.addEventListener('click', async () => {
+    saveBaselineDlg.close('confirm');
+    await performSaveBaseline();
+  });
+  saveBaselineDlg.addEventListener('click', (e) => {
+    if (e.target === saveBaselineDlg) saveBaselineDlg.close('backdrop');
   });
 
   // ---- Drop-to-upload ------------------------------------------------------

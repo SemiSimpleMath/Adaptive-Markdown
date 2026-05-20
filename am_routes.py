@@ -588,6 +588,43 @@ async def add_doc_skill(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "name": name})
 
 
+async def save_baseline(request: web.Request) -> web.Response:
+    """POST /save-baseline?doc=<slug> — copy current.md over baseline.md.
+
+    Defensive: snapshot the EXISTING baseline first (if any) so the
+    reader can recover via History if they pin the wrong state. The
+    snap lives in the per-doc snaps/ dir like any other safety snap;
+    its source path being baseline.md instead of current.md is invisible
+    to the History panel — it just shows up as another restorable point.
+    """
+    _require_localhost_origin(request)
+    doc_param = request.query.get("doc", "").strip()
+    doc_path = _doc_path_for(doc_param)
+    if doc_path is None:
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    if not doc_path.exists():
+        return web.json_response(
+            {"error": f"no current.md for {doc_param!r}"}, status=404,
+        )
+    baseline = doc_path.parent / "baseline.md"
+    # Safety: capture the previous baseline (if it existed) as a snap
+    # so it's recoverable from the History panel.
+    if baseline.exists():
+        try:
+            save_snapshot(baseline, baseline.read_bytes())
+        except OSError as e:
+            return web.json_response(
+                {"error": f"could not snapshot old baseline: {e}"}, status=500,
+            )
+    baseline.write_bytes(doc_path.read_bytes())
+    slug = _doc_slug_from_path(doc_path) or doc_param
+    print(
+        f"[save-baseline] docs/{slug}/baseline.md <- current.md",
+        flush=True,
+    )
+    return web.json_response({"doc": slug, "ok": True})
+
+
 async def reset_doc(request: web.Request) -> web.Response:
     """POST /reset?doc=<slug> — restore current.md from baseline.md (history-0)."""
     _require_localhost_origin(request)

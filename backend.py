@@ -77,7 +77,7 @@ from am_routes import (  # noqa: E402
     list_history, undo_doc, restore_snapshot, edit_block,
     list_pending, accept_pending, reject_pending,
     list_doc_skills, update_doc_skill, delete_doc_skill,
-    add_doc_skill, reset_doc,
+    add_doc_skill, reset_doc, save_baseline,
 )
 from am_state import state  # noqa: E402
 from am_upload import (  # noqa: E402
@@ -252,6 +252,7 @@ def make_app() -> web.Application:
     app.router.add_post("/undo", undo_doc)
     app.router.add_post("/restore_snapshot", restore_snapshot)
     app.router.add_post("/reset", reset_doc)
+    app.router.add_post("/save-baseline", save_baseline)
     app.router.add_post("/edit-block", edit_block)
     app.router.add_post("/add-doc-skill", add_doc_skill)
     app.router.add_get("/doc-skills", list_doc_skills)
