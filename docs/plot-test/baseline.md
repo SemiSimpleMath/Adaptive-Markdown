@@ -1,12 +1,19 @@
 ---
 doc_id: d-plot-test
-title: "Plotly figures — smoke test"
+title: "Chart figures — Plotly + Vega-Lite"
 audience: developer
 ---
 
-# Plotly figures
+# Chart figures
 
-Three small charts that demonstrate the `<figure class="plot">` substrate. The body of each `<script type="application/json">` is a Plotly figure object (`{data, layout, config}`) or a bare `data` array. The iframe lazy-loads Plotly's basic bundle (~600KB) on first encounter.
+Two charting substrates ship side by side. Both take JSON specs in a `<script type="application/json">` body; the figure class picks the renderer.
+
+- `<figure class="plot">` → Plotly (imperative `{data, layout}` shape, ~600KB basic bundle, great for interactive 3D / dashboards / scientific & financial charts)
+- `<figure class="vega">` → Vega-Lite (declarative grammar-of-graphics, ~800KB total, great for statistical charts and small-multiples / facets)
+
+Both lazy-load on first encounter — docs without charts pay zero cost.
+
+## Plotly
 
 ## Scatter + line
 
@@ -81,18 +88,110 @@ Three small charts that demonstrate the `<figure class="plot">` substrate. The b
 </script>
 </figure>
 
+## Vega-Lite
+
+Same three chart types, expressed in Vega-Lite's declarative grammar. Notice the specs are typically shorter than the Plotly equivalents for common chart types.
+
+### Scatter + line
+
+<figure class="vega">
+<script type="application/json">
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Linear-ish growth",
+  "width": 500,
+  "height": 260,
+  "data": {"values": [
+    {"step": 1, "value": 2.1}, {"step": 2, "value": 2.9},
+    {"step": 3, "value": 3.7}, {"step": 4, "value": 5.0},
+    {"step": 5, "value": 5.2}, {"step": 6, "value": 6.1},
+    {"step": 7, "value": 7.0}, {"step": 8, "value": 8.3},
+    {"step": 9, "value": 8.8}, {"step": 10, "value": 9.5}
+  ]},
+  "mark": {"type": "line", "point": true, "color": "#4f46e5"},
+  "encoding": {
+    "x": {"field": "step", "type": "quantitative"},
+    "y": {"field": "value", "type": "quantitative"}
+  }
+}
+</script>
+</figure>
+
+### Bar chart
+
+<figure class="vega">
+<script type="application/json">
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Sample doc sizes (lines)",
+  "width": 500,
+  "height": 260,
+  "data": {"values": [
+    {"doc": "intro",        "lines": 120},
+    {"doc": "galois",       "lines": 340},
+    {"doc": "csv-test",     "lines": 85},
+    {"doc": "mermaid-test", "lines": 200},
+    {"doc": "help",         "lines": 180}
+  ]},
+  "mark": {"type": "bar", "color": "#16a34a"},
+  "encoding": {
+    "x": {"field": "doc", "type": "nominal", "axis": {"labelAngle": -25}},
+    "y": {"field": "lines", "type": "quantitative"}
+  }
+}
+</script>
+</figure>
+
+### Layered chart — statistical shape Vega-Lite makes easy
+
+A scatter of points + a moving-average line + a confidence ribbon, all in one spec:
+
+<figure class="vega">
+<script type="application/json">
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Daily measurements + rolling trend",
+  "width": 500,
+  "height": 260,
+  "data": {"values": [
+    {"day": 1, "v": 3.2}, {"day": 2, "v": 4.1}, {"day": 3, "v": 3.8},
+    {"day": 4, "v": 5.0}, {"day": 5, "v": 4.6}, {"day": 6, "v": 5.4},
+    {"day": 7, "v": 6.0}, {"day": 8, "v": 5.7}, {"day": 9, "v": 6.5},
+    {"day": 10, "v": 7.2}, {"day": 11, "v": 6.9}, {"day": 12, "v": 7.6}
+  ]},
+  "layer": [
+    {
+      "mark": {"type": "point", "color": "#4f46e5", "opacity": 0.6, "size": 60}
+    },
+    {
+      "transform": [
+        {"window": [{"op": "mean", "field": "v", "as": "rolling"}],
+         "frame": [-2, 2]}
+      ],
+      "mark": {"type": "line", "color": "#dc2626", "strokeWidth": 2}
+    }
+  ],
+  "encoding": {
+    "x": {"field": "day", "type": "quantitative"},
+    "y": {"field": "v", "type": "quantitative", "title": "value"}
+  }
+}
+</script>
+</figure>
+
 ---
 
 Try it: click any chart's `<figure>`, ask the agent *"swap to a logarithmic y-axis"* or *"change the bar colors to a gradient"* or *"add a moving-average line"* — the source updates in place, the chart re-renders.
 
 <section class="agent-skill">
 
-## SKILL: plot-test doc context
+## SKILL: chart-figures doc context
 
-This doc exists to demonstrate Plotly figures and verify the substrate works. When the reader asks for chart edits:
+This doc demonstrates both Plotly and Vega-Lite figure substrates. When the reader asks for chart edits:
 
-- Prefer in-place JSON edits via Edit (string-level, surgical) over full re-serialize.
-- For data updates, mutate the trace's `data` array via Edit; for cosmetic changes, the `layout` object.
-- If asked for a chart type the basic bundle doesn't support (3D, choropleth, ternary, etc.), surface that in chat and either suggest a doc-local `<script src="https://cdn.plot.ly/plotly-3.0.1.min.js">` tag to upgrade to the full bundle, or fall back to a supported type.
+- **Stay in the same library.** A Plotly chart's edits are JSON edits to its `{data, layout}`; a Vega chart's edits are JSON edits to its `{mark, encoding, data}`. Don't silently swap libraries.
+- **Prefer in-place JSON edits.** String-level Edit to the script's `textContent` keeps the change small and reviewable; full re-serialize is fine but loses the human shape (indentation, key order).
+- **Cross-library suggestions are fair.** If the reader's ask fits one library much better ("layer 5 series with smoothing bands" → Vega-Lite is more idiomatic; "interactive 3D surface" → Plotly with the full bundle), say so before editing.
+- **Plotly upgrade path.** If the reader needs 3D / choropleth / contour, suggest a doc-local `<script src="https://cdn.plot.ly/plotly-3.0.1.min.js">` to swap to the full Plotly bundle.
 
 </section>

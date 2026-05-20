@@ -145,6 +145,15 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
 figure.plot { text-align: left; border: 0; padding: 0.4em 0; }
 figure.plot .plot-render { background: var(--am-widget-bg); padding: 0.25em; border-radius: 4px; min-height: 320px; overflow: hidden; }
 figure.plot script[type="application/json"] { display: none; }
+/* Vega / Vega-Lite figures: vega-embed renders into a sibling div.
+   Distinct from figure.plot because the spec shape is different
+   (Vega-Lite uses {mark, encoding, data}, Plotly uses {data, layout});
+   the agent picks the figure class to pick the library. Same widget-bg
+   policy — Vega's default theme assumes light. */
+figure.vega { text-align: left; border: 0; padding: 0.4em 0; }
+figure.vega .vega-render { background: var(--am-widget-bg); padding: 0.4em; border-radius: 4px; min-height: 240px; overflow-x: auto; text-align: center; }
+figure.vega .vega-render canvas, figure.vega .vega-render svg { max-width: 100%; height: auto; }
+figure.vega script[type="application/json"] { display: none; }
 
 /* Print: let content flow across pages naturally. The viewport-sized
    default body padding is fine, but interactive UI affordances (hover
@@ -259,6 +268,11 @@ figure.plot script[type="application/json"] { display: none; }
       ).forEach(n => {
         delete n.dataset.amPlotSource;
       });
+      el.querySelectorAll(
+        'figure.vega script[type="application/json"]'
+      ).forEach(n => {
+        delete n.dataset.amVegaSource;
+      });
       try { await renderMusicBlocks(el); }
       catch (e) { console.warn('__doc.rerender music:', e); }
       try { await renderDataBlocks(el); }
@@ -267,6 +281,8 @@ figure.plot script[type="application/json"] { display: none; }
       catch (e) { console.warn('__doc.rerender diagram:', e); }
       try { await renderPlotBlocks(el); }
       catch (e) { console.warn('__doc.rerender plot:', e); }
+      try { await renderVegaBlocks(el); }
+      catch (e) { console.warn('__doc.rerender vega:', e); }
       try { renderMath(el); }
       catch (e) { console.warn('__doc.rerender math:', e); }
     },
@@ -918,6 +934,86 @@ figure.plot script[type="application/json"] { display: none; }
     }
   }
 
+  async function renderVegaBlocks(root) {
+    // Source lives in <figure class="vega"><script type="application/json">
+    // (script-with-non-JS-type, opaque to the HTML parser). Body is a
+    // Vega-Lite OR Vega spec — vega-embed auto-detects via $schema /
+    // shape. Renders into a sibling .vega-render div. Same lazy-load /
+    // dataset-marker / WeakMap-registration shape as renderPlotBlocks.
+    const vegaScripts = Array.from(root.querySelectorAll(
+      'figure.vega script[type="application/json"]'
+    ));
+    const normalize = (s) => (s || '').replace(/<!--am:keep-->/g, '').trim();
+    const todo = vegaScripts.filter(s =>
+      s.dataset.amVegaSource !== normalize(s.textContent)
+    );
+    if (!todo.length) return;
+
+    try {
+      // vega-embed bundles vega + vega-lite + the embed helper (~800KB
+      // total). Single load handles both DSLs.
+      await loadScriptOnce(
+        'https://cdn.jsdelivr.net/npm/vega@5',
+      );
+      await loadScriptOnce(
+        'https://cdn.jsdelivr.net/npm/vega-lite@5',
+      );
+      await loadScriptOnce(
+        'https://cdn.jsdelivr.net/npm/vega-embed@6',
+      );
+    } catch (e) {
+      console.warn('vega failed to load:', e);
+      return;
+    }
+    if (!window.vegaEmbed) return;
+
+    for (const script of todo) {
+      const source = normalize(script.textContent);
+      script.dataset.amVegaSource = source;
+      let target = script.nextElementSibling;
+      if (!target || !target.classList.contains('vega-render')) {
+        target = document.createElement('div');
+        target.className = 'vega-render';
+        script.parentNode.insertBefore(target, script.nextSibling);
+      } else {
+        // Re-render: clear so vega-embed builds fresh and the previous
+        // view's listeners detach.
+        target.innerHTML = '';
+      }
+      if (!source) {
+        target.innerHTML =
+          '<div class="error-banner">Vega source is empty.</div>';
+        continue;
+      }
+      let spec;
+      try {
+        spec = JSON.parse(source);
+      } catch (e) {
+        target.innerHTML =
+          '<div class="error-banner">Vega JSON parse failed: '
+          + ((e && e.message) || e) + '</div>';
+        continue;
+      }
+      try {
+        const result = await window.vegaEmbed(target, spec, {
+          // Clean defaults; the action menu on the corner is noisy
+          // for a doc-embedded chart. Re-enable with actions: true
+          // via the spec config if desired.
+          actions: false,
+          renderer: 'canvas',
+        });
+        const fig = script.closest('figure');
+        if (fig) FIGURE_RENDERERS.set(fig, {
+          kind: 'vega', instance: result.view, source, target,
+        });
+      } catch (e) {
+        target.innerHTML =
+          '<div class="error-banner">Vega render failed: '
+          + ((e && e.message) || e) + '</div>';
+      }
+    }
+  }
+
   function renderMath(root) {
     const target = root || body;
     if (window.renderMathInElement) {
@@ -1332,6 +1428,7 @@ figure.plot script[type="application/json"] { display: none; }
             if (node.classList.contains('data-grid'))      return false;
             if (node.classList.contains('mermaid-render')) return false;
             if (node.classList.contains('plot-render'))    return false;
+            if (node.classList.contains('vega-render'))    return false;
           }
           return true;
         },
@@ -1353,6 +1450,7 @@ figure.plot script[type="application/json"] { display: none; }
     renderDataBlocks(body).catch(e => console.warn('data render:', e));
     renderDiagramBlocks(body).catch(e => console.warn('diagram render:', e));
     renderPlotBlocks(body).catch(e => console.warn('plot render:', e));
+    renderVegaBlocks(body).catch(e => console.warn('vega render:', e));
     se.scrollTop = sy;
   }
 
