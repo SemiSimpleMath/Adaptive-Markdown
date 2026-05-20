@@ -258,31 +258,21 @@ figure.vega script[type="application/json"] { display: none; }
       ).forEach(n => {
         delete n.dataset.amDataSource;
       });
-      el.querySelectorAll(
-        'figure.diagram script[type="text/x-mermaid"]'
-      ).forEach(n => {
-        delete n.dataset.amDiagramSource;
-      });
-      el.querySelectorAll(
-        'figure.plot script[type="application/json"]'
-      ).forEach(n => {
-        delete n.dataset.amPlotSource;
-      });
-      el.querySelectorAll(
-        'figure.vega script[type="application/json"]'
-      ).forEach(n => {
-        delete n.dataset.amVegaSource;
-      });
+      // Generic-renderer figure types (plot / vega / diagram): clear
+      // their dataset markers + re-run via the dispatch loop below.
+      for (const [cls, cfg] of FIGURE_TYPES) {
+        el.querySelectorAll(
+          `figure.${cls} script[type="${cfg.scriptType}"]`
+        ).forEach(n => { delete n.dataset[cfg.markerKey]; });
+      }
       try { await renderMusicBlocks(el); }
       catch (e) { console.warn('__doc.rerender music:', e); }
       try { await renderDataBlocks(el); }
       catch (e) { console.warn('__doc.rerender data:', e); }
-      try { await renderDiagramBlocks(el); }
-      catch (e) { console.warn('__doc.rerender diagram:', e); }
-      try { await renderPlotBlocks(el); }
-      catch (e) { console.warn('__doc.rerender plot:', e); }
-      try { await renderVegaBlocks(el); }
-      catch (e) { console.warn('__doc.rerender vega:', e); }
+      for (const cls of FIGURE_TYPES.keys()) {
+        try { await renderFigureType(el, cls); }
+        catch (e) { console.warn(`__doc.rerender ${cls}:`, e); }
+      }
       try { renderMath(el); }
       catch (e) { console.warn('__doc.rerender math:', e); }
     },
@@ -775,34 +765,34 @@ figure.vega script[type="application/json"] { display: none; }
   // the lib to throw "id already exists in DOM". Bumping per call.
   let _mermaidCounter = 0;
 
-  async function renderDiagramBlocks(root) {
-    // Source lives in <figure class="diagram"><script type="text/x-mermaid">
-    // tag (script-with-non-JS-type, same trap-avoidance as MusicXML / CSV).
-    // We read textContent for the source and render into a sibling
-    // .mermaid-render div via mermaid.render(), which returns an SVG
-    // string we inject as innerHTML.
-    const mermaidScripts = Array.from(root.querySelectorAll(
-      'figure.diagram script[type="text/x-mermaid"]'
-    ));
-    // Normalize the comparison source the same way we'll normalize for
-    // rendering (strip am:keep sentinels). Otherwise on every re-render
-    // the marker (post-strip) won't match textContent (with sentinels)
-    // and we'd loop forever re-rendering the same diagram.
-    const normalize = (s) => (s || '').replace(/<!--am:keep-->/g, '').trim();
-    const todo = mermaidScripts.filter(s =>
-      s.dataset.amDiagramSource !== normalize(s.textContent)
-    );
-    if (!todo.length) return;
+  // ---- Generic figure renderer (dispatch table) ---------------------------
+  // The three "one library, one script type, one render target" figure
+  // types — plot (Plotly), vega (Vega-Lite), diagram (Mermaid) — share
+  // ~95% of their renderer code: find figures of class X, skip ones
+  // already rendered (via dataset marker), lazy-load library scripts,
+  // find/create the sibling target div, parse the body, call render,
+  // register in the WeakMap. The dispatch table below names the
+  // library URLs + the render call; the generic renderFigureType()
+  // does everything else. Adding a new chart library is now ~20 lines
+  // instead of ~80.
+  //
+  // Music figures (3 libs, 2 render targets per ABC chart) and data
+  // figures (2 script types, shape detection inside) don't fit the
+  // simple shape; they keep their specialized renderers above.
+  const FIGURE_TYPES = new Map();
 
-    try {
-      await loadScriptOnce(
-        'https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js',
-      );
-      // Initialize once globally. startOnLoad:false keeps mermaid from
-      // auto-scanning the DOM — we drive it via render() per figure.
-      // securityLevel:'strict' is the default but be explicit; it
-      // sanitizes any HTML inside diagram labels.
-      if (!window.__doc.__mermaidInitialized && window.mermaid) {
+  FIGURE_TYPES.set('diagram', {
+    scriptType: 'text/x-mermaid',
+    targetClass: 'mermaid-render',
+    markerKey: 'amDiagramSource',
+    libraries: ['https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js'],
+    // Mermaid source is a DSL string, not JSON — pass through verbatim.
+    parse: (s) => s,
+    init: () => {
+      if (window.mermaid && !window.__doc.__mermaidInitialized) {
+        // startOnLoad:false keeps mermaid from auto-scanning the DOM —
+        // we drive it via render() per figure. securityLevel:'strict'
+        // sanitizes any HTML inside diagram labels.
         window.mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
@@ -810,209 +800,123 @@ figure.vega script[type="application/json"] { display: none; }
         });
         window.__doc.__mermaidInitialized = true;
       }
-    } catch (e) {
-      console.warn('mermaid failed to load:', e);
-      return;
-    }
+    },
+    render: async (target, source) => {
+      _mermaidCounter += 1;
+      const id = 'mermaid-svg-' + _mermaidCounter;
+      const { svg } = await window.mermaid.render(id, source);
+      target.innerHTML = svg;
+      return { kind: 'mermaid', instance: window.mermaid, source };
+    },
+  });
 
-    for (const script of todo) {
-      const source = normalize(script.textContent);
-      script.dataset.amDiagramSource = source;
-      let target = script.nextElementSibling;
-      if (!target || !target.classList.contains('mermaid-render')) {
-        target = document.createElement('div');
-        target.className = 'mermaid-render';
-        script.parentNode.insertBefore(target, script.nextSibling);
-      } else {
-        target.innerHTML = '';
-      }
-      if (!source) {
-        target.innerHTML =
-          '<div class="error-banner">Mermaid source is empty.</div>';
-        continue;
-      }
-      try {
-        _mermaidCounter += 1;
-        const id = 'mermaid-svg-' + _mermaidCounter;
-        // mermaid.render returns { svg, bindFunctions? }. We only use svg.
-        const { svg } = await window.mermaid.render(id, source);
-        target.innerHTML = svg;
-        const fig = script.closest('figure');
-        if (fig) FIGURE_RENDERERS.set(fig, {
-          kind: 'mermaid', instance: window.mermaid, source,
-        });
-      } catch (e) {
-        // Mermaid parse errors come back via thrown exception with a
-        // .message that names the line/column. Surface verbatim — the
-        // agent uses this to figure out what DSL it broke.
-        target.innerHTML =
-          '<div class="error-banner">Mermaid render failed: '
-          + ((e && e.message) || e) + '</div>';
-      }
-    }
-  }
-
-  async function renderPlotBlocks(root) {
-    // Source lives in <figure class="plot"><script type="application/json">
-    // (script-with-non-JS-type, same trap-avoidance as the other figure
-    // types — the body is data, not code, and we don't want a browser
-    // pre-load or HTML parser confusion).
-    //
-    // Body shape: either a Plotly figure object `{data, layout, config}`
-    // or a bare `data` array. Both are accepted; the array form gets
-    // wrapped with empty layout defaults for convenience.
-    const plotScripts = Array.from(root.querySelectorAll(
-      'figure.plot script[type="application/json"]'
-    ));
-    const normalize = (s) => (s || '').replace(/<!--am:keep-->/g, '').trim();
-    const todo = plotScripts.filter(s =>
-      s.dataset.amPlotSource !== normalize(s.textContent)
-    );
-    if (!todo.length) return;
-
-    try {
-      // Plotly basic bundle: scatter / bar / line / pie / area, ~600KB.
-      // Full bundle is ~3.5MB and rarely needed for the figure types
-      // most docs author. If a doc needs 3D / choropleth / etc.,
-      // upgrade the URL here or have the doc load the full bundle
-      // explicitly in its own <script>.
-      await loadScriptOnce(
-        'https://cdn.plot.ly/plotly-basic-3.0.1.min.js',
-      );
-    } catch (e) {
-      console.warn('plotly failed to load:', e);
-      return;
-    }
-    if (!window.Plotly) return;
-
-    for (const script of todo) {
-      const source = normalize(script.textContent);
-      script.dataset.amPlotSource = source;
-      let target = script.nextElementSibling;
-      if (!target || !target.classList.contains('plot-render')) {
-        target = document.createElement('div');
-        target.className = 'plot-render';
-        script.parentNode.insertBefore(target, script.nextSibling);
-      } else {
-        // Re-render: purge Plotly's per-div state before redraw so the
-        // resize listeners / event bindings don't accumulate.
-        try { window.Plotly.purge(target); } catch (_) {}
-      }
-      if (!source) {
-        target.innerHTML =
-          '<div class="error-banner">Plotly source is empty.</div>';
-        continue;
-      }
-      let spec;
-      try {
-        spec = JSON.parse(source);
-      } catch (e) {
-        target.innerHTML =
-          '<div class="error-banner">Plotly JSON parse failed: '
-          + ((e && e.message) || e) + '</div>';
-        continue;
-      }
-      // Accept either {data, layout, config} or a bare data array.
-      const data = Array.isArray(spec) ? spec : (spec.data || []);
-      const layout = Array.isArray(spec) ? {} : (spec.layout || {});
-      const config = Array.isArray(spec) ? {} : (spec.config || {});
-      // Default to responsive + clean modebar for the common case.
+  FIGURE_TYPES.set('plot', {
+    scriptType: 'application/json',
+    targetClass: 'plot-render',
+    markerKey: 'amPlotSource',
+    // Plotly basic bundle: scatter / bar / line / pie / area, ~600KB.
+    // Full bundle (~3.5MB) adds 3D / choropleth / contour — docs that
+    // need those can load it themselves via a doc-local <script src>.
+    libraries: ['https://cdn.plot.ly/plotly-basic-3.0.1.min.js'],
+    parse: JSON.parse,
+    // Plotly retains per-div state (resize listeners, event bindings);
+    // purge before re-render to keep them from accumulating.
+    purge: (target) => { try { window.Plotly.purge(target); } catch (_) {} },
+    render: async (target, parsed, source) => {
+      // Body shape: either a full {data, layout, config} or a bare data array.
+      const data = Array.isArray(parsed) ? parsed : (parsed.data || []);
+      const layout = Array.isArray(parsed) ? {} : (parsed.layout || {});
+      const config = Array.isArray(parsed) ? {} : (parsed.config || {});
       const mergedConfig = Object.assign(
         { responsive: true, displaylogo: false }, config,
       );
-      try {
-        await window.Plotly.newPlot(target, data, layout, mergedConfig);
-        const fig = script.closest('figure');
-        if (fig) FIGURE_RENDERERS.set(fig, {
-          kind: 'plotly', instance: window.Plotly, source, target,
-        });
-      } catch (e) {
-        target.innerHTML =
-          '<div class="error-banner">Plotly render failed: '
-          + ((e && e.message) || e) + '</div>';
-      }
-    }
-  }
+      await window.Plotly.newPlot(target, data, layout, mergedConfig);
+      return { kind: 'plotly', instance: window.Plotly, source, target };
+    },
+  });
 
-  async function renderVegaBlocks(root) {
-    // Source lives in <figure class="vega"><script type="application/json">
-    // (script-with-non-JS-type, opaque to the HTML parser). Body is a
-    // Vega-Lite OR Vega spec — vega-embed auto-detects via $schema /
-    // shape. Renders into a sibling .vega-render div. Same lazy-load /
-    // dataset-marker / WeakMap-registration shape as renderPlotBlocks.
-    const vegaScripts = Array.from(root.querySelectorAll(
-      'figure.vega script[type="application/json"]'
+  FIGURE_TYPES.set('vega', {
+    scriptType: 'application/json',
+    targetClass: 'vega-render',
+    markerKey: 'amVegaSource',
+    libraries: [
+      'https://cdn.jsdelivr.net/npm/vega@5',
+      'https://cdn.jsdelivr.net/npm/vega-lite@5',
+      'https://cdn.jsdelivr.net/npm/vega-embed@6',
+    ],
+    parse: JSON.parse,
+    render: async (target, spec, source) => {
+      const result = await window.vegaEmbed(target, spec, {
+        actions: false,
+        renderer: 'canvas',
+      });
+      return { kind: 'vega', instance: result.view, source, target };
+    },
+  });
+
+  async function renderFigureType(root, figureClass) {
+    const cfg = FIGURE_TYPES.get(figureClass);
+    if (!cfg) return;
+    const scripts = Array.from(root.querySelectorAll(
+      `figure.${figureClass} script[type="${cfg.scriptType}"]`
     ));
+    // preserveStructuralBlocks injects <!--am:keep--> in place of blank
+    // lines (to keep CommonMark's type-6 HTML block intact). Strip them
+    // before parsing AND before comparing against the dataset marker —
+    // otherwise the marker (post-strip) wouldn't match textContent
+    // (with sentinels) and we'd loop forever re-rendering.
     const normalize = (s) => (s || '').replace(/<!--am:keep-->/g, '').trim();
-    const todo = vegaScripts.filter(s =>
-      s.dataset.amVegaSource !== normalize(s.textContent)
+    const todo = scripts.filter(s =>
+      s.dataset[cfg.markerKey] !== normalize(s.textContent)
     );
     if (!todo.length) return;
-
     try {
-      // vega-embed bundles vega + vega-lite + the embed helper (~800KB
-      // total). Single load handles both DSLs.
-      await loadScriptOnce(
-        'https://cdn.jsdelivr.net/npm/vega@5',
-      );
-      await loadScriptOnce(
-        'https://cdn.jsdelivr.net/npm/vega-lite@5',
-      );
-      await loadScriptOnce(
-        'https://cdn.jsdelivr.net/npm/vega-embed@6',
-      );
+      for (const url of cfg.libraries) await loadScriptOnce(url);
     } catch (e) {
-      console.warn('vega failed to load:', e);
+      console.warn(`${figureClass} libraries failed to load:`, e);
       return;
     }
-    if (!window.vegaEmbed) return;
-
+    if (cfg.init) cfg.init();
     for (const script of todo) {
       const source = normalize(script.textContent);
-      script.dataset.amVegaSource = source;
+      script.dataset[cfg.markerKey] = source;
       let target = script.nextElementSibling;
-      if (!target || !target.classList.contains('vega-render')) {
+      if (!target || !target.classList.contains(cfg.targetClass)) {
         target = document.createElement('div');
-        target.className = 'vega-render';
+        target.className = cfg.targetClass;
         script.parentNode.insertBefore(target, script.nextSibling);
+      } else if (cfg.purge) {
+        cfg.purge(target);
       } else {
-        // Re-render: clear so vega-embed builds fresh and the previous
-        // view's listeners detach.
         target.innerHTML = '';
       }
       if (!source) {
         target.innerHTML =
-          '<div class="error-banner">Vega source is empty.</div>';
+          `<div class="error-banner">${figureClass} source is empty.</div>`;
         continue;
       }
-      let spec;
+      let parsed;
       try {
-        spec = JSON.parse(source);
+        parsed = cfg.parse(source);
       } catch (e) {
         target.innerHTML =
-          '<div class="error-banner">Vega JSON parse failed: '
+          `<div class="error-banner">${figureClass} parse failed: `
           + ((e && e.message) || e) + '</div>';
         continue;
       }
       try {
-        const result = await window.vegaEmbed(target, spec, {
-          // Clean defaults; the action menu on the corner is noisy
-          // for a doc-embedded chart. Re-enable with actions: true
-          // via the spec config if desired.
-          actions: false,
-          renderer: 'canvas',
-        });
+        const registration = await cfg.render(target, parsed, source);
         const fig = script.closest('figure');
-        if (fig) FIGURE_RENDERERS.set(fig, {
-          kind: 'vega', instance: result.view, source, target,
-        });
+        if (fig && registration) FIGURE_RENDERERS.set(fig, registration);
       } catch (e) {
         target.innerHTML =
-          '<div class="error-banner">Vega render failed: '
+          `<div class="error-banner">${figureClass} render failed: `
           + ((e && e.message) || e) + '</div>';
       }
     }
   }
+
+  // ---- End generic figure renderer ----------------------------------------
 
   function renderMath(root) {
     const target = root || body;
@@ -1448,9 +1352,12 @@ figure.vega script[type="application/json"] { display: none; }
     renderMath();
     renderMusicBlocks(body).catch(e => console.warn('music render:', e));
     renderDataBlocks(body).catch(e => console.warn('data render:', e));
-    renderDiagramBlocks(body).catch(e => console.warn('diagram render:', e));
-    renderPlotBlocks(body).catch(e => console.warn('plot render:', e));
-    renderVegaBlocks(body).catch(e => console.warn('vega render:', e));
+    // Generic-renderer figure types (plot, vega, diagram, ...).
+    for (const cls of FIGURE_TYPES.keys()) {
+      renderFigureType(body, cls).catch(
+        e => console.warn(`${cls} render:`, e)
+      );
+    }
     se.scrollTop = sy;
   }
 
