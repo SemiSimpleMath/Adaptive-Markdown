@@ -1360,6 +1360,44 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
   window.__amRenderDoc = renderDoc;
 
+  // Mask markdown code spans / fences / HTML comments to same-length
+  // runs of spaces (newlines preserved). Used by preserveStructuralBlocks
+  // to avoid treating a literal `<script>` mentioned inside backticks
+  // ("e.g. a `<script>` tag…") as a real opening tag — which would let
+  // findHtmlBlocks span an enormous fake body from the prose mention to
+  // the doc's actual `<\/script>` at the end. Mirror of validators._mask_markdown_code.
+  // Length-preserving so offsets in the masked text are valid in the
+  // original — we scan the mask, splice into the original.
+  function maskMarkdownCode(src) {
+    const out = src.split('');
+    // 1. Fenced code blocks: ``` or ~~~ on its own line, until matching close.
+    const fenceRe = /^([ \t]*)(```+|~~~+)[^\n]*\n([\s\S]*?)^\1\2[^\n]*$/gm;
+    let m;
+    while ((m = fenceRe.exec(src)) !== null) {
+      for (let i = m.index; i < fenceRe.lastIndex; i++) {
+        if (out[i] !== '\n') out[i] = ' ';
+      }
+    }
+    // 2. HTML comments: <!-- ... --> (multi-line allowed).
+    const commentRe = /<!--[\s\S]*?-->/g;
+    while ((m = commentRe.exec(src)) !== null) {
+      for (let i = m.index; i < commentRe.lastIndex; i++) {
+        if (out[i] !== '\n') out[i] = ' ';
+      }
+    }
+    // 3. Inline code spans: backtick-delimited, single line.
+    // Run on the now-fence-stripped buffer so backticks inside fences
+    // (already blanked) don't get re-matched.
+    const interim = out.join('');
+    const spanRe = /(`+)(?:(?!\1)[^\n])*\1/g;
+    while ((m = spanRe.exec(interim)) !== null) {
+      for (let i = m.index; i < spanRe.lastIndex; i++) {
+        if (out[i] !== '\n') out[i] = ' ';
+      }
+    }
+    return out.join('');
+  }
+
   function preserveStructuralBlocks(text) {
     // Replace interior blank lines inside <script> and <style> bodies
     // with a sentinel comment so CommonMark's type-6 HTML block (which
@@ -1398,11 +1436,21 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       ['script', '<!--am:keep-->'],
       ['style',  '/*am:keep*/'],
     ];
+    // Mask first so prose mentioning `<script>` in backticks doesn't
+    // get treated as a real opening tag. The masked source has the
+    // same length and same newline positions as the original, so
+    // offsets returned by findHtmlBlocks(masked, ...) are valid in
+    // `text` and we can splice the modified body back in.
+    const masked = maskMarkdownCode(text);
     for (const [tag, sentinel] of passes) {
-      const blocks = findHtmlBlocks(text, tag);
+      const blocks = findHtmlBlocks(masked, tag);
       for (let bi = blocks.length - 1; bi >= 0; bi--) {
         const b = blocks[bi];
-        const lines = b.body.split('\n');
+        // Re-extract body from the ORIGINAL text using the same offsets
+        // so backtick-mentioned tag names that happen to be inside a
+        // real <script> body don't get blanked.
+        const body = text.slice(b.bodyStart, b.bodyEnd);
+        const lines = body.split('\n');
         const last = lines.length - 1;
         const out = lines.map((line, idx) => {
           if (idx === 0 || idx === last) return line;
