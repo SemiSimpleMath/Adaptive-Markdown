@@ -955,6 +955,16 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
 
   document.addEventListener('click', e => {
     if (e.target.closest('a')) return;
+    // Interactive widgets the agent might inject via <script> (a dark-
+    // mode toggle button, a slider, a form input, a <details> summary,
+    // etc.) should behave like widgets — the click runs the widget's
+    // own handler and nothing else. Without this guard, we'd try to
+    // treat the click as block-selection: building a blockInfo from
+    // the widget (which has no source line), sending it to the parent,
+    // which then fails inline-edit with "could not locate this block."
+    // <a> is already handled above; this covers the rest of the
+    // standard interactive set.
+    if (e.target.closest('button, input, select, textarea, summary, label')) return;
     if (userIsTextSelecting()) return; // let native selection survive
     const b = findBlock(e.target);
     const add = e.shiftKey || e.metaKey || e.ctrlKey;
