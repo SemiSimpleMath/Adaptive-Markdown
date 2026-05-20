@@ -130,7 +130,8 @@ figure.music midi-player { display: block; margin: 0.4em 0; }
    reasonable size. Tabulator brings its own CSS but we cap height. */
 figure.data { text-align: left; border: 0; padding: 0.4em 0; }
 figure.data .data-grid { background: var(--am-widget-bg); border-radius: 4px; overflow: hidden; max-height: 60vh; }
-figure.data script[type="text/csv"] { display: none; }
+figure.data script[type="text/csv"],
+figure.data script[type="application/json"] { display: none; }
 /* Diagram figures: Mermaid renders SVG into the sibling div. White
    background + padding keeps the diagram readable across themes;
    max-width caps width on portrait viewports while preserving aspect. */
@@ -243,7 +244,8 @@ figure.plot script[type="application/json"] { display: none; }
         delete n.dataset.amMusicLoaded;
       });
       el.querySelectorAll(
-        'figure.data script[type="text/csv"]'
+        'figure.data script[type="text/csv"], '
+        + 'figure.data script[type="application/json"]'
       ).forEach(n => {
         delete n.dataset.amDataSource;
       });
@@ -611,17 +613,21 @@ figure.plot script[type="application/json"] { display: none; }
 
   async function renderDataBlocks(root) {
     // Source lives in <figure class="data"><script type="text/csv">…
-    // <\/script>. The script-with-non-JS-type trick (same as MusicXML)
-    // makes the browser treat the body as opaque data — textContent
-    // returns the CSV verbatim. We render to a sibling .data-grid div
-    // so the agent can mutate the script's body without touching what
-    // the user sees until __doc.rerender lands.
+    // <\/script> for CSV, OR <script type="application/json">…<\/script>
+    // for JSON (array-of-records or array-of-arrays-with-header-row).
+    // The script-with-non-JS-type trick (same as MusicXML) makes the
+    // browser treat the body as opaque data — textContent returns the
+    // source verbatim. Both feed the same Tabulator instance under a
+    // sibling .data-grid div, so the agent's mutation patterns
+    // (script.textContent edit + __doc.rerender, or
+    // table.replaceData() via getRenderer().instance) are uniform.
     // (The `<\/script>` above is escaped: a literal end-script token
     // inside ANY script-tag content, even in a JS comment, terminates
     // the parent script tag at HTML-parser level. Same fix we made
     // in renderMusicBlocks a few commits back.)
     const csvScripts = Array.from(root.querySelectorAll(
-      'figure.data script[type="text/csv"]'
+      'figure.data script[type="text/csv"], '
+      + 'figure.data script[type="application/json"]'
     ));
     // preserveStructuralBlocks injects <!--am:keep--> in place of blank
     // lines (to keep CommonMark's type-6 HTML block intact). Strip them
@@ -660,24 +666,67 @@ figure.plot script[type="application/json"] { display: none; }
       } else {
         target.innerHTML = '';
       }
+      const isJson = script.type === 'application/json';
       try {
-        const rows = parseCSV(source);
-        if (rows.length < 1) {
-          target.innerHTML =
-            '<div class="error-banner">CSV is empty.</div>';
-          continue;
-        }
-        // First row = headers. Subsequent rows = data rows mapped to
-        // header keys. Tabulator wants `[{col1: v1, col2: v2}, ...]`
-        // with a parallel `columns` config naming each field.
-        const headers = rows[0].map((h, i) => h || `col${i + 1}`);
-        const data = rows.slice(1).map(r => {
-          const obj = {};
-          for (let i = 0; i < headers.length; i++) {
-            obj[headers[i]] = r[i] !== undefined ? r[i] : '';
+        let headers, data;
+        if (isJson) {
+          // Two accepted shapes:
+          //   - Array of records: [{a:1, b:2}, {a:3, b:4}]
+          //     Columns = union of all keys, in first-seen order.
+          //   - Array of arrays with header row: [["a","b"], [1,2], [3,4]]
+          //     First row treated as headers (consistent with CSV).
+          const parsed = JSON.parse(source);
+          if (!Array.isArray(parsed)) {
+            target.innerHTML =
+              '<div class="error-banner">JSON data must be an array.</div>';
+            continue;
           }
-          return obj;
-        });
+          if (parsed.length === 0) {
+            target.innerHTML =
+              '<div class="error-banner">JSON array is empty.</div>';
+            continue;
+          }
+          if (Array.isArray(parsed[0])) {
+            headers = parsed[0].map((h, i) => String(h || `col${i + 1}`));
+            data = parsed.slice(1).map(r => {
+              const obj = {};
+              for (let i = 0; i < headers.length; i++) {
+                obj[headers[i]] = r[i] !== undefined ? r[i] : '';
+              }
+              return obj;
+            });
+          } else {
+            const seen = new Set();
+            headers = [];
+            for (const row of parsed) {
+              if (row && typeof row === 'object') {
+                for (const k of Object.keys(row)) {
+                  if (!seen.has(k)) { seen.add(k); headers.push(k); }
+                }
+              }
+            }
+            data = parsed;
+          }
+        } else {
+          // CSV path
+          const rows = parseCSV(source);
+          if (rows.length < 1) {
+            target.innerHTML =
+              '<div class="error-banner">CSV is empty.</div>';
+            continue;
+          }
+          // First row = headers. Subsequent rows = data rows mapped to
+          // header keys. Tabulator wants `[{col1: v1, col2: v2}, ...]`
+          // with a parallel `columns` config naming each field.
+          headers = rows[0].map((h, i) => h || `col${i + 1}`);
+          data = rows.slice(1).map(r => {
+            const obj = {};
+            for (let i = 0; i < headers.length; i++) {
+              obj[headers[i]] = r[i] !== undefined ? r[i] : '';
+            }
+            return obj;
+          });
+        }
         const columns = headers.map(h => ({
           title: h, field: h,
           // Headers get sort + a width hint so very-long fields don't
@@ -695,7 +744,7 @@ figure.plot script[type="application/json"] { display: none; }
         });
         const fig = script.closest('figure');
         if (fig) FIGURE_RENDERERS.set(fig, {
-          kind: 'csv', instance: table, source,
+          kind: isJson ? 'json' : 'csv', instance: table, source,
         });
       } catch (e) {
         target.innerHTML =

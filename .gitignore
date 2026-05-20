@@ -38,6 +38,7 @@ docs/*
 !docs/textbook/
 !docs/help/
 !docs/plot-test/
+!docs/csv-test/
 docs/*/current.md
 docs/*/snaps/
 docs/*/patches/
