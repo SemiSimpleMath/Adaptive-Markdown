@@ -12,6 +12,8 @@ Most agent-driven editing tools box the agent into a fixed component palette —
 
 Instead of juggling a document, a spreadsheet, a dashboard, a separate AI chat, and a changelog for each, you have one living file with all those layers in it.
 
+![Adaptive Markdown — viewer in dark mode](docs-images/hero-dark.png)
+
 ## Quick start
 
 ```bash
@@ -23,10 +25,7 @@ python start.py --claude
 
 Open <http://127.0.0.1:8090>. On first launch the viewer shows a setup card — paste your [Anthropic API key](https://console.anthropic.com/settings/keys), restart, and you're talking to your document. Detailed per-OS install + Codex alternative are [below](#install).
 
-[![Adaptive Markdown — demo](https://img.youtube.com/vi/H4MnFs8irm8/maxresdefault.jpg)](https://youtu.be/H4MnFs8irm8)
-[![Adaptive Markdown — demo 2](https://img.youtube.com/vi/xf6jxf-hyP4/maxresdefault.jpg)](https://youtu.be/xf6jxf-hyP4)
-
-> ▶ Demos on YouTube: [demo 1](https://youtu.be/H4MnFs8irm8) · [demo 2](https://youtu.be/xf6jxf-hyP4)
+> ▶ See it in motion on YouTube: [demo 1](https://youtu.be/H4MnFs8irm8) · [demo 2](https://youtu.be/xf6jxf-hyP4)
 
 ## What it can do
 
