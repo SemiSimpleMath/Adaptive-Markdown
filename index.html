@@ -1860,8 +1860,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         sendToFrame({ type: 'setSelections', selections: currentSelections });
       }
     } else if (data.type === 'selection') {
+      // A click happened inside the cross-origin iframe — the parent's
+      // document click handler can't see it, so any open top-bar
+      // dropdown (View ▾ / File ▾) wouldn't otherwise close. The iframe
+      // already postMessages us on every click; treat that as an
+      // "outside click" for the dropdowns.
+      closeAllViewDropdowns();
       handleFrameSelection(data.block, !!data.additive);
     } else if (data.type === 'insert_click') {
+      closeAllViewDropdowns();
       handleFrameInsert(data.before || null, data.after || null);
     } else if (data.type === 'fileDropped') {
       handleFrameDrop(data.files);
