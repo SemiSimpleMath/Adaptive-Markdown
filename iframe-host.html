@@ -105,6 +105,31 @@ figure.diagram { text-align: left; border: 0; padding: 0.4em 0; }
 figure.diagram .mermaid-render { background: white; padding: 0.5em; border-radius: 4px; overflow-x: auto; text-align: center; }
 figure.diagram .mermaid-render svg { max-width: 100%; height: auto; }
 figure.diagram script[type="text/x-mermaid"] { display: none; }
+
+/* Print: let content flow across pages naturally. The viewport-sized
+   default body padding is fine, but interactive UI affordances (hover
+   outlines, selection rings, click cursors) shouldn't print, and
+   structural blocks should avoid mid-page splits where possible. */
+@media print {
+  body { padding: 24px 36px; font-size: 12pt; line-height: 1.45; }
+  article#body { max-width: none; }
+  article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,article,section,aside,figure,div.pinned) { cursor: auto; }
+  article#body .hover-block,
+  article#body .selected-block,
+  article#body .selected-block.hover-block { outline: 0 !important; }
+  article#body .insertion-marker { display: none; }
+  h1, h2, h3, h4 { page-break-after: avoid; break-after: avoid; }
+  figure, table, pre, blockquote { page-break-inside: avoid; break-inside: avoid; }
+  section.theorem, section.lemma, section.proposition, section.corollary,
+  section.definition, section.example, section.solution, section.proof {
+    page-break-inside: avoid; break-inside: avoid;
+  }
+  /* Live-renderer iframes (YouTube, etc.) and audio widgets won't
+     print meaningfully — let them be omitted rather than leaving
+     blank rectangles. */
+  audio, video, iframe[src*="youtube"], iframe[src*="vimeo"],
+  midi-player, .abc-audio { display: none !important; }
+}
 </style>
 </head>
 <body>
@@ -1125,6 +1150,11 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     } else if (d.type === 'scrollToAnchor') {
       const el = document.getElementById(d.id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (d.type === 'print') {
+      // Parent can't reach into us cross-origin to call window.print();
+      // it postMessages us instead. We print our own document, which
+      // gets our @media print CSS and full content flow across pages.
+      window.print();
     }
   });
 

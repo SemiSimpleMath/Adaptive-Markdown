@@ -118,6 +118,14 @@ body {
 .view-tabs #reset-doc-btn { align-self: center; }
 .history-wrap { position: relative; align-self: center; }
 .overflow-wrap { position: relative; align-self: center; }
+.view-dropdown-wrap {
+  position: relative;
+  align-self: stretch;
+  display: flex;
+  align-items: stretch;
+}
+.view-dropdown-menu { top: calc(100% + 4px); left: 0; right: auto; min-width: 140px; }
+.view-tab-dropdown[aria-expanded="true"] { color: var(--accent); }
 .overflow-menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -986,16 +994,84 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentInsertion = null;
 
   // ---- View tabs ----------------------------------------------------------
+  // Plain views: always visible as top-level tabs.
   const VIEW_TYPES = [
     { id: 'doc',    label: 'Doc'    },
-    { id: 'graph',  label: 'Graph'  },
     { id: 'source', label: 'Source' },
-    { id: 'latex',  label: 'LaTeX'  },
-    { id: 'export', label: 'Export', action: 'export' },
-    { id: 'print',  label: 'Print', action: 'print' },
   ];
+  // Math-specific views: tucked under a "View ▾" dropdown that only
+  // appears when the active doc has math content (KaTeX delimiters
+  // or reserved-word headings like Theorem / Lemma / …). Hides the
+  // chrome that doesn't apply to prose-only docs.
+  const VIEW_MATH_TOOLS = [
+    { id: 'graph',  label: 'Graph'  },
+    { id: 'latex',  label: 'LaTeX'  },
+  ];
+  // File actions (not views): grouped under "File ▾" because they
+  // eject the user out of the viewer (download / print dialog)
+  // rather than switching the in-app view.
+  const FILE_ACTIONS = [
+    { id: 'export', label: 'Export', action: 'export' },
+    { id: 'print',  label: 'Print',  action: 'print'  },
+  ];
+
+  function docHasMathContent(text) {
+    if (!text) return false;
+    if (/\$\$?[^$\n]+\$\$?/.test(text)) return true;     // $…$ or $$…$$
+    if (/\\\(|\\\[/.test(text)) return true;             // \( \) / \[ \]
+    if (/^#+\s+(theorem|lemma|proposition|corollary|definition|example|proof|solution)\b/im.test(text)) return true;
+    return false;
+  }
+
+  function closeAllViewDropdowns() {
+    document.querySelectorAll('.view-dropdown-menu').forEach(m => m.hidden = true);
+    document.querySelectorAll('.view-tab-dropdown').forEach(b => b.setAttribute('aria-expanded', 'false'));
+  }
+
+  function makeViewDropdown(label, items, isActiveDropdown, onSelect) {
+    const wrap = document.createElement('div');
+    wrap.className = 'view-dropdown-wrap';
+    const btn = document.createElement('button');
+    btn.className = 'view-tab view-tab-dropdown' + (isActiveDropdown ? ' active' : '');
+    btn.textContent = label + ' ▾'; // ▾
+    btn.setAttribute('aria-haspopup', 'true');
+    btn.setAttribute('aria-expanded', 'false');
+    const menu = document.createElement('div');
+    menu.className = 'overflow-menu view-dropdown-menu';
+    menu.hidden = true;
+    menu.setAttribute('role', 'menu');
+    for (const item of items) {
+      const mi = document.createElement('button');
+      mi.className = 'overflow-item';
+      mi.textContent = item.label;
+      mi.setAttribute('role', 'menuitem');
+      mi.addEventListener('click', () => {
+        closeAllViewDropdowns();
+        onSelect(item);
+      });
+      menu.appendChild(mi);
+    }
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const wasHidden = menu.hidden;
+      closeAllViewDropdowns();
+      menu.hidden = !wasHidden;
+      btn.setAttribute('aria-expanded', String(wasHidden));
+    });
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    return wrap;
+  }
+
   const viewTabs = document.getElementById('view-tab-buttons');
   function renderViewTabs() {
+    // Fall back to Doc if we're on a math-only view that no longer applies
+    // (e.g., user switched to a non-math doc while Graph was active).
+    const hasMath = docHasMathContent(currentBody);
+    if (!hasMath && (currentView === 'graph' || currentView === 'latex')) {
+      currentView = 'doc';
+    }
+
     viewTabs.innerHTML = '';
     // Splice in a Review tab AFTER Doc when this doc has pending entries
     // — review-mode docs that haven't accumulated any pending yet keep
@@ -1009,11 +1085,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
     for (const v of tabs) {
       const btn = document.createElement('button');
-      btn.className = 'view-tab' + (v.id === currentView && !v.action ? ' active' : '');
+      btn.className = 'view-tab' + (v.id === currentView ? ' active' : '');
       btn.textContent = v.label;
       btn.addEventListener('click', () => {
-        if (v.action === 'print') { window.print(); return; }
-        if (v.action === 'export') { exportDoc().catch(e => appendMessage('error', 'export failed: ' + e.message)); return; }
         if (v.id === currentView) return;
         currentView = v.id;
         renderViewTabs();
@@ -1021,7 +1095,43 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       });
       viewTabs.appendChild(btn);
     }
+
+    // View ▾ — only for docs with math content. Active highlight when
+    // the currently-selected view is one of its items.
+    if (hasMath) {
+      const mathActive = VIEW_MATH_TOOLS.some(v => v.id === currentView);
+      viewTabs.appendChild(makeViewDropdown('View', VIEW_MATH_TOOLS, mathActive, item => {
+        if (item.id === currentView) return;
+        currentView = item.id;
+        renderViewTabs();
+        renderCurrentView();
+      }));
+    }
+
+    // File ▾ — always present. No "active" state because these are
+    // actions, not view switches.
+    viewTabs.appendChild(makeViewDropdown('File', FILE_ACTIONS, false, item => {
+      if (item.action === 'print') {
+        // Cross-origin iframe can't be reached with contentWindow.print()
+        // directly. postMessage triggers the iframe's own window.print(),
+        // which uses iframe-host.html's @media print CSS and lets content
+        // flow across pages naturally (vs printing only the iframe's
+        // viewport-sized window from the parent's frame).
+        sendToFrame({ type: 'print' });
+      } else if (item.action === 'export') {
+        exportDoc().catch(e => appendMessage('error', 'export failed: ' + e.message));
+      }
+    }));
   }
+
+  // Close any open view-dropdown when clicking outside.
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.view-dropdown-wrap')) closeAllViewDropdowns();
+  });
+  // Esc also closes them (matches the existing overflow-menu UX).
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeAllViewDropdowns();
+  });
 
   // ---- Frontmatter / markdown ---------------------------------------------
   function splitFrontmatter(text) {
@@ -1606,8 +1716,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // Observable embeds that bootstrap against their own origin), but
     // the prior `about:blank` stage never saw the dangerous combo with
     // `allow-scripts`. See the iframe element's comment in the HTML.
+    // `allow-modals` lets the iframe call window.print() (and other
+    // modal-spawning APIs). Without it the browser silently refuses
+    // `print()` in sandboxed iframes — same reason native confirm()
+    // is blocked. The print path is the only consumer right now.
     docFrame.setAttribute(
-      'sandbox', 'allow-scripts allow-popups allow-same-origin'
+      'sandbox',
+      'allow-scripts allow-popups allow-same-origin allow-modals'
     );
     docFrame.src = IFRAME_ORIGIN + '/iframe-host';
   }
