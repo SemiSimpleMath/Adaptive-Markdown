@@ -1246,6 +1246,120 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
   window.__amHtml = { findHtmlBlocks, parseHtmlAttrs };
 
+  // ---- Structural-block handling (feature-flagged) -------------------
+  // Tags treated as "structural" — body is markdown, blank lines allowed.
+  // We extract these BEFORE markdown-it sees the source, replace with a
+  // paragraph-shaped sentinel, then render each block's inner body
+  // through the same pipeline (recursively for nested) and splice the
+  // resulting HTML back. The end result: blank lines inside structural
+  // blocks don't terminate them (they're not in the source markdown-it
+  // sees), and inner markdown renders normally (we run markdown-it on
+  // the body).
+  //
+  // Disabled by default in this commit so behavior is unchanged until
+  // we've verified through smoke. Flip with `window.__amStructuralBlocks
+  // = true` to enable. Once smoke is clean, the flag default flips and
+  // the conditional gets removed.
+  const STRUCTURAL_TAGS = ['figure', 'section', 'aside', 'div', 'details', 'article'];
+
+  // Sentinel format chosen to survive markdown-it 13 + markdown-it-attrs
+  // intact (verified with a probe). The `@@` delimiter style matches the
+  // existing protectMath sentinels (`@@MATHB<n>@@` / `@@MATHI<n>@@`) so
+  // the pattern is already trusted. Reserve `@@AM_STRUCT_BLOCK_*@@` —
+  // never write that string in a doc body.
+  const STRUCT_SENTINEL_PREFIX = '@@AM_STRUCT_BLOCK_';
+  const STRUCT_SENTINEL_SUFFIX = '@@';
+  const STRUCT_SENTINEL_RE =
+    /<p>@@AM_STRUCT_BLOCK_(\d+)@@<\/p>/g;
+
+  function renderOpeningTag(tag, attrs) {
+    const parts = Object.entries(attrs).map(([k, v]) =>
+      v === '' ? k : `${k}="${escapeAttr(v)}"`
+    );
+    return `<${tag}${parts.length ? ' ' + parts.join(' ') : ''}>`;
+  }
+
+  // Walk source for every structural-tag block, replace each with a
+  // sentinel paragraph (blank-line padded so markdown-it parses it as
+  // its own paragraph). Returns the modified source + placeholder
+  // array (indexed by sentinel number).
+  //
+  // We collect ALL blocks first (across all structural tags), sort by
+  // position, then splice from end so earlier offsets stay valid. This
+  // also produces the right placeholder ordering: index in placeholders
+  // matches the sentinel number, and matches doc order.
+  function extractStructuralBlocks(text) {
+    const all = [];
+    for (const tag of STRUCTURAL_TAGS) {
+      for (const b of findHtmlBlocks(text, tag)) all.push(b);
+    }
+    all.sort((a, b) => a.start - b.start);
+    // findHtmlBlocks returns top-level only per tag, but across tags
+    // we may have overlap (e.g., a <figure> inside a <section> shows
+    // up in BOTH calls' results — once as the inner figure, once as
+    // part of the section's body). Filter: keep only blocks that
+    // aren't contained inside another block we've already kept.
+    const kept = [];
+    for (const b of all) {
+      const inside = kept.some(k => k.start < b.start && k.end >= b.end);
+      if (!inside) kept.push(b);
+    }
+    const placeholders = kept;
+    // Splice from end so earlier indices stay valid
+    for (let i = placeholders.length - 1; i >= 0; i--) {
+      const b = placeholders[i];
+      const sentinel = `\n\n${STRUCT_SENTINEL_PREFIX}${i}${STRUCT_SENTINEL_SUFFIX}\n\n`;
+      text = text.slice(0, b.start) + sentinel + text.slice(b.end);
+    }
+    return { source: text, placeholders };
+  }
+
+  // For each <p>@@AM_STRUCT_BLOCK_N@@</p> in the rendered HTML, look up
+  // placeholder N, recursively render its inner body through the full
+  // pipeline (so inner structural blocks AND inner markdown both
+  // resolve), then wrap with the original opening/closing tags.
+  function reinsertStructuralBlocks(html, placeholders, depth) {
+    return html.replace(STRUCT_SENTINEL_RE, (_match, idxStr) => {
+      const idx = parseInt(idxStr, 10);
+      const b = placeholders[idx];
+      if (!b) return _match; // shouldn't happen; safety net
+      const inner = renderDoc(b.body, depth + 1);
+      return renderOpeningTag(b.tag, b.attrs) + inner + `</${b.tag}>`;
+    });
+  }
+
+  // Single render entrypoint. Replaces the four sites that previously
+  // duplicated the protect→preserve→render→restore pipeline inline.
+  // Behind the structural-blocks flag, also extracts and recursively
+  // re-renders structural-block bodies so blank lines and inner
+  // markdown both work.
+  function renderDoc(text, depth) {
+    depth = depth || 0;
+    if (depth > 10) {
+      // Recursion safety net. Real nesting depth in any sane doc is
+      // 2-3; depth 10 means something is wrong.
+      console.warn('renderDoc: recursion depth exceeded, falling through');
+      return md.render(text);
+    }
+    const { text: pt, ph } = protectMath(text);
+    const preserved = preserveStructuralBlocks(pt);
+    if (!window.__amStructuralBlocks) {
+      // Existing behavior — type-6 blocks terminate at blank lines,
+      // inner markdown doesn't render. Default until the flag flips.
+      let html = md.render(preserved);
+      return restoreMath(html, ph);
+    }
+    // New path: extract structural blocks, render the rest with
+    // markdown-it (sentinels become standalone paragraphs), then
+    // reinsert each block by recursively rendering its body.
+    const { source, placeholders } = extractStructuralBlocks(preserved);
+    let html = md.render(source);
+    html = restoreMath(html, ph);
+    html = reinsertStructuralBlocks(html, placeholders, depth);
+    return html;
+  }
+  window.__amRenderDoc = renderDoc;
+
   function preserveStructuralBlocks(text) {
     // Replace interior blank lines inside <script> and <style> bodies
     // with a sentinel comment so CommonMark's type-6 HTML block (which
@@ -1935,10 +2049,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // The iframe owns scripts, KaTeX, click-to-focus, hover, drag-drop, etc.
       docFrame.style.display = 'block';
       docScrollEl.hidden = true;
-      const { text: protectedText, ph } = protectMath(currentBody);
-      const preserved = preserveStructuralBlocks(protectedText);
-      let html = md.render(preserved);
-      html = restoreMath(html, ph);
+      let html = renderDoc(currentBody);
       const metaBits = [];
       const a = currentFm.authors || currentFm.author;
       if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
@@ -2084,10 +2195,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const inlinedBody = await inlineAssets(currentBody);
 
     // 2. Run the same rendering pipeline as the viewer.
-    const { text: protectedText, ph } = protectMath(inlinedBody);
-    const preserved = preserveStructuralBlocks(protectedText);
-    let html = md.render(preserved);
-    html = restoreMath(html, ph);
+    let html = renderDoc(inlinedBody);
 
     // 3. Meta line mirrors what the viewer shows.
     const metaBits = [];
@@ -2118,10 +2226,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   async function previewExport() {
     if (!currentText) throw new Error('no doc loaded');
     const inlinedBody = await inlineAssets(currentBody);
-    const { text: pt, ph } = protectMath(inlinedBody);
-    const preserved = preserveStructuralBlocks(pt);
-    let html = md.render(preserved);
-    html = restoreMath(html, ph);
+    let html = renderDoc(inlinedBody);
     const metaBits = [];
     const a = currentFm.authors || currentFm.author;
     if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
@@ -2732,11 +2837,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // Parse the assistant's text with the same markdown pipeline the doc uses,
     // including math protection so multi-line $$...$$ doesn't get split.
     try {
-      const { text: protectedText, ph } = protectMath(rawText);
-      const preserved = preserveStructuralBlocks(protectedText);
-      let html = md.render(preserved);
-      html = restoreMath(html, ph);
-      target.innerHTML = html;
+      target.innerHTML = renderDoc(rawText);
       // Drop any <script> the assistant might have embedded — chat must not execute.
       target.querySelectorAll('script').forEach(s => s.remove());
     } catch (e) {

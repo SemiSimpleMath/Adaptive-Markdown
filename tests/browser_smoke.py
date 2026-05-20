@@ -715,6 +715,164 @@ def scenario_diagram_renders(page, base: str, r: Results) -> None:
     )
 
 
+def scenario_structural_block_robustness(page, base: str, r: Results) -> None:
+    """Test the structural-block fix (window.__amStructuralBlocks=true):
+    blank lines inside <figure> / <section> / etc. don't terminate the
+    block, AND inner markdown renders.
+
+    Runs the doc render via the exposed __amRenderDoc helper with the
+    flag toggled on. Doesn't need a real doc — we drive the renderer
+    directly with synthetic input."""
+    print("\n[scenario] structural-block robustness (blank lines + inner markdown)")
+
+    page.goto(base + "/")
+    page.wait_for_function("() => !!window.__amMd && !!window.__amRenderDoc",
+                            timeout=8000)
+
+    def render_with_flag(text: str) -> str:
+        """Render via __amRenderDoc with the structural-block flag ON."""
+        return page.evaluate(
+            "(t) => { window.__amStructuralBlocks = true; "
+            "try { return window.__amRenderDoc(t); } "
+            "finally { window.__amStructuralBlocks = false; } }",
+            text,
+        )
+
+    # ---- Test 1: blank lines inside <figure> ---------------------
+    src1 = (
+        '<figure>\n'
+        '\n'
+        '## A figure with markdown inside\n'
+        '\n'
+        'A paragraph with **bold** and *italic*.\n'
+        '\n'
+        '- list item 1\n'
+        '- list item 2\n'
+        '\n'
+        '<figcaption>caption text</figcaption>\n'
+        '\n'
+        '</figure>\n'
+    )
+    html1 = render_with_flag(src1)
+    r.assert_(
+        "figure with blank lines: <figure> wraps the content",
+        html1.lstrip().startswith("<figure>") and "</figure>" in html1,
+        detail=f"got: {html1[:300]!r}",
+    )
+    r.assert_(
+        "figure body: <h2> renders for the heading",
+        "<h2" in html1 and "A figure with markdown inside" in html1,
+        detail=f"got: {html1[:500]!r}",
+    )
+    r.assert_(
+        "figure body: <strong>bold</strong> renders",
+        "<strong>bold</strong>" in html1,
+        detail=f"got: {html1[:500]!r}",
+    )
+    r.assert_(
+        "figure body: <ul> renders for the list",
+        "<ul>" in html1 and html1.count("<li>") == 2,
+        detail=f"got: {html1[:500]!r}",
+    )
+    r.assert_(
+        "figure body: <figcaption> preserved",
+        "<figcaption>caption text</figcaption>" in html1,
+        detail=f"got: {html1[:500]!r}",
+    )
+    r.assert_(
+        "no leftover sentinel in output",
+        "@@AM_STRUCT_BLOCK_" not in html1,
+        detail=f"sentinel leaked: {html1[:500]!r}",
+    )
+
+    # ---- Test 2: nested structural blocks ------------------------
+    src2 = (
+        '<section class="theorem">\n'
+        '\n'
+        '## Theorem statement\n'
+        '\n'
+        '<figure>\n'
+        '\n'
+        '### Figure heading\n'
+        '\n'
+        'Inner content.\n'
+        '\n'
+        '</figure>\n'
+        '\n'
+        'Closing paragraph.\n'
+        '\n'
+        '</section>\n'
+    )
+    html2 = render_with_flag(src2)
+    r.assert_(
+        "nested: outer <section> wraps",
+        '<section class="theorem">' in html2 and "</section>" in html2,
+        detail=f"got: {html2[:600]!r}",
+    )
+    r.assert_(
+        "nested: <h2> for outer heading",
+        "<h2" in html2 and "Theorem statement" in html2,
+        detail=f"got: {html2[:600]!r}",
+    )
+    r.assert_(
+        "nested: <figure> inside <section> in DOM order",
+        html2.index("<figure>") < html2.index("</section>"),
+        detail=f"figure not nested inside section",
+    )
+    r.assert_(
+        "nested: <h3> for inner heading",
+        "<h3" in html2 and "Figure heading" in html2,
+        detail=f"got: {html2[:600]!r}",
+    )
+    r.assert_(
+        "nested: closing paragraph rendered inside section",
+        "Closing paragraph" in html2
+        and html2.index("Closing paragraph") < html2.index("</section>"),
+        detail="closing paragraph not inside section",
+    )
+    r.assert_(
+        "nested: no sentinel leak",
+        "@@AM_STRUCT_BLOCK_" not in html2,
+        detail=f"sentinel leaked: {html2[:600]!r}",
+    )
+
+    # ---- Test 3: structural block coexists with <script> ----------
+    src3 = (
+        '<figure class="data">\n'
+        '\n'
+        'A description with **markdown**.\n'
+        '\n'
+        '<script type="text/csv">\n'
+        'name,age\n'
+        'A,1\n'
+        '</script>\n'
+        '\n'
+        '</figure>\n'
+    )
+    html3 = render_with_flag(src3)
+    r.assert_(
+        "figure+script: outer <figure class=\"data\"> wraps",
+        '<figure class="data">' in html3,
+        detail=f"got: {html3[:500]!r}",
+    )
+    r.assert_(
+        "figure+script: description renders with <strong>",
+        "<strong>markdown</strong>" in html3,
+        detail=f"got: {html3[:500]!r}",
+    )
+    r.assert_(
+        "figure+script: script body preserved (CSV content present)",
+        "name,age" in html3 and "A,1" in html3
+        and 'type="text/csv"' in html3,
+        detail=f"script lost: {html3[:600]!r}",
+    )
+    r.assert_(
+        "figure+script: no sentinel leak",
+        "@@AM_STRUCT_BLOCK_" not in html3,
+        detail=f"sentinel leaked: {html3[:500]!r}",
+    )
+
+
 def scenario_html_block_structured_content(page, base: str, r: Results) -> None:
     """Structured content (callouts, figures, locked blocks, theorems) is
     written as raw HTML blocks in the source. CommonMark passes those
@@ -2927,6 +3085,7 @@ def main() -> int:
                 scenario_iframe_runtime(page, base, results)
                 scenario_data_figure_renders(page, base, results)
                 scenario_diagram_renders(page, base, results)
+                scenario_structural_block_robustness(page, base, results)
                 scenario_html_block_structured_content(page, base, results)
                 scenario_agent_skill_hidden(page, base, results)
                 scenario_add_doc_skill(page, base, results)
