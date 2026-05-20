@@ -118,15 +118,22 @@ async def drive_chat(port: int, prompt: str, timeout_s: float = 180.0) -> dict:
 
 def inspect_source() -> dict:
     """Inspect docs/intro/current.md for the dark-mode toggle the agent
-    added. Returns flags useful for assertions."""
+    added. Returns flags useful for assertions.
+
+    Tag balance is checked via validators.validate_doc (the same gate
+    that runs on every Edit), not raw lexical counts — the validator
+    correctly masks markdown code spans first so prose mentions like
+    `<script>` in backticks (intro has 4 of those) don't get counted
+    as real opening tags."""
+    import validators
     src = (ROOT / "docs" / "intro" / "current.md").read_text(encoding="utf-8")
-    lower = src.lower()
-    raw_open = lower.count("<script")
-    raw_close = lower.count("</script")
+    errs = validators.validate_doc(src)
     return {
         "len": len(src),
-        "script_open_tokens": raw_open,
-        "script_close_tokens": raw_close,
+        "validator_errors": [
+            {"kind": e["kind"], "line": e["line"], "message": e["message"][:200]}
+            for e in errs
+        ],
         "has_escaped_close": "<\\/script>" in src,
         "has_plain_close": "</script>" in src,
         "has_dm_toggle_id": "dark-mode-toggle" in src or "dark-mode" in src.lower(),
@@ -238,13 +245,12 @@ def main() -> int:
 
         # Assertions
         failures = []
-        if src["script_open_tokens"] != src["script_close_tokens"]:
-            failures.append(
-                f"script open/close token count mismatch: "
-                f"{src['script_open_tokens']} opens vs "
-                f"{src['script_close_tokens']} closes "
-                f"(escaped close present: {src['has_escaped_close']})"
-            )
+        if src["validator_errors"]:
+            for e in src["validator_errors"]:
+                failures.append(
+                    f"validator error [{e['kind']}] @ line {e['line']}: "
+                    f"{e['message'][:120]}"
+                )
         if src["has_escaped_close"]:
             failures.append(
                 "agent wrote `<\\/script>` (escaped close) — that's "
