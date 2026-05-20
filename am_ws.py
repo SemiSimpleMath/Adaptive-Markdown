@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aiohttp import web, WSMsgType
@@ -199,6 +200,28 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 # 50 KB; above that, fall back to Read-on-demand.
                 INLINE_DOC_CAP = 50 * 1024
                 preamble = []
+                # Current wall-clock time. LLMs have no clock and otherwise
+                # confabulate plausible-but-wrong digits when a doc-skill
+                # asks them to timestamp a note. Inject every turn so the
+                # value is fresh mid-conversation. Local time with tz name
+                # is what authors actually want in their notes; UTC trailer
+                # keeps it unambiguous if the agent ever logs or compares.
+                _now_local = datetime.now().astimezone()
+                _local_str = _now_local.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+                _offset = _now_local.strftime("%z")  # e.g., "-0800"
+                _offset_pretty = (
+                    _offset[:3] + ":" + _offset[3:] if _offset else ""
+                )
+                _utc_str = _now_local.astimezone(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+                preamble.append(
+                    f"Current time: {_local_str}"
+                    + (f" ({_offset_pretty})" if _offset_pretty else "")
+                    + f" / {_utc_str}. "
+                    "Use this when an instruction asks you to timestamp "
+                    "something — do not guess or pattern-match the digits."
+                )
                 doc_inlined = False
                 if doc:
                     safe_path = _safe_inline_doc_slug(doc)
