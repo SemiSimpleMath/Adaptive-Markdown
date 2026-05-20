@@ -138,6 +138,12 @@ figure.diagram { text-align: left; border: 0; padding: 0.4em 0; }
 figure.diagram .mermaid-render { background: var(--am-widget-bg); padding: 0.5em; border-radius: 4px; overflow-x: auto; text-align: center; }
 figure.diagram .mermaid-render svg { max-width: 100%; height: auto; }
 figure.diagram script[type="text/x-mermaid"] { display: none; }
+/* Plot figures: Plotly.js renders into a sibling div. Same widget-bg
+   policy as music/data/diagrams — the canvas stays light in dark
+   mode because Plotly's default theme is authored against white. */
+figure.plot { text-align: left; border: 0; padding: 0.4em 0; }
+figure.plot .plot-render { background: var(--am-widget-bg); padding: 0.25em; border-radius: 4px; min-height: 320px; overflow: hidden; }
+figure.plot script[type="application/json"] { display: none; }
 
 /* Print: let content flow across pages naturally. The viewport-sized
    default body padding is fine, but interactive UI affordances (hover
@@ -246,12 +252,19 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
       ).forEach(n => {
         delete n.dataset.amDiagramSource;
       });
+      el.querySelectorAll(
+        'figure.plot script[type="application/json"]'
+      ).forEach(n => {
+        delete n.dataset.amPlotSource;
+      });
       try { await renderMusicBlocks(el); }
       catch (e) { console.warn('__doc.rerender music:', e); }
       try { await renderDataBlocks(el); }
       catch (e) { console.warn('__doc.rerender data:', e); }
       try { await renderDiagramBlocks(el); }
       catch (e) { console.warn('__doc.rerender diagram:', e); }
+      try { await renderPlotBlocks(el); }
+      catch (e) { console.warn('__doc.rerender plot:', e); }
       try { renderMath(el); }
       catch (e) { console.warn('__doc.rerender math:', e); }
     },
@@ -774,6 +787,88 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     }
   }
 
+  async function renderPlotBlocks(root) {
+    // Source lives in <figure class="plot"><script type="application/json">
+    // (script-with-non-JS-type, same trap-avoidance as the other figure
+    // types — the body is data, not code, and we don't want a browser
+    // pre-load or HTML parser confusion).
+    //
+    // Body shape: either a Plotly figure object `{data, layout, config}`
+    // or a bare `data` array. Both are accepted; the array form gets
+    // wrapped with empty layout defaults for convenience.
+    const plotScripts = Array.from(root.querySelectorAll(
+      'figure.plot script[type="application/json"]'
+    ));
+    const normalize = (s) => (s || '').replace(/<!--am:keep-->/g, '').trim();
+    const todo = plotScripts.filter(s =>
+      s.dataset.amPlotSource !== normalize(s.textContent)
+    );
+    if (!todo.length) return;
+
+    try {
+      // Plotly basic bundle: scatter / bar / line / pie / area, ~600KB.
+      // Full bundle is ~3.5MB and rarely needed for the figure types
+      // most docs author. If a doc needs 3D / choropleth / etc.,
+      // upgrade the URL here or have the doc load the full bundle
+      // explicitly in its own <script>.
+      await loadScriptOnce(
+        'https://cdn.plot.ly/plotly-basic-3.0.1.min.js',
+      );
+    } catch (e) {
+      console.warn('plotly failed to load:', e);
+      return;
+    }
+    if (!window.Plotly) return;
+
+    for (const script of todo) {
+      const source = normalize(script.textContent);
+      script.dataset.amPlotSource = source;
+      let target = script.nextElementSibling;
+      if (!target || !target.classList.contains('plot-render')) {
+        target = document.createElement('div');
+        target.className = 'plot-render';
+        script.parentNode.insertBefore(target, script.nextSibling);
+      } else {
+        // Re-render: purge Plotly's per-div state before redraw so the
+        // resize listeners / event bindings don't accumulate.
+        try { window.Plotly.purge(target); } catch (_) {}
+      }
+      if (!source) {
+        target.innerHTML =
+          '<div class="error-banner">Plotly source is empty.</div>';
+        continue;
+      }
+      let spec;
+      try {
+        spec = JSON.parse(source);
+      } catch (e) {
+        target.innerHTML =
+          '<div class="error-banner">Plotly JSON parse failed: '
+          + ((e && e.message) || e) + '</div>';
+        continue;
+      }
+      // Accept either {data, layout, config} or a bare data array.
+      const data = Array.isArray(spec) ? spec : (spec.data || []);
+      const layout = Array.isArray(spec) ? {} : (spec.layout || {});
+      const config = Array.isArray(spec) ? {} : (spec.config || {});
+      // Default to responsive + clean modebar for the common case.
+      const mergedConfig = Object.assign(
+        { responsive: true, displaylogo: false }, config,
+      );
+      try {
+        await window.Plotly.newPlot(target, data, layout, mergedConfig);
+        const fig = script.closest('figure');
+        if (fig) FIGURE_RENDERERS.set(fig, {
+          kind: 'plotly', instance: window.Plotly, source, target,
+        });
+      } catch (e) {
+        target.innerHTML =
+          '<div class="error-banner">Plotly render failed: '
+          + ((e && e.message) || e) + '</div>';
+      }
+    }
+  }
+
   function renderMath(root) {
     const target = root || body;
     if (window.renderMathInElement) {
@@ -1187,6 +1282,7 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
             if (node.classList.contains('abc-audio'))      return false;
             if (node.classList.contains('data-grid'))      return false;
             if (node.classList.contains('mermaid-render')) return false;
+            if (node.classList.contains('plot-render'))    return false;
           }
           return true;
         },
@@ -1207,6 +1303,7 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     renderMusicBlocks(body).catch(e => console.warn('music render:', e));
     renderDataBlocks(body).catch(e => console.warn('data render:', e));
     renderDiagramBlocks(body).catch(e => console.warn('diagram render:', e));
+    renderPlotBlocks(body).catch(e => console.warn('plot render:', e));
     se.scrollTop = sy;
   }
 
