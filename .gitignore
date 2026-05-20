@@ -55,9 +55,12 @@ scratch folder/
 # of .history/'s autosave churn. Local-only by convention.
 keepers/
 
-# Local test suite — pytest scripts for substrate-level validation, not
-# part of the published artifact. Run with `pytest tests/` locally.
-tests/
+# Test suite — scripts ship with the repo (every contributor benefits
+# from the same regression coverage). Only the artifact dirs stay
+# local: debug captures from real agent runs, pytest cache, pycache.
+tests/__pycache__/
+tests/_haiku_capture/
+tests/.pytest_cache/
 
 # Local-only helpers (not part of the published artifact). Pattern is
 # `scripts/*` (not `scripts/`) so per-file allow-rules below work —
