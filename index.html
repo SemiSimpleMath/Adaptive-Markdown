@@ -17,28 +17,100 @@
 
 <style>
 :root {
-  --bg: #fafaf7;
-  --side-bg: #ffffff;
-  --text: #1a1a1a;
-  --muted: #666;
-  --accent: #2a4d7a;
-  --accent-soft: #eef2f7;
-  --border: #d8d8d0;
-  --theorem-bd: #2a4d7a;
-  --theorem-bg: #eef2f7;
-  --def-bd: #c39548;
-  --def-bg: #f4f0e8;
-  --example-bd: #6a9255;
-  --example-bg: #f0f6ef;
-  --remark-bd: #999;
-  --remark-bg: #f3f3ee;
-  --error: #b34141;
-  --tool-bg: #f0efe9;
+  /* Surfaces */
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --bg-chrome: #f7f7f8;
+  --side-bg: #f7f7f8;
+  --tool-bg: #f7f7f8;
+  /* Text */
+  --text: #18181b;
+  --fg: #18181b;
+  --muted: #71717a;
+  --inverse: #ffffff;
+  /* Accent (indigo) */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
+  --accent-text: #ffffff;
+  /* Borders */
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  /* Code */
+  --code-bg: #f4f4f5;
+  /* Shadows + modal backdrop */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 36px rgba(15, 23, 42, 0.15);
+  --backdrop: rgba(15, 23, 42, 0.32);
+  /* Status */
+  --error: #dc2626;
+  --error-bg: #fef2f2;
+  --error-border: #fecaca;
+  --error-text: #991b1b;
+  --success: #16a34a;
+  --success-bg: #f0fdf4;
+  --success-border: #bbf7d0;
+  --success-text: #166534;
+  --warn-bg: #fff7ea;
+  --warn-border: #f2c987;
+  --warn-text: #8a4d10;
+  /* Kind colors (theorem/def/example) — academic semantics kept */
+  --theorem-bd: #4f46e5;
+  --theorem-bg: #eef2ff;
+  --def-bd: #d97706;
+  --def-bg: #fef3c7;
+  --example-bd: #16a34a;
+  --example-bg: #f0fdf4;
+  --remark-bd: #71717a;
+  --remark-bg: #f4f4f5;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b0b10;
+  --surface: #15151c;
+  --bg-chrome: #111118;
+  --side-bg: #111118;
+  --tool-bg: #1a1a22;
+  --text: #e8e8ed;
+  --fg: #e8e8ed;
+  --muted: #8b8b95;
+  --inverse: #0b0b10;
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-soft: rgba(129, 140, 248, 0.14);
+  --accent-text: #0b0b10;
+  --border: #27272f;
+  --border-strong: #3a3a44;
+  --code-bg: #1c1c24;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 14px 40px rgba(0, 0, 0, 0.6);
+  --backdrop: rgba(0, 0, 0, 0.6);
+  --error: #f87171;
+  --error-bg: rgba(248, 113, 113, 0.09);
+  --error-border: rgba(248, 113, 113, 0.3);
+  --error-text: #fca5a5;
+  --success: #4ade80;
+  --success-bg: rgba(74, 222, 128, 0.09);
+  --success-border: rgba(74, 222, 128, 0.3);
+  --success-text: #86efac;
+  --warn-bg: rgba(245, 158, 11, 0.12);
+  --warn-border: rgba(245, 158, 11, 0.3);
+  --warn-text: #fbbf24;
+  --theorem-bd: #818cf8;
+  --theorem-bg: rgba(129, 140, 248, 0.09);
+  --def-bd: #fbbf24;
+  --def-bg: rgba(251, 191, 36, 0.09);
+  --example-bd: #4ade80;
+  --example-bg: rgba(74, 222, 128, 0.09);
+  --remark-bd: #71717a;
+  --remark-bg: rgba(113, 113, 122, 0.09);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; }
 body {
-  font-family: 'Charter', 'Iowan Old Style', Georgia, serif;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.55;
@@ -85,7 +157,8 @@ body {
   width: 100%;
   border: 0;
   display: block;
-  background: #fff;
+  background: var(--bg);
+  color-scheme: light dark;
 }
 .doc-pane .scroll {
   flex: 1 1 0;
@@ -100,7 +173,7 @@ body {
 .view-tabs {
   display: flex;
   align-items: stretch;
-  background: #ececea;
+  background: var(--bg-chrome);
   border-bottom: 1px solid var(--border);
   padding: 0 0.5rem;
   gap: 0.5rem;
@@ -115,6 +188,13 @@ body {
   max-width: 240px;
   align-self: center;
 }
+.theme-toggle {
+  align-self: center;
+  padding: 0.18rem 0.45rem;
+  line-height: 1;
+  font-size: 0.95rem;
+}
+.theme-toggle .theme-icon { display: inline-block; }
 .view-dropdown-wrap {
   position: relative;
   align-self: stretch;
@@ -128,10 +208,10 @@ body {
   top: calc(100% + 6px);
   right: 0;
   z-index: 110;
-  background: white;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow);
   min-width: 160px;
   padding: 4px;
   display: flex;
@@ -164,20 +244,20 @@ body {
 .view-review .review-card-meta { padding: 0.5rem 0.9rem; background: var(--accent-soft); color: var(--muted); font-size: 0.78rem; font-family: ui-monospace, monospace; }
 .view-review .review-card-meta .review-card-id { color: var(--accent); font-weight: 600; }
 .view-review .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); }
-.view-review .review-pane { background: white; padding: 0.6rem 0.8rem; min-width: 0; }
+.view-review .review-pane { background: var(--surface); padding: 0.6rem 0.8rem; min-width: 0; }
 .view-review .review-pane-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.4rem; }
-.view-review .review-before pre { background: #fdecec; }
-.view-review .review-after pre { background: #ecfdec; }
+.view-review .review-before pre { background: var(--error-bg); }
+.view-review .review-after pre { background: var(--success-bg); }
 .view-review .review-pane pre { font-family: ui-monospace, monospace; font-size: 0.78rem; white-space: pre-wrap; word-break: break-word; padding: 0.5rem; border-radius: 3px; margin: 0; max-height: 360px; overflow-y: auto; }
 .view-review .review-card-btns { display: flex; gap: 0.4rem; padding: 0.6rem 0.8rem; justify-content: flex-end; background: var(--accent-soft); border-top: 1px solid var(--border); }
-.view-review .btn-accept { color: #2a6a2a; border-color: #c0d0c0; }
-.view-review .btn-accept:hover { background: #ecfdec; border-color: #6a9255; color: #2a6a2a; }
-.view-review .btn-reject { color: #8a2a2a; border-color: #d0c0c0; }
-.view-review .btn-reject:hover { background: #fdecec; border-color: #d4a4a4; color: #8a2a2a; }
+.view-review .btn-accept { color: var(--success-text); border-color: var(--success-border); }
+.view-review .btn-accept:hover { background: var(--success-bg); border-color: var(--success); color: var(--success-text); }
+.view-review .btn-reject { color: var(--error-text); border-color: var(--error-border); }
+.view-review .btn-reject:hover { background: var(--error-bg); border-color: var(--error); color: var(--error-text); }
 .new-doc-overlay {
   position: absolute;
   inset: 0;
-  background: white;        /* opaque — hides the previous doc */
+  background: var(--surface);        /* opaque — hides the previous doc */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -226,7 +306,7 @@ body {
   align-items: center;
 }
 .new-doc-card .btn-primary {
-  background: var(--accent); color: white; border: 0;
+  background: var(--accent); color: var(--accent-text); border: 0;
   padding: 0.55rem 1.3rem; border-radius: 4px;
   font: inherit; font-size: 0.92rem; cursor: pointer; font-weight: 600;
 }
@@ -245,11 +325,11 @@ body {
   max-width: 640px;
   width: 90vw;
   font: inherit;
-  background: white;
-  box-shadow: 0 12px 36px rgba(0,0,0,0.18);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
 }
 .convert-preview-dlg::backdrop {
-  background: rgba(0,0,0,0.32);
+  background: var(--backdrop);
 }
 .convert-preview-dlg h3 {
   margin: 0 0 0.4rem; font-size: 1.05rem; color: var(--accent);
@@ -259,16 +339,16 @@ body {
   font-family: ui-monospace, monospace;
 }
 .convert-preview-dlg .convert-warn {
-  font-size: 0.82rem; color: #8a4d10; background: #fff7ea;
-  border: 1px solid #f2c987; border-radius: 4px;
+  font-size: 0.82rem; color: var(--warn-text); background: var(--warn-bg);
+  border: 1px solid var(--warn-border); border-radius: 4px;
   padding: 0.55rem 0.7rem; margin-bottom: 0.7rem; line-height: 1.45;
 }
 .convert-preview-dlg pre.convert-preview-body {
   font-family: ui-monospace, monospace; font-size: 0.78rem;
-  background: #f6f6f4; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
   padding: 0.65rem 0.8rem; max-height: 260px; overflow: auto;
   white-space: pre-wrap; word-break: break-word;
-  color: #2a2a28; margin: 0;
+  color: var(--text); margin: 0;
 }
 .convert-preview-dlg .convert-preview-truncated {
   font-size: 0.75rem; color: var(--muted); margin: 0.4rem 0 0;
@@ -278,7 +358,7 @@ body {
   display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.9rem;
 }
 .convert-preview-dlg .btn-primary {
-  background: var(--accent); color: white; border: 0;
+  background: var(--accent); color: var(--accent-text); border: 0;
   padding: 0.5rem 1.1rem; border-radius: 4px;
   font: inherit; font-size: 0.92rem; cursor: pointer; font-weight: 600;
 }
@@ -288,7 +368,7 @@ body {
   padding: 0.5rem 1.1rem; border-radius: 4px;
   font: inherit; font-size: 0.92rem; cursor: pointer;
 }
-.convert-preview-dlg .btn-secondary:hover { background: #f3f3f1; }
+.convert-preview-dlg .btn-secondary:hover { background: var(--code-bg); border-color: var(--border-strong); color: var(--text); }
 
 /* Reset confirmation dialog — replaces the native confirm() with a
    viewer-styled modal that's clearer about what's being replaced and
@@ -300,24 +380,24 @@ body {
   max-width: 500px;
   width: 90vw;
   font: inherit;
-  background: white;
-  box-shadow: 0 12px 36px rgba(0,0,0,0.18);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
 }
-.reset-confirm-dlg::backdrop { background: rgba(0,0,0,0.32); }
+.reset-confirm-dlg::backdrop { background: var(--backdrop); }
 .reset-confirm-dlg h3 {
   margin: 0 0 0.5rem; font-size: 1.05rem; color: var(--accent);
 }
 .reset-confirm-dlg .reset-doc-line {
   font-family: ui-monospace, monospace; font-size: 0.85rem;
-  color: var(--muted); background: #f6f6f4; border: 1px solid var(--border);
+  color: var(--muted); background: var(--code-bg); border: 1px solid var(--border);
   border-radius: 4px; padding: 0.45rem 0.65rem; margin-bottom: 0.8rem;
 }
 .reset-confirm-dlg p {
   margin: 0 0 0.7rem; font-size: 0.92rem; line-height: 1.5;
 }
 .reset-confirm-dlg .reset-safety {
-  font-size: 0.85rem; color: var(--muted);
-  background: #f0f7ed; border-left: 3px solid #6a9255; border-radius: 4px;
+  font-size: 0.85rem; color: var(--success-text);
+  background: var(--success-bg); border-left: 3px solid var(--success); border-radius: 4px;
   padding: 0.55rem 0.7rem; margin-bottom: 1rem;
 }
 .reset-confirm-dlg .reset-actions {
@@ -329,13 +409,13 @@ body {
   border-radius: 4px; cursor: pointer;
 }
 .reset-confirm-dlg .btn-primary {
-  background: var(--accent); color: white; border: 0; font-weight: 600;
+  background: var(--accent); color: var(--accent-text); border: 0; font-weight: 600;
 }
 .reset-confirm-dlg .btn-primary:hover { filter: brightness(1.1); }
 .reset-confirm-dlg .btn-secondary {
   background: transparent; color: var(--muted); border: 1px solid var(--border);
 }
-.reset-confirm-dlg .btn-secondary:hover { background: #f3f3f1; }
+.reset-confirm-dlg .btn-secondary:hover { background: var(--code-bg); border-color: var(--border-strong); color: var(--text); }
 .reset-confirm-dlg .add-skill-input {
   width: 100%;
   box-sizing: border-box;
@@ -345,17 +425,17 @@ body {
   margin: 0 0 0.8rem;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: white;
+  background: var(--surface);
 }
 .reset-confirm-dlg .add-skill-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(42, 77, 122, 0.12);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .reset-confirm-dlg code {
   font-family: ui-monospace, monospace;
   font-size: 0.85em;
-  background: #f6f6f4;
+  background: var(--code-bg);
   padding: 0.05em 0.35em;
   border-radius: 3px;
 }
@@ -367,7 +447,7 @@ body {
 .view-history .history-actions { display: flex; gap: 0.45rem; padding: 0.4rem 0 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; flex-wrap: wrap; }
 .view-history .history-actions .btn-tiny { font-size: 0.85rem; padding: 0.35rem 0.75rem; }
 .view-history .history-empty { color: var(--muted); font-style: italic; padding: 1.5rem; text-align: center; }
-.view-history .history-row { display: flex; width: 100%; align-items: baseline; gap: 0.6rem; padding: 0.55rem 0.85rem; background: white; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 4px; font: inherit; font-size: 0.83rem; text-align: left; cursor: pointer; color: inherit; }
+.view-history .history-row { display: flex; width: 100%; align-items: baseline; gap: 0.6rem; padding: 0.55rem 0.85rem; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; margin-bottom: 4px; font: inherit; font-size: 0.83rem; text-align: left; cursor: pointer; color: inherit; }
 .view-history .history-row:hover { background: var(--accent-soft); border-color: var(--accent); }
 .view-history .history-row-ts { flex: 1 1 auto; }
 .view-history .history-row-size { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.78rem; }
@@ -377,7 +457,7 @@ body {
 .view-skills .skills-actions { display: flex; gap: 0.45rem; padding: 0.4rem 0 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
 .view-skills .skills-list { display: flex; flex-direction: column; gap: 0.55rem; max-width: 760px; }
 .view-skills .skills-empty { color: var(--muted); font-style: italic; padding: 1.5rem; text-align: center; }
-.view-skills .skill-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 0.9rem; background: white; }
+.view-skills .skill-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 0.9rem; background: var(--surface); }
 .view-skills .skill-card-name { font-weight: 600; color: var(--accent); margin-bottom: 0.3rem; font-size: 0.95rem; }
 .view-skills .skill-card-preview { font-family: ui-monospace, monospace; font-size: 0.78rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 4.2em; overflow: hidden; line-height: 1.4; margin-bottom: 0.6rem; }
 .view-skills .skill-card-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
@@ -403,7 +483,7 @@ body {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.85rem;
   white-space: pre-wrap;
-  background: white;
+  background: var(--surface);
   border: 1px solid var(--border);
   padding: 1rem;
   border-radius: 4px;
@@ -416,9 +496,11 @@ body {
 }
 
 @media print {
+  /* Print always uses light styling regardless of theme — dark on dark
+     paper isn't a thing. */
   .chat-pane, .view-tabs { display: none !important; }
   .doc-pane { border: 0; }
-  body { background: white; color: black; }
+  body { background: #ffffff; color: #000000; }
   .kind-theorem, .kind-lemma, .kind-proposition, .kind-corollary,
   .kind-definition, .kind-example, .kind-proof, .kind-solution {
     page-break-inside: avoid;
@@ -467,10 +549,10 @@ article h4 { font-size: 1rem;    }
 /* Callouts — agents express these as <aside class="note|aside|remark"> */
 aside.note, aside.aside, aside.remark, .note, .aside, .remark {
   font-style: italic; color: var(--muted);
-  background: #fafaf6; border-left: 3px solid #999;
+  background: var(--remark-bg); border-left: 3px solid var(--remark-bd);
   padding: 0.5em 0.9em; margin: 1em 0;
 }
-.kind-proof, .kind-solution { color: #444; margin-top: 1rem !important; }
+.kind-proof, .kind-solution { color: var(--muted); margin-top: 1rem !important; }
 .kind-abstract {
   background: var(--remark-bg);
   border-left: 3px solid var(--remark-bd);
@@ -485,12 +567,12 @@ a[href^="#"]:hover { text-decoration: underline; }
    The caption is always visible (HTML5-semantic). Native <figure> needs
    no extra class. */
 figure { margin: 1.5rem 0; padding: 1rem 1.25rem; border-radius: 4px;
-         background: white; border: 2px dashed var(--border);
+         background: var(--surface); border: 2px dashed var(--border);
          text-align: center; }
-figure figcaption { font-style: italic; color: #333; padding-top: .35rem; }
+figure figcaption { font-style: italic; color: var(--muted); padding-top: .35rem; }
 
 /* Pinned (author-locked) — agents express as <div class="pinned"> */
-.pinned { background: #fffaf3; border-left: 3px solid #c39548;
+.pinned { background: var(--def-bg); border-left: 3px solid var(--def-bd);
           padding: 1rem 1.25rem; margin: 1.5rem 0; border-radius: 4px; }
 .pinned::before {
   content: "🔒 pinned";
@@ -501,13 +583,13 @@ figure figcaption { font-style: italic; color: #333; padding-top: .35rem; }
 
 ol, ul { padding-left: 1.5rem; }
 li { margin: .25rem 0; }
-code { background: #ececec; padding: 1px 4px; border-radius: 3px; font-size: .9em; }
+code { background: var(--code-bg); padding: 1px 4px; border-radius: 3px; font-size: .9em; }
 pre code { display: block; padding: .75rem; overflow-x: auto; }
 .katex-display { margin: 1rem 0; overflow-x: auto; overflow-y: hidden; }
 
 /* Selection */
 .hover-block {
-  outline: 1px dashed #999;
+  outline: 1px dashed var(--border-strong);
   outline-offset: 3px;
   cursor: pointer;
 }
@@ -567,7 +649,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 .btn-tiny:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 
 .doc-select {
-  background: white; border: 1px solid var(--border);
+  background: var(--surface); border: 1px solid var(--border);
   padding: 0.18rem 0.4rem; border-radius: 4px;
   font: inherit; font-size: 0.78rem; font-family: ui-monospace, monospace;
   color: var(--muted); cursor: pointer;
@@ -739,7 +821,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 .input-row textarea {
   flex: 1; resize: none; font: inherit;
   padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px;
-  background: white;
+  background: var(--surface);
 }
 .input-row button {
   padding: 0 1rem; background: var(--accent); color: white;
@@ -748,12 +830,26 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 .input-row button:disabled { background: var(--muted); cursor: default; }
 
 .error-banner {
-  background: #fdecec; border: 1px solid #d4a4a4; border-radius: 4px;
-  padding: .75rem 1rem; color: #8a2a2a;
+  background: var(--error-bg); border: 1px solid var(--error-border); border-radius: 4px;
+  padding: .75rem 1rem; color: var(--error-text);
   font-family: ui-monospace, monospace; font-size: .85rem;
   white-space: pre-wrap;
 }
 </style>
+<script>
+  // Apply theme BEFORE first paint so there's no flash of opposite mode.
+  // Stored value takes precedence; otherwise honor OS preference.
+  (function () {
+    try {
+      var stored = localStorage.getItem('am_theme');
+      var theme = stored === 'dark' || stored === 'light'
+        ? stored
+        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark' : 'light');
+      if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    } catch (e) { /* localStorage blocked — fall through to light default */ }
+  })();
+</script>
 </head>
 <body>
 <div class="app">
@@ -762,6 +858,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="view-tab-buttons" id="view-tab-buttons"></div>
       <select id="doc-select" class="doc-select" title="Switch document"></select>
       <button id="new-doc-btn" class="btn-tiny" title="Add a new document — drop a file or browse">＋ Doc</button>
+      <button id="theme-toggle-btn" class="btn-tiny theme-toggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">
+        <span class="theme-icon" aria-hidden="true">🌙</span>
+      </button>
     </div>
     <!-- The iframe is fully cross-origin once loaded (`localhost` vs the
          viewer's `127.0.0.1`), so `allow-same-origin` is safe there: it
@@ -875,6 +974,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const modelSelect = document.getElementById('model-select');
   const newChatBtn = document.getElementById('new-chat-btn');
   const newDocBtn = document.getElementById('new-doc-btn');
+  const themeToggleBtn = document.getElementById('theme-toggle-btn');
   const newDocOverlay = document.getElementById('new-doc-overlay');
   const newDocClose = document.getElementById('new-doc-close');
   const newDocInput = document.getElementById('new-doc-input');
@@ -909,17 +1009,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // Plain views: always visible as top-level tabs.
   const VIEW_TYPES = [
     { id: 'doc',     label: 'Doc'     },
-    { id: 'source',  label: 'Source'  },
     { id: 'history', label: 'History' },
     { id: 'skills',  label: 'Skills'  },
   ];
-  // Math-specific views: tucked under a "View ▾" dropdown that only
-  // appears when the active doc has math content (KaTeX delimiters
-  // or reserved-word headings like Theorem / Lemma / …). Hides the
-  // chrome that doesn't apply to prose-only docs.
+  // Alternate views: tucked under a "View ▾" dropdown. Source is the
+  // universal item — present on every doc. Graph + LaTeX appear only
+  // for docs with math content (KaTeX delimiters or reserved-word
+  // headings like Theorem / Lemma / …). The dropdown is always
+  // visible because Source is always available.
+  const VIEW_ALT_UNIVERSAL = [
+    { id: 'source', label: 'Source' },
+  ];
   const VIEW_MATH_TOOLS = [
-    { id: 'graph',  label: 'Graph'  },
-    { id: 'latex',  label: 'LaTeX'  },
+    { id: 'graph', label: 'Graph' },
+    { id: 'latex', label: 'LaTeX' },
   ];
   // File actions (not views): grouped under "File ▾" because they
   // eject the user out of the viewer (download / print dialog)
@@ -1010,17 +1113,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       viewTabs.appendChild(btn);
     }
 
-    // View ▾ — only for docs with math content. Active highlight when
-    // the currently-selected view is one of its items.
-    if (hasMath) {
-      const mathActive = VIEW_MATH_TOOLS.some(v => v.id === currentView);
-      viewTabs.appendChild(makeViewDropdown('View', VIEW_MATH_TOOLS, mathActive, item => {
-        if (item.id === currentView) return;
-        currentView = item.id;
-        renderViewTabs();
-        renderCurrentView();
-      }));
-    }
+    // View ▾ — always present. Source is the universal alternate view;
+    // Graph + LaTeX appear only when the doc has math content. Active
+    // highlight when the currently-selected view is one of its items.
+    const altItems = [
+      ...VIEW_ALT_UNIVERSAL,
+      ...(hasMath ? VIEW_MATH_TOOLS : []),
+    ];
+    const altActive = altItems.some(v => v.id === currentView);
+    viewTabs.appendChild(makeViewDropdown('View', altItems, altActive, item => {
+      if (item.id === currentView) return;
+      currentView = item.id;
+      renderViewTabs();
+      renderCurrentView();
+    }));
 
     // File ▾ — always present. No "active" state because these are
     // actions, not view switches.
@@ -1663,6 +1769,40 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     docFrame.contentWindow.postMessage(msg, IFRAME_ORIGIN);
   }
 
+  // ---- Theme (light / dark) -----------------------------------------------
+  // The pre-paint <script> in <head> has already applied the right
+  // data-theme attribute to <html>, so the chrome paints without flash.
+  // Here we read that initial value, paint the toggle's icon to match,
+  // and wire the toggle + iframe sync.
+  function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  }
+  function paintThemeIcon() {
+    const icon = themeToggleBtn.querySelector('.theme-icon');
+    if (!icon) return;
+    // Show the icon the click WILL switch to (☀ when dark, 🌙 when light).
+    icon.textContent = currentTheme() === 'dark' ? '☀' : '🌙';
+    themeToggleBtn.title = currentTheme() === 'dark'
+      ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  function applyTheme(theme) {
+    if (theme !== 'light' && theme !== 'dark') theme = 'light';
+    if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
+    try { localStorage.setItem('am_theme', theme); } catch (_) {}
+    sendToFrame({ type: 'theme', theme });
+    paintThemeIcon();
+  }
+  paintThemeIcon();
+  themeToggleBtn.addEventListener('click', () => {
+    applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+  });
+  // Re-broadcast theme each time the iframe becomes ready so it picks
+  // up the current state even if it loaded after the initial apply.
+  function broadcastThemeOnReady() {
+    sendToFrame({ type: 'theme', theme: currentTheme() });
+  }
+
   window.addEventListener('message', (e) => {
     // Two-layer filter: source must be our iframe AND origin must be the
     // expected iframe origin. Either check alone is insufficient — a
@@ -1677,6 +1817,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // sendToFrame targets IFRAME_ORIGIN; the iframe sees this as a
       // `hello` from our exact origin and pins all subsequent messages.
       sendToFrame({ type: 'hello' });
+      // Mirror the current theme into the iframe so its data-theme
+      // matches the parent on initial load (iframe loads after parent).
+      broadcastThemeOnReady();
       if (pendingFrameContent) {
         const m = pendingFrameContent; pendingFrameContent = null;
         sendToFrame(m);
@@ -3310,6 +3453,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     "- `/undo` — revert the doc to its previous snapshot\n" +
     "- `/history` — open the History tab (snapshots + restore)\n" +
     "- `/skills` — open the Skills tab (doc's agent-skill sections)\n" +
+    "- `/source` — open the Source view (raw markdown)\n" +
     "- `/model <name>` — switch model (e.g. `/model sonnet`); starts a fresh chat\n" +
     "- `/new` (or `/clear`) — start a fresh conversation"
   );
@@ -3356,6 +3500,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     if (cmd === '/skills') {
       if (currentView === 'skills') return true;
       currentView = 'skills';
+      renderViewTabs();
+      renderCurrentView();
+      return true;
+    }
+    if (cmd === '/source') {
+      if (currentView === 'source') return true;
+      currentView = 'source';
       renderViewTabs();
       renderCurrentView();
       return true;

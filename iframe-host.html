@@ -26,36 +26,69 @@
 /* Baseline CSS custom properties. Override on :root in your doc-local
    <style> block to re-theme the whole page without redefining every rule. */
 :root {
-  --am-bg: #fff;
-  --am-text: #1a1a1a;
-  --am-muted: #888;
-  --am-link: #2a4d7a;
-  --am-code-bg: #f4f3ee;
-  --am-pre-bg: #f4f3ee;
-  --am-blockquote-border: #d0d0c8;
-  --am-blockquote-text: #555;
-  --am-theorem-color: #2a4d7a;
-  --am-definition-color: #c39548;
-  --am-example-color: #6a9255;
-  --am-figure-placeholder-border: #c8c8c0;
-  --am-figure-caption: #555;
-  --am-note-bg: #fafaf6;
-  --am-note-border: #888;
-  --am-pinned-bg: #f3f6fa;
-  --am-pinned-border: #4a6db5;
-  --am-error-bg: #fdecec;
-  --am-error-border: #d4a4a4;
-  --am-error-text: #8a2a2a;
-  --am-selection-outline: #2a4d7a;
-  --am-hover-outline: #b8b8b0;
+  --am-bg: #ffffff;
+  --am-surface: #ffffff;
+  --am-text: #18181b;
+  --am-muted: #71717a;
+  --am-link: #4f46e5;
+  --am-code-bg: #f4f4f5;
+  --am-pre-bg: #f4f4f5;
+  --am-blockquote-border: #e4e4e7;
+  --am-blockquote-text: #52525b;
+  --am-theorem-color: #4f46e5;
+  --am-definition-color: #d97706;
+  --am-example-color: #16a34a;
+  --am-figure-placeholder-border: #e4e4e7;
+  --am-figure-caption: #71717a;
+  --am-note-bg: #f4f4f5;
+  --am-note-border: #a1a1aa;
+  --am-pinned-bg: #fef3c7;
+  --am-pinned-border: #d97706;
+  --am-error-bg: #fef2f2;
+  --am-error-border: #fecaca;
+  --am-error-text: #991b1b;
+  --am-selection-outline: #4f46e5;
+  --am-hover-outline: #d4d4d8;
+  --am-widget-bg: #ffffff;
 }
+
+:root[data-theme="dark"] {
+  --am-bg: #0b0b10;
+  --am-surface: #15151c;
+  --am-text: #e8e8ed;
+  --am-muted: #8b8b95;
+  --am-link: #818cf8;
+  --am-code-bg: #1c1c24;
+  --am-pre-bg: #1c1c24;
+  --am-blockquote-border: #2a2a32;
+  --am-blockquote-text: #a1a1aa;
+  --am-theorem-color: #818cf8;
+  --am-definition-color: #fbbf24;
+  --am-example-color: #4ade80;
+  --am-figure-placeholder-border: #2a2a32;
+  --am-figure-caption: #8b8b95;
+  --am-note-bg: rgba(255, 255, 255, 0.04);
+  --am-note-border: #52525b;
+  --am-pinned-bg: rgba(251, 191, 36, 0.08);
+  --am-pinned-border: #fbbf24;
+  --am-error-bg: rgba(248, 113, 113, 0.09);
+  --am-error-border: rgba(248, 113, 113, 0.3);
+  --am-error-text: #fca5a5;
+  --am-selection-outline: #818cf8;
+  --am-hover-outline: #3a3a44;
+  /* Live-renderer canvases (music notation SVG, data grid, Mermaid SVG)
+     need a light backdrop in dark mode — they're authored against white
+     and reversing them looks bad. Keep canvases white in dark theme. */
+  --am-widget-bg: #ffffff;
+}
+
 html, body { margin: 0; padding: 0; min-height: 100%; box-sizing: border-box; }
-body { font-family: ui-serif, Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.6; color: var(--am-text); background: var(--am-bg); padding: 32px 56px; }
-.meta { color: var(--am-muted); font-size: 13px; margin: 0 auto 24px; max-width: 760px; font-family: ui-sans-serif, system-ui, sans-serif; }
+body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; font-size: 17px; line-height: 1.6; color: var(--am-text); background: var(--am-bg); padding: 32px 56px; }
+.meta { color: var(--am-muted); font-size: 13px; margin: 0 auto 24px; max-width: 760px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 article#body { max-width: 760px; margin: 0 auto; }
-article#body h1 { font-size: 1.8rem; margin: 0 0 1rem; font-family: ui-sans-serif, system-ui, sans-serif; }
-article#body h2 { font-size: 1.3rem; margin: 1.8em 0 0.5em; font-family: ui-sans-serif, system-ui, sans-serif; }
-article#body h3 { font-size: 1.1rem; margin: 1.4em 0 0.4em; font-family: ui-sans-serif, system-ui, sans-serif; }
+article#body h1 { font-size: 1.8rem; margin: 0 0 1rem; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+article#body h2 { font-size: 1.3rem; margin: 1.8em 0 0.5em; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+article#body h3 { font-size: 1.1rem; margin: 1.4em 0 0.4em; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 article#body p { margin: 1em 0; }
 article#body blockquote { margin: 1em 0; padding: 0.6em 1em; border-left: 3px solid var(--am-blockquote-border); color: var(--am-blockquote-text); }
 article#body code { background: var(--am-code-bg); padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.92em; }
@@ -89,20 +122,20 @@ figure figcaption { font-style: italic; color: var(--am-figure-caption); padding
    audio. We don't want the figure's dashed-placeholder border showing
    through, and we want a bit of breathing room above the audio widget. */
 figure.music { text-align: left; border: 0; padding: 0.4em 0; }
-figure.music .abc-notation, figure.music .musicxml-render { background: white; padding: 0.5em; border-radius: 4px; overflow-x: auto; }
+figure.music .abc-notation, figure.music .musicxml-render { background: var(--am-widget-bg); padding: 0.5em; border-radius: 4px; overflow-x: auto; }
 figure.music .abc-audio { margin-top: 0.6em; }
 figure.music midi-player { display: block; margin: 0.4em 0; }
 /* Data figures: same logic as music — hide the dashed placeholder
    since the renderer fills the figure, and give the live grid a
    reasonable size. Tabulator brings its own CSS but we cap height. */
 figure.data { text-align: left; border: 0; padding: 0.4em 0; }
-figure.data .data-grid { background: white; border-radius: 4px; overflow: hidden; max-height: 60vh; }
+figure.data .data-grid { background: var(--am-widget-bg); border-radius: 4px; overflow: hidden; max-height: 60vh; }
 figure.data script[type="text/csv"] { display: none; }
 /* Diagram figures: Mermaid renders SVG into the sibling div. White
    background + padding keeps the diagram readable across themes;
    max-width caps width on portrait viewports while preserving aspect. */
 figure.diagram { text-align: left; border: 0; padding: 0.4em 0; }
-figure.diagram .mermaid-render { background: white; padding: 0.5em; border-radius: 4px; overflow-x: auto; text-align: center; }
+figure.diagram .mermaid-render { background: var(--am-widget-bg); padding: 0.5em; border-radius: 4px; overflow-x: auto; text-align: center; }
 figure.diagram .mermaid-render svg { max-width: 100%; height: auto; }
 figure.diagram script[type="text/x-mermaid"] { display: none; }
 
@@ -1155,6 +1188,12 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
       // it postMessages us instead. We print our own document, which
       // gets our @media print CSS and full content flow across pages.
       window.print();
+    } else if (d.type === 'theme') {
+      // Parent broadcasts theme changes. We mirror on our own <html>
+      // so :root[data-theme="dark"] CSS variables take effect.
+      const t = d.theme === 'dark' ? 'dark' : 'light';
+      if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+      else document.documentElement.removeAttribute('data-theme');
     }
   });
 

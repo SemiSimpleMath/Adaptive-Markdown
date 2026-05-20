@@ -1785,9 +1785,17 @@ def scenario_agent_skill_hidden(page, base: str, r: Results) -> None:
     )
 
     # Source view shows the raw markdown including the skill section.
+    # Source lives under View ▾ now — open the dropdown then click Source.
     page.evaluate(
-        "() => Array.from(document.querySelectorAll('.view-tab'))"
-        ".find(b => b.textContent === 'Source').click()"
+        "() => Array.from(document.querySelectorAll('.view-tab-dropdown'))"
+        ".find(b => b.textContent.startsWith('View')).click()"
+    )
+    page.wait_for_timeout(100)
+    page.evaluate(
+        "() => { const m = Array.from(document.querySelectorAll('.view-dropdown-menu'))"
+        ".find(m => !m.hidden);"
+        "Array.from(m.querySelectorAll('.overflow-item'))"
+        ".find(b => b.textContent.trim() === 'Source').click(); }"
     )
     page.wait_for_timeout(300)
     source_text = page.evaluate(
