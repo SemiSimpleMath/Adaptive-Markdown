@@ -107,6 +107,38 @@ PROVIDER_FILE = ROOT / ".am-provider"
 VALID_PROVIDERS = ("claude", "codex")
 
 
+def _ensure_git_hooks_path() -> None:
+    """Wire .githooks/ as the repo's hooks dir on first run so the
+    pre-commit inline-script check runs without manual setup.
+
+    No-op if not a git repo, hook file missing, or already pointed at
+    .githooks. Per-repo config (.git/config), never global. Quiet on
+    the steady-state path; only logs when the value actually changes."""
+    try:
+        if not (ROOT / ".git").exists():
+            return
+        if not (ROOT / ".githooks" / "pre-commit").exists():
+            return
+        current = subprocess.run(
+            ["git", "config", "--get", "core.hooksPath"],
+            cwd=ROOT, capture_output=True, text=True,
+        ).stdout.strip()
+        if current == ".githooks":
+            return
+        subprocess.run(
+            ["git", "config", "core.hooksPath", ".githooks"],
+            cwd=ROOT, check=False,
+        )
+        print("[setup] Wired .githooks/ — pre-commit will run "
+              "scripts/check_inline_scripts.py on viewer HTML edits.",
+              flush=True)
+    except Exception as e:
+        print(f"[setup] git hook setup skipped: {e}", flush=True)
+
+
+_ensure_git_hooks_path()
+
+
 def _read_persisted_provider() -> str | None:
     if not PROVIDER_FILE.exists():
         return None
