@@ -270,39 +270,54 @@ def scenario_iframe_isolation(page, base: str, r: Results) -> None:
 
 
 def scenario_history_undo_reset(page, base: str, r: Results) -> None:
-    """Click History — the panel must populate without the JSON parse error
-    the user just hit. Click Undo and Reset — endpoints must respond."""
-    print("\n[scenario] History / Undo / Reset buttons")
+    """Switch to the History tab — it populates from /history without a JSON
+    parse error. Direct POSTs to /undo and /reset must respond cleanly."""
+    print("\n[scenario] History tab / Undo / Reset")
 
     page.goto(base + "/")
     page.wait_for_function(
         "() => document.getElementById('doc-frame') && "
-        "document.getElementById('history-btn') && "
+        "Array.from(document.querySelectorAll('.view-tab')).some(b => b.textContent.trim() === 'History') && "
         "document.getElementById('doc-select')?.value",
         timeout=10000,
     )
 
-    # Click History — this fetches /history?doc=... and renders the panel.
-    # History lives under the toolbar's overflow menu (⋯) now; open the
-    # menu first, then click the History item.
-    page.click("#overflow-btn")
-    page.wait_for_selector("#overflow-menu:not([hidden])", timeout=2000)
-    page.click("#history-btn")
-    page.wait_for_selector("#history-panel:not([hidden])", timeout=5000)
+    # Switch to History tab and wait for the snap list to populate.
+    page.evaluate(
+        "() => Array.from(document.querySelectorAll('.view-tab'))"
+        ".find(b => b.textContent.trim() === 'History').click()"
+    )
+    page.wait_for_selector(".view-history .history-list", timeout=5000)
+    # Either rows appear OR an empty state — both are valid; what matters is
+    # no JSON parse error.
+    page.wait_for_function(
+        "() => { const l = document.querySelector('.view-history .history-list');"
+        "       return l && !l.textContent.includes('loading…'); }",
+        timeout=5000,
+    )
     panel_text = page.evaluate(
-        "() => document.getElementById('history-panel').textContent"
+        "() => document.querySelector('.view-history').textContent"
     )
     no_json_error = (
         "Unexpected token" not in panel_text
         and "not valid JSON" not in panel_text
     )
     r.assert_(
-        "History panel renders without JSON parse error",
+        "History tab renders without JSON parse error",
         no_json_error,
         detail=panel_text[:200],
     )
-    # Close panel for the next click.
-    page.keyboard.press("Escape")
+    # Action buttons must exist on the History tab.
+    actions = page.evaluate(
+        "() => Array.from(document.querySelectorAll('.view-history .history-actions button'))"
+        ".map(b => b.textContent.trim())"
+    )
+    r.assert_(
+        "History tab exposes Undo / Reset / Save as baseline actions",
+        any('Undo' in a for a in actions) and any('Reset' in a for a in actions)
+        and any('baseline' in a.lower() for a in actions),
+        detail=str(actions),
+    )
 
     # Click Undo. Either it succeeds, or it returns "no snapshots yet" — both
     # are acceptable. What's NOT acceptable is "origin not allowed" / 403.
@@ -1684,11 +1699,13 @@ def scenario_add_doc_skill(page, base: str, r: Results) -> None:
         detail=str(info),
     )
 
-    # + Skill button is present and bound in the toolbar.
-    btn_present = page.evaluate(
-        "() => !!document.getElementById('add-skill-btn')"
+    # Skills tab is present in the view chrome (replaces the legacy + Skill
+    # button under the overflow menu).
+    skills_tab_present = page.evaluate(
+        "() => Array.from(document.querySelectorAll('.view-tab'))"
+        ".some(b => b.textContent.trim() === 'Skills')"
     )
-    r.assert_("+ Skill button is in the toolbar chrome", btn_present)
+    r.assert_("Skills tab is in the view chrome", skills_tab_present)
 
     shutil.rmtree(doc_dir, ignore_errors=True)
 
@@ -2895,13 +2912,15 @@ def scenario_tex_skip_preview(page, base: str, r: Results) -> None:
 
 
 def scenario_reset_confirm_dialog(page, base: str, r: Results) -> None:
-    """Reset button opens a styled <dialog> instead of the native confirm().
-    Cancel must close without resetting; Reset must close + POST /reset."""
+    """Reset (from the History tab) opens a styled <dialog> instead of the
+    native confirm(). Cancel must close without resetting; Reset must close
+    + POST /reset."""
     print("\n[scenario] reset confirmation modal")
 
     page.goto(base + "/")
     page.wait_for_function(
-        "() => document.getElementById('reset-doc-btn') && "
+        "() => Array.from(document.querySelectorAll('.view-tab'))"
+        ".some(b => b.textContent.trim() === 'History') && "
         "document.getElementById('doc-select')?.value",
         timeout=10000,
     )
@@ -2914,17 +2933,24 @@ def scenario_reset_confirm_dialog(page, base: str, r: Results) -> None:
         if req.method == "POST" and "/reset" in req.url else None,
     )
 
-    # Open the dialog. Reset lives under the toolbar's overflow menu (⋯)
-    # now; open the menu first, then click the Reset item.
-    page.click("#overflow-btn")
-    page.wait_for_selector("#overflow-menu:not([hidden])", timeout=2000)
-    page.click("#reset-doc-btn")
+    def click_reset_in_history_tab():
+        page.evaluate(
+            "() => Array.from(document.querySelectorAll('.view-tab'))"
+            ".find(b => b.textContent.trim() === 'History').click()"
+        )
+        page.wait_for_selector(".view-history .history-actions", timeout=3000)
+        page.evaluate(
+            "() => Array.from(document.querySelectorAll('.view-history .history-actions button'))"
+            ".find(b => b.textContent.includes('Reset')).click()"
+        )
+
+    click_reset_in_history_tab()
     page.wait_for_function(
         "() => document.getElementById('reset-confirm-dlg').open",
         timeout=3000,
     )
     r.assert_(
-        "reset dialog opens on Reset-button click",
+        "reset dialog opens from History-tab Reset action",
         page.evaluate("() => document.getElementById('reset-confirm-dlg').open")
         is True,
     )
@@ -2944,7 +2970,7 @@ def scenario_reset_confirm_dialog(page, base: str, r: Results) -> None:
         "() => !document.getElementById('reset-confirm-dlg').open",
         timeout=3000,
     )
-    page.wait_for_timeout(200)  # give any errant fetch a chance to fire
+    page.wait_for_timeout(200)
     r.assert_(
         "Cancel closes the dialog without POSTing /reset",
         len(reset_posts) == 0,
@@ -2952,9 +2978,7 @@ def scenario_reset_confirm_dialog(page, base: str, r: Results) -> None:
     )
 
     # Re-open + click Reset → dialog closes + /reset is POSTed
-    page.click("#overflow-btn")
-    page.wait_for_selector("#overflow-menu:not([hidden])", timeout=2000)
-    page.click("#reset-doc-btn")
+    click_reset_in_history_tab()
     page.wait_for_function(
         "() => document.getElementById('reset-confirm-dlg').open",
         timeout=3000,

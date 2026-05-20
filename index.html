@@ -115,9 +115,6 @@ body {
   max-width: 240px;
   align-self: center;
 }
-.view-tabs #reset-doc-btn { align-self: center; }
-.history-wrap { position: relative; align-self: center; }
-.overflow-wrap { position: relative; align-self: center; }
 .view-dropdown-wrap {
   position: relative;
   align-self: stretch;
@@ -362,56 +359,33 @@ body {
   padding: 0.05em 0.35em;
   border-radius: 3px;
 }
-.skills-list-dlg { max-width: 640px; }
-.skills-list { display: flex; flex-direction: column; gap: 0.55rem; margin: 0.4rem 0 1rem; max-height: 50vh; overflow-y: auto; }
-.skills-list .skills-empty { color: var(--muted); font-style: italic; padding: 1.5rem; text-align: center; }
-.skills-list .skill-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.7rem 0.85rem; background: white; }
-.skills-list .skill-card-name { font-weight: 600; color: var(--accent); margin-bottom: 0.25rem; font-size: 0.92rem; }
-.skills-list .skill-card-preview { font-family: ui-monospace, monospace; font-size: 0.78rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 4.2em; overflow: hidden; line-height: 1.4; margin-bottom: 0.5rem; }
-.skills-list .skill-card-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
-.skills-edit-dlg { max-width: 720px; }
-.skills-edit-textarea {
-  width: 100%; box-sizing: border-box;
-  min-height: 280px; max-height: 60vh;
-  font-family: ui-monospace, monospace; font-size: 0.85rem;
-  padding: 0.7rem 0.85rem; margin: 0 0 0.8rem;
-  border: 1px solid var(--border); border-radius: 4px;
-  background: white; resize: vertical;
-}
-.skills-edit-textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(42, 77, 122, 0.12); }
-.history-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  box-shadow: 0 6px 16px rgba(0,0,0,0.12);
-  min-width: 280px;
-  max-width: 400px;
-  max-height: 340px;
-  overflow-y: auto;
-  z-index: 100;
-  font-size: 0.8rem;
-}
-.history-panel .history-empty {
-  padding: 1rem; color: var(--muted); text-align: center; font-style: italic;
-}
-.history-panel button.history-row {
-  display: flex;
-  width: 100%;
-  align-items: baseline;
-  gap: 0.6rem;
-  padding: 0.5rem 0.8rem;
-  background: white;
-  border: 0; border-bottom: 1px solid var(--border);
-  font: inherit; font-size: 0.8rem;
-  text-align: left; cursor: pointer; color: inherit;
-}
-.history-panel button.history-row:hover { background: var(--accent-soft); }
-.history-panel button.history-row:last-child { border-bottom: 0; }
-.history-panel .history-row-ts { flex: 1 1 auto; }
-.history-panel .history-row-size { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.75rem; }
+/* History tab — replaces the legacy dropdown panel. Same row markup as
+   the dropdown (.history-row / .history-row-ts / .history-row-size) but
+   laid out inside the full doc-pane viewport with action buttons at the
+   top. */
+.view-history { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; padding: 1rem 1.5rem; }
+.view-history .history-actions { display: flex; gap: 0.45rem; padding: 0.4rem 0 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; flex-wrap: wrap; }
+.view-history .history-actions .btn-tiny { font-size: 0.85rem; padding: 0.35rem 0.75rem; }
+.view-history .history-empty { color: var(--muted); font-style: italic; padding: 1.5rem; text-align: center; }
+.view-history .history-row { display: flex; width: 100%; align-items: baseline; gap: 0.6rem; padding: 0.55rem 0.85rem; background: white; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 4px; font: inherit; font-size: 0.83rem; text-align: left; cursor: pointer; color: inherit; }
+.view-history .history-row:hover { background: var(--accent-soft); border-color: var(--accent); }
+.view-history .history-row-ts { flex: 1 1 auto; }
+.view-history .history-row-size { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.78rem; }
+
+/* Skills tab — replaces the modal. Same card markup, full-width layout. */
+.view-skills { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; padding: 1rem 1.5rem; }
+.view-skills .skills-actions { display: flex; gap: 0.45rem; padding: 0.4rem 0 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
+.view-skills .skills-list { display: flex; flex-direction: column; gap: 0.55rem; max-width: 760px; }
+.view-skills .skills-empty { color: var(--muted); font-style: italic; padding: 1.5rem; text-align: center; }
+.view-skills .skill-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 0.9rem; background: white; }
+.view-skills .skill-card-name { font-weight: 600; color: var(--accent); margin-bottom: 0.3rem; font-size: 0.95rem; }
+.view-skills .skill-card-preview { font-family: ui-monospace, monospace; font-size: 0.78rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 4.2em; overflow: hidden; line-height: 1.4; margin-bottom: 0.6rem; }
+.view-skills .skill-card-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+.view-skills .skill-card-editor { display: flex; flex-direction: column; gap: 0.5rem; }
+.view-skills .skill-card-editor textarea { width: 100%; min-height: 240px; box-sizing: border-box; font: inherit; font-family: ui-monospace, monospace; font-size: 0.82rem; padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px; resize: vertical; }
+.view-skills .skill-card-editor textarea:focus { outline: none; border-color: var(--accent); }
+.view-skills .skill-card-editor-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+
 .view-tab {
   padding: 0.4rem 0.95rem;
   background: transparent; border: 0;
@@ -788,17 +762,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="view-tab-buttons" id="view-tab-buttons"></div>
       <select id="doc-select" class="doc-select" title="Switch document"></select>
       <button id="new-doc-btn" class="btn-tiny" title="Add a new document — drop a file or browse">＋ Doc</button>
-      <div class="overflow-wrap">
-        <button id="overflow-btn" class="btn-tiny" title="More actions" aria-haspopup="true" aria-expanded="false">⋯</button>
-        <div id="overflow-menu" class="overflow-menu" hidden role="menu">
-          <button id="undo-btn" class="overflow-item" role="menuitem" title="Revert to the state before the last edit">↶ Undo</button>
-          <button id="history-btn" class="overflow-item" role="menuitem" title="Browse pre-edit snapshots and restore an earlier version">History…</button>
-          <button id="add-skill-btn" class="overflow-item" role="menuitem" title="View, edit, add doc skills — agent-skill sections that act as this doc's working contract (hidden from readers)">Skills…</button>
-          <button id="reset-doc-btn" class="overflow-item" role="menuitem" title="Restore this document to its ship-with original">↺ Reset</button>
-          <button id="save-baseline-btn" class="overflow-item" role="menuitem" title="Pin the current state as the new baseline — future Reset goes here">⤓ Save as baseline</button>
-        </div>
-        <div id="history-panel" class="history-panel" hidden></div>
-      </div>
     </div>
     <!-- The iframe is fully cross-origin once loaded (`localhost` vs the
          viewer's `127.0.0.1`), so `allow-same-origin` is safe there: it
@@ -844,24 +807,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="reset-actions">
         <button type="button" class="btn-secondary" id="save-baseline-cancel">Cancel</button>
         <button type="button" class="btn-primary" id="save-baseline-confirm">Save as baseline</button>
-      </div>
-    </dialog>
-    <dialog id="skills-list-dlg" class="reset-confirm-dlg skills-list-dlg">
-      <h3>Doc skills</h3>
-      <p>Agent-skill sections in this doc — the agent reads them as authoritative for this doc, hidden from readers in the rendered view.</p>
-      <div id="skills-list" class="skills-list"></div>
-      <div class="reset-actions">
-        <button type="button" class="btn-secondary" id="skills-close-btn">Close</button>
-        <button type="button" class="btn-primary" id="skills-add-new-btn">＋ Add new</button>
-      </div>
-    </dialog>
-    <dialog id="skills-edit-dlg" class="reset-confirm-dlg skills-edit-dlg">
-      <h3 id="skills-edit-title">Edit skill</h3>
-      <p>Markdown content. The wrapping <code>&lt;section class="agent-skill"&gt;</code> is added automatically; just write the body.</p>
-      <textarea id="skills-edit-content" class="skills-edit-textarea" spellcheck="false" placeholder="## SKILL: voice rules&#10;&#10;Use first-person plural throughout. Never the word 'comprehensive'."></textarea>
-      <div class="reset-actions">
-        <button type="button" class="btn-secondary" id="skills-edit-cancel">Cancel</button>
-        <button type="button" class="btn-primary" id="skills-edit-save">Save</button>
       </div>
     </dialog>
     <div id="new-doc-overlay" class="new-doc-overlay" hidden>
@@ -929,39 +874,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const docSelect = document.getElementById('doc-select');
   const modelSelect = document.getElementById('model-select');
   const newChatBtn = document.getElementById('new-chat-btn');
-  const resetDocBtn = document.getElementById('reset-doc-btn');
-  const saveBaselineBtn = document.getElementById('save-baseline-btn');
-  const historyBtn = document.getElementById('history-btn');
-  const historyPanel = document.getElementById('history-panel');
-  const undoBtn = document.getElementById('undo-btn');
-  const addSkillBtn = document.getElementById('add-skill-btn');
-  const overflowBtn = document.getElementById('overflow-btn');
-  const overflowMenu = document.getElementById('overflow-menu');
-
-  function closeOverflowMenu() {
-    if (!overflowMenu.hidden) {
-      overflowMenu.hidden = true;
-      overflowBtn.setAttribute('aria-expanded', 'false');
-    }
-  }
-  function toggleOverflowMenu() {
-    const open = overflowMenu.hidden;
-    overflowMenu.hidden = !open;
-    overflowBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open && !historyPanel.hidden) historyPanel.hidden = true;
-  }
-  overflowBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleOverflowMenu();
-  });
-  // Every menu item closes the overflow menu when invoked. Item-specific
-  // handlers (Undo, History, +Skill, Reset) fire via their own click
-  // listeners on the same buttons, so the order is: their handler runs,
-  // then this one closes the menu.
-  overflowMenu.addEventListener('click', (e) => {
-    const btn = e.target.closest('.overflow-item');
-    if (btn) closeOverflowMenu();
-  });
   const newDocBtn = document.getElementById('new-doc-btn');
   const newDocOverlay = document.getElementById('new-doc-overlay');
   const newDocClose = document.getElementById('new-doc-close');
@@ -996,8 +908,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // ---- View tabs ----------------------------------------------------------
   // Plain views: always visible as top-level tabs.
   const VIEW_TYPES = [
-    { id: 'doc',    label: 'Doc'    },
-    { id: 'source', label: 'Source' },
+    { id: 'doc',     label: 'Doc'     },
+    { id: 'source',  label: 'Source'  },
+    { id: 'history', label: 'History' },
+    { id: 'skills',  label: 'Skills'  },
   ];
   // Math-specific views: tucked under a "View ▾" dropdown that only
   // appears when the active doc has math content (KaTeX delimiters
@@ -1761,11 +1675,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         sendToFrame({ type: 'setSelections', selections: currentSelections });
       }
     } else if (data.type === 'selection') {
-      // A click inside the iframe — also treat as "click outside the panel".
-      if (historyPanel && !historyPanel.hidden) historyPanel.hidden = true;
       handleFrameSelection(data.block, !!data.additive);
     } else if (data.type === 'insert_click') {
-      if (historyPanel && !historyPanel.hidden) historyPanel.hidden = true;
       handleFrameInsert(data.before || null, data.after || null);
     } else if (data.type === 'fileDropped') {
       handleFrameDrop(data.files);
@@ -2234,6 +2145,261 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return html;
   }
 
+  // ---- History tab --------------------------------------------------------
+  async function renderHistoryView() {
+    body.className = 'view-history';
+    body.innerHTML = '';
+
+    const actions = document.createElement('div');
+    actions.className = 'history-actions';
+
+    function mkAction(label, title, onClick) {
+      const b = document.createElement('button');
+      b.className = 'btn-tiny';
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('click', onClick);
+      return b;
+    }
+
+    actions.appendChild(mkAction('↶ Undo', 'Revert to the state before the last edit',
+      async () => { await performUndo(); }));
+    actions.appendChild(mkAction('↺ Reset', 'Restore this document to its baseline',
+      () => openResetDialog()));
+    actions.appendChild(mkAction('⤓ Save as baseline', 'Pin the current state as the new baseline',
+      () => openSaveBaselineDialog()));
+    body.appendChild(actions);
+
+    const list = document.createElement('div');
+    list.className = 'history-list';
+    list.innerHTML = '<div class="history-empty">loading…</div>';
+    body.appendChild(list);
+
+    if (!currentDoc) {
+      list.innerHTML = '<div class="history-empty">No doc loaded.</div>';
+      return;
+    }
+
+    try {
+      const resp = await fetch('/history?doc=' + encodeURIComponent(currentDoc));
+      const data = await resp.json();
+      const snaps = data.snapshots || [];
+      list.innerHTML = '';
+      if (!snaps.length) {
+        list.innerHTML = '<div class="history-empty">No snapshots yet. They appear after the first agent edit.</div>';
+        return;
+      }
+      for (const snap of snaps) {
+        const row = document.createElement('button');
+        row.className = 'history-row';
+        const ts = document.createElement('span');
+        ts.className = 'history-row-ts';
+        ts.textContent = formatRelative(snap.ts_ms) + '  ·  ' + new Date(snap.ts_ms).toLocaleString();
+        const sz = document.createElement('span');
+        sz.className = 'history-row-size';
+        sz.textContent = formatBytes(snap.size);
+        row.appendChild(ts);
+        row.appendChild(sz);
+        row.addEventListener('click', async () => {
+          if (!confirm('Restore `' + currentDoc + '` to this snapshot?\n' +
+                       new Date(snap.ts_ms).toLocaleString() + '\n\n' +
+                       'Current contents will be overwritten (a fresh snapshot of "before" will be saved).')) return;
+          try {
+            const r = await fetch(
+              '/restore_snapshot?doc=' + encodeURIComponent(currentDoc) +
+              '&snap_id=' + encodeURIComponent(snap.snap_id),
+              { method: 'POST' },
+            );
+            if (!r.ok) {
+              let msg = `restore failed: ${r.status}`;
+              try { const j = await r.json(); if (j.error) msg = j.error; } catch (_) {}
+              appendMessage('error', msg);
+            }
+          } catch (err) {
+            appendMessage('error', 'restore error: ' + (err.message || err));
+          }
+        });
+        list.appendChild(row);
+      }
+    } catch (err) {
+      list.innerHTML = '<div class="history-empty">failed to load history: ' +
+        escapeHtml(err.message || String(err)) + '</div>';
+    }
+  }
+
+  // ---- Skills tab ---------------------------------------------------------
+  async function renderSkillsView() {
+    body.className = 'view-skills';
+    body.innerHTML = '';
+
+    const actions = document.createElement('div');
+    actions.className = 'skills-actions';
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn-tiny';
+    addBtn.textContent = '＋ Add new';
+    addBtn.title = 'Add a new agent-skill section to this doc';
+    addBtn.addEventListener('click', () => {
+      addNewSkillInline();
+    });
+    actions.appendChild(addBtn);
+    body.appendChild(actions);
+
+    const list = document.createElement('div');
+    list.className = 'skills-list';
+    list.id = 'skills-list-inline';
+    list.innerHTML = '<div class="skills-empty">loading…</div>';
+    body.appendChild(list);
+
+    if (!currentDoc) {
+      list.innerHTML = '<div class="skills-empty">No doc loaded.</div>';
+      return;
+    }
+    await refreshSkillsList(list);
+  }
+
+  async function refreshSkillsList(listEl) {
+    listEl = listEl || document.getElementById('skills-list-inline');
+    if (!listEl) return;
+    const skills = await fetchSkills();
+    listEl.innerHTML = '';
+    if (!skills.length) {
+      const empty = document.createElement('div');
+      empty.className = 'skills-empty';
+      empty.textContent =
+        'No skills for this doc yet. Add one to give the agent a working contract.';
+      listEl.appendChild(empty);
+      return;
+    }
+    for (const s of skills) {
+      listEl.appendChild(makeSkillCard(s));
+    }
+  }
+
+  function makeSkillCard(skill) {
+    const card = document.createElement('div');
+    card.className = 'skill-card';
+    const name = document.createElement('div');
+    name.className = 'skill-card-name';
+    name.textContent = skill.name;
+    const preview = document.createElement('div');
+    preview.className = 'skill-card-preview';
+    preview.textContent =
+      (skill.content || '').replace(/^##+\s+SKILL\s*:.*$/im, '').trim().slice(0, 240)
+      + ((skill.content || '').length > 240 ? '…' : '');
+    const actions = document.createElement('div');
+    actions.className = 'skill-card-actions';
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn-tiny';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => swapCardToEditor(card, skill));
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn-tiny';
+    delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', () => deleteSkillInline(skill));
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    card.appendChild(name);
+    card.appendChild(preview);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function swapCardToEditor(card, skill) {
+    // skill === null: new skill (empty body)
+    // skill === {index,name,content}: existing
+    card.innerHTML = '';
+    card.classList.add('skill-card-editing');
+    const editor = document.createElement('div');
+    editor.className = 'skill-card-editor';
+    const ta = document.createElement('textarea');
+    ta.value = skill ? (skill.content || '') : '';
+    ta.placeholder = skill ? '' :
+      '## SKILL: <name>\n\n(write the agent-skill content here as markdown)';
+    const acts = document.createElement('div');
+    acts.className = 'skill-card-editor-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-tiny';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => refreshSkillsList());
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-tiny';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', async () => {
+      await saveSkillInline(skill, ta.value);
+    });
+    acts.appendChild(cancelBtn);
+    acts.appendChild(saveBtn);
+    editor.appendChild(ta);
+    editor.appendChild(acts);
+    card.appendChild(editor);
+    setTimeout(() => ta.focus(), 0);
+  }
+
+  function addNewSkillInline() {
+    const list = document.getElementById('skills-list-inline');
+    if (!list) return;
+    // Replace any "no skills" placeholder; otherwise append a fresh empty card.
+    const emptyMsg = list.querySelector('.skills-empty');
+    if (emptyMsg) emptyMsg.remove();
+    const card = document.createElement('div');
+    card.className = 'skill-card';
+    list.appendChild(card);
+    swapCardToEditor(card, null);
+  }
+
+  async function saveSkillInline(skill, content) {
+    const isNew = !skill;
+    const url = isNew
+      ? '/add-doc-skill?doc=' + encodeURIComponent(currentDoc)
+      : '/update-doc-skill?doc=' + encodeURIComponent(currentDoc)
+        + '&index=' + skill.index;
+    const headingMatch = content.match(/^##+\s+SKILL\s*:\s*(.+?)\s*$/im);
+    const payload = { content };
+    if (isNew && headingMatch) payload.name = headingMatch[1].trim();
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        let msg = `save failed: ${resp.status}`;
+        try {
+          const j = await resp.json();
+          if (j.error) msg = j.error;
+          if (Array.isArray(j.details)) {
+            msg += ' — ' + j.details.map(d => `[${d.kind} line ${d.line}] ${d.message}`).join('; ');
+          }
+        } catch (_) {}
+        appendMessage('error', msg);
+        return;
+      }
+      await refreshSkillsList();
+    } catch (err) {
+      appendMessage('error', 'save skill error: ' + (err.message || err));
+    }
+  }
+
+  async function deleteSkillInline(skill) {
+    if (!confirm(`Delete skill "${skill.name}"? This removes the section from the doc.`)) return;
+    try {
+      const resp = await fetch(
+        '/delete-doc-skill?doc=' + encodeURIComponent(currentDoc)
+        + '&index=' + skill.index,
+        { method: 'POST' },
+      );
+      if (!resp.ok) {
+        let msg = `delete failed: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
+        appendMessage('error', msg);
+        return;
+      }
+      await refreshSkillsList();
+    } catch (err) {
+      appendMessage('error', 'delete-doc-skill error: ' + (err.message || err));
+    }
+  }
+
   function renderCurrentView() {
     if (currentView === 'doc') {
       // Render markdown to HTML in the parent, then ship to the iframe.
@@ -2264,6 +2430,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       renderLatexView();
     } else if (currentView === 'review') {
       renderReviewView();
+    } else if (currentView === 'history') {
+      renderHistoryView();
+    } else if (currentView === 'skills') {
+      renderSkillsView();
     }
   }
 
@@ -3127,6 +3297,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     "- `/reset` — restore the doc to its baseline (opens a confirmation)\n" +
     "- `/save-baseline` — pin the current state as the new baseline (opens a confirmation)\n" +
     "- `/undo` — revert the doc to its previous snapshot\n" +
+    "- `/history` — open the History tab (snapshots + restore)\n" +
+    "- `/skills` — open the Skills tab (doc's agent-skill sections)\n" +
     "- `/model <name>` — switch model (e.g. `/model sonnet`); starts a fresh chat\n" +
     "- `/new` (or `/clear`) — start a fresh conversation"
   );
@@ -3147,21 +3319,34 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       return true;
     }
     if (cmd === '/reset') {
-      // Route through the existing Reset button so the same confirmation
-      // dialog gates the destructive action — typing `/reset` is the
-      // hotkey, not a bypass.
-      if (resetDocBtn && !resetDocBtn.disabled) resetDocBtn.click();
-      else appendMessage('error', '/reset: no doc loaded');
+      // Route through the same confirmation dialog as the History-tab
+      // button — typing `/reset` is the hotkey, not a bypass.
+      if (!currentDoc) { appendMessage('error', '/reset: no doc loaded'); return true; }
+      openResetDialog();
       return true;
     }
     if (cmd === '/save-baseline') {
-      if (saveBaselineBtn && !saveBaselineBtn.disabled) saveBaselineBtn.click();
-      else appendMessage('error', '/save-baseline: no doc loaded');
+      if (!currentDoc) { appendMessage('error', '/save-baseline: no doc loaded'); return true; }
+      openSaveBaselineDialog();
       return true;
     }
     if (cmd === '/undo') {
-      if (undoBtn && !undoBtn.disabled) undoBtn.click();
-      else appendMessage('error', '/undo: no doc loaded or undo already in flight');
+      if (!currentDoc) { appendMessage('error', '/undo: no doc loaded'); return true; }
+      performUndo();
+      return true;
+    }
+    if (cmd === '/history') {
+      if (currentView === 'history') return true;
+      currentView = 'history';
+      renderViewTabs();
+      renderCurrentView();
+      return true;
+    }
+    if (cmd === '/skills') {
+      if (currentView === 'skills') return true;
+      currentView = 'skills';
+      renderViewTabs();
+      renderCurrentView();
       return true;
     }
     if (cmd === '/new' || cmd === '/clear') {
@@ -3278,64 +3463,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     if (h < 24) return h + 'h ago';
     return Math.floor(h / 24) + 'd ago';
   }
-  function formatBytes(n) {
-    if (n < 1024) return n + ' B';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' kB';
-    return (n / 1024 / 1024).toFixed(2) + ' MB';
-  }
-  async function openHistoryPanel() {
-    if (!currentDoc) return;
-    historyPanel.innerHTML = '<div class="history-empty">loading…</div>';
-    historyPanel.hidden = false;
-    try {
-      const resp = await fetch('/history?doc=' + encodeURIComponent(currentDoc));
-      const data = await resp.json();
-      const snaps = data.snapshots || [];
-      if (!snaps.length) {
-        historyPanel.innerHTML = '<div class="history-empty">No snapshots yet. They appear after the first agent edit.</div>';
-        return;
-      }
-      historyPanel.innerHTML = '';
-      for (const snap of snaps) {
-        const btn = document.createElement('button');
-        btn.className = 'history-row';
-        btn.innerHTML = '<span class="history-row-ts"></span><span class="history-row-size"></span>';
-        btn.querySelector('.history-row-ts').textContent =
-          formatRelative(snap.ts_ms) + '  ·  ' + new Date(snap.ts_ms).toLocaleString();
-        btn.querySelector('.history-row-size').textContent = formatBytes(snap.size);
-        btn.addEventListener('click', async () => {
-          if (!confirm('Restore `' + currentDoc + '` to this snapshot?\n' +
-                       new Date(snap.ts_ms).toLocaleString() + '\n\n' +
-                       'Current contents will be overwritten (but a fresh snapshot' +
-                       ' of "before" will be saved on the next agent edit).')) return;
-          historyPanel.hidden = true;
-          try {
-            const r = await fetch(
-              '/restore_snapshot?doc=' + encodeURIComponent(currentDoc) +
-              '&snap_id=' + encodeURIComponent(snap.snap_id),
-              { method: 'POST' }
-            );
-            if (!r.ok) {
-              let msg = `restore failed: ${r.status}`;
-              try { const j = await r.json(); if (j.error) msg = j.error; } catch (_) {}
-              appendMessage('error', msg);
-            }
-          } catch (err) {
-            appendMessage('error', 'restore error: ' + (err.message || err));
-          }
-        });
-        historyPanel.appendChild(btn);
-      }
-    } catch (err) {
-      historyPanel.innerHTML =
-        '<div class="history-empty">failed to load history: ' +
-        escapeHtml(err.message || String(err)) + '</div>';
-    }
-  }
-  historyBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (historyPanel.hidden) { openHistoryPanel(); } else { historyPanel.hidden = true; }
-  });
   const newDocChoose = document.getElementById('new-doc-choose');
   const newDocCard = newDocOverlay.querySelector('.new-doc-card');
   function showNewDocOverlay() { newDocOverlay.hidden = false; }
@@ -3391,9 +3518,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     if (e.key === 'Escape' && !newDocOverlay.hidden) hideNewDocOverlay();
   });
 
-  undoBtn.addEventListener('click', async () => {
-    if (!currentDoc || undoBtn.disabled) return;
-    undoBtn.disabled = true;
+  async function performUndo() {
+    if (!currentDoc) return;
     try {
       const resp = await fetch('/undo?doc=' + encodeURIComponent(currentDoc),
                                { method: 'POST' });
@@ -3404,28 +3530,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       }
     } catch (err) {
       appendMessage('error', 'undo error: ' + (err.message || err));
-    } finally {
-      undoBtn.disabled = false;
     }
-  });
+  }
 
-  // Skills manager: a two-dialog flow that lists every agent-skill
-  // section in the current doc and lets the author view / edit / delete
-  // them, or add a new one with custom content. The substrate is the
-  // existing per-doc skill convention (<section class="agent-skill">…);
-  // these endpoints are just CRUD over those sections.
-  const skillsListDlg = document.getElementById('skills-list-dlg');
-  const skillsList = document.getElementById('skills-list');
-  const skillsCloseBtn = document.getElementById('skills-close-btn');
-  const skillsAddNewBtn = document.getElementById('skills-add-new-btn');
-  const skillsEditDlg = document.getElementById('skills-edit-dlg');
-  const skillsEditTitle = document.getElementById('skills-edit-title');
-  const skillsEditContent = document.getElementById('skills-edit-content');
-  const skillsEditCancelBtn = document.getElementById('skills-edit-cancel');
-  const skillsEditSaveBtn = document.getElementById('skills-edit-save');
-  // Track which skill index the editor is bound to (null = new skill).
-  let _editingSkillIndex = null;
-
+  // Skills CRUD substrate. The render side (cards, editor, add new)
+  // lives in the Skills tab; this is just the data fetch helper that
+  // both the Skills tab + WS broadcasts share.
   async function fetchSkills() {
     if (!currentDoc) return [];
     try {
@@ -3438,168 +3548,11 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     } catch (_) { return []; }
   }
 
-  async function refreshSkillsList() {
-    const skills = await fetchSkills();
-    skillsList.innerHTML = '';
-    if (!skills.length) {
-      const empty = document.createElement('div');
-      empty.className = 'skills-empty';
-      empty.textContent =
-        'No skills for this doc yet. Add one to give the agent a working contract.';
-      skillsList.appendChild(empty);
-      return;
-    }
-    for (const s of skills) {
-      const card = document.createElement('div');
-      card.className = 'skill-card';
-      const name = document.createElement('div');
-      name.className = 'skill-card-name';
-      name.textContent = s.name;
-      const preview = document.createElement('div');
-      preview.className = 'skill-card-preview';
-      preview.textContent =
-        (s.content || '').replace(/^##+\s+SKILL\s*:.*$/im, '').trim().slice(0, 240)
-        + ((s.content || '').length > 240 ? '…' : '');
-      const actions = document.createElement('div');
-      actions.className = 'skill-card-actions';
-      const editBtn = document.createElement('button');
-      editBtn.className = 'btn-tiny';
-      editBtn.textContent = 'Edit';
-      editBtn.addEventListener('click', () => openSkillEditor(s));
-      const delBtn = document.createElement('button');
-      delBtn.className = 'btn-tiny';
-      delBtn.textContent = 'Delete';
-      delBtn.addEventListener('click', async () => {
-        if (!confirm(`Delete skill "${s.name}"? This removes the section from the doc.`)) return;
-        try {
-          const resp = await fetch(
-            '/delete-doc-skill?doc=' + encodeURIComponent(currentDoc)
-            + '&index=' + s.index,
-            { method: 'POST' },
-          );
-          if (!resp.ok) {
-            let msg = `delete failed: ${resp.status}`;
-            try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
-            appendMessage('error', msg);
-            return;
-          }
-          await refreshSkillsList();
-        } catch (err) {
-          appendMessage('error', 'delete-doc-skill error: ' + (err.message || err));
-        }
-      });
-      actions.appendChild(editBtn);
-      actions.appendChild(delBtn);
-      card.appendChild(name);
-      card.appendChild(preview);
-      card.appendChild(actions);
-      skillsList.appendChild(card);
-    }
-  }
-
-  function openSkillsListDialog() {
-    if (!currentDoc) {
-      appendMessage('error', 'Skills: no doc loaded');
-      return;
-    }
-    refreshSkillsList().then(() => {
-      if (typeof skillsListDlg.showModal === 'function') {
-        skillsListDlg.showModal();
-      } else {
-        appendMessage('error', 'Skills modal not supported in this browser');
-      }
-    });
-  }
-
-  function openSkillEditor(skill) {
-    // skill === null/undefined: new skill, empty editor
-    // skill === {index, name, content}: edit existing
-    _editingSkillIndex = skill ? skill.index : null;
-    skillsEditTitle.textContent = skill
-      ? `Edit skill: ${skill.name}`
-      : 'Add new skill';
-    skillsEditContent.value = skill ? (skill.content || '') : '';
-    if (typeof skillsEditDlg.showModal === 'function') {
-      skillsEditDlg.showModal();
-      setTimeout(() => skillsEditContent.focus(), 0);
-    }
-  }
-
-  async function saveSkillEditor() {
-    const content = skillsEditContent.value;
-    const isNew = _editingSkillIndex === null;
-    const url = isNew
-      ? '/add-doc-skill?doc=' + encodeURIComponent(currentDoc)
-      : '/update-doc-skill?doc=' + encodeURIComponent(currentDoc)
-        + '&index=' + _editingSkillIndex;
-    // Pull the name out of the first "## SKILL: <name>" heading so a
-    // new skill carries a sensible label even if the user didn't think
-    // about one explicitly.
-    const headingMatch = content.match(/^##+\s+SKILL\s*:\s*(.+?)\s*$/im);
-    const payload = { content };
-    if (isNew && headingMatch) payload.name = headingMatch[1].trim();
-    try {
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!resp.ok) {
-        let msg = `save failed: ${resp.status}`;
-        try {
-          const j = await resp.json();
-          if (j.error) msg = j.error;
-          if (Array.isArray(j.details)) {
-            msg += ' — ' + j.details.map(d => `[${d.kind} line ${d.line}] ${d.message}`).join('; ');
-          }
-        } catch (_) {}
-        appendMessage('error', msg);
-        return;
-      }
-      skillsEditDlg.close();
-      await refreshSkillsList();
-    } catch (err) {
-      appendMessage('error', 'save skill error: ' + (err.message || err));
-    }
-  }
-
-  skillsCloseBtn.addEventListener('click', () => skillsListDlg.close());
-  skillsListDlg.addEventListener('click', (e) => {
-    if (e.target === skillsListDlg) skillsListDlg.close();
-  });
-  skillsAddNewBtn.addEventListener('click', () => openSkillEditor(null));
-  skillsEditCancelBtn.addEventListener('click', () => skillsEditDlg.close());
-  skillsEditDlg.addEventListener('click', (e) => {
-    if (e.target === skillsEditDlg) skillsEditDlg.close();
-  });
-  skillsEditSaveBtn.addEventListener('click', saveSkillEditor);
-
-  addSkillBtn.addEventListener('click', () => {
-    if (!currentDoc || addSkillBtn.disabled) return;
-    openSkillsListDialog();
-  });
   document.addEventListener('click', (e) => {
-    if (!historyPanel.hidden && !historyPanel.contains(e.target) && e.target !== historyBtn) {
-      historyPanel.hidden = true;
-    }
-    // Overflow menu dismisses on any click outside its panel and outside
-    // its toggle button (the toggle handler stops propagation so this
-    // doesn't immediately close what it just opened).
-    if (!overflowMenu.hidden
-        && !overflowMenu.contains(e.target)
-        && e.target !== overflowBtn) {
-      closeOverflowMenu();
-    }
     // Clicks outside the + Doc overlay (chrome, chat) dismiss it.
     if (newDocOverlay && !newDocOverlay.hidden &&
         !newDocOverlay.contains(e.target) && e.target !== newDocBtn) {
       hideNewDocOverlay();
-    }
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      if (!historyPanel.hidden) historyPanel.hidden = true;
-      if (!overflowMenu.hidden) closeOverflowMenu();
     }
   });
 
@@ -3625,7 +3578,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   }
 
-  resetDocBtn.addEventListener('click', () => {
+  function openResetDialog() {
     if (!currentDoc) return;
     resetDocLine.textContent = `docs/${currentDoc}/current.md  ←  baseline.md`;
     if (typeof resetConfirmDlg.showModal === 'function') {
@@ -3639,7 +3592,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         performReset();
       }
     }
-  });
+  }
   resetCancelBtn.addEventListener('click', () => resetConfirmDlg.close('cancel'));
   resetConfirmBtn.addEventListener('click', async () => {
     resetConfirmDlg.close('confirm');
@@ -3673,10 +3626,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   }
 
-  saveBaselineBtn.addEventListener('click', () => {
+  function openSaveBaselineDialog() {
     if (!currentDoc) return;
     saveBaselineLine.textContent = `docs/${currentDoc}/baseline.md  ←  current.md`;
-    closeOverflowMenu();
     if (typeof saveBaselineDlg.showModal === 'function') {
       saveBaselineDlg.showModal();
       setTimeout(() => saveBaselineCancelBtn.focus(), 0);
@@ -3685,7 +3637,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         performSaveBaseline();
       }
     }
-  });
+  }
   saveBaselineCancelBtn.addEventListener('click', () => saveBaselineDlg.close('cancel'));
   saveBaselineConfirmBtn.addEventListener('click', async () => {
     saveBaselineDlg.close('confirm');
