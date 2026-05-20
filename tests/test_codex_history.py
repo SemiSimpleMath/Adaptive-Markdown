@@ -28,11 +28,16 @@ def test_default_history_cap_is_reasonable():
     assert HISTORY_MAX_PAIRS <= 50
 
 
-def test_empty_history_yields_bare_prompt():
+def test_empty_history_still_carries_time_block():
+    # Even with no skill and no history, the time block is always present
+    # so the agent has a clock to read. Bare-text return is no longer
+    # possible — the user request is wrapped beneath the time line.
     r = _r_with_skill_disabled()
     r._history = []
     out = r._build_prompt("hello")
-    assert out == "hello"
+    assert out.startswith("Current time:"), out[:80]
+    assert "hello" in out
+    assert out.endswith("hello")
 
 
 def test_under_cap_history_is_included_in_full():

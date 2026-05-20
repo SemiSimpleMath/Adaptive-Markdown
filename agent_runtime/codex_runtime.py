@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -159,6 +160,21 @@ class CodexRuntime:
                 f"{self._skill_text}\n"
                 "=== END SKILL ==="
             )
+        # Current wall-clock time. Parity with the Claude preamble in
+        # am_ws.py — LLMs have no clock and confabulate when asked to
+        # timestamp. Local time with tz name + UTC trailer.
+        now_local = datetime.now().astimezone()
+        local_str = now_local.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+        off = now_local.strftime("%z")
+        off_pretty = off[:3] + ":" + off[3:] if off else ""
+        utc_str = now_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        time_line = (
+            f"Current time: {local_str}"
+            + (f" ({off_pretty})" if off_pretty else "")
+            + f" / {utc_str}. Use this when an instruction asks you to "
+            "timestamp something — do not guess or pattern-match the digits."
+        )
+        blocks.append(time_line)
         if self._history:
             # Cap replayed history at HISTORY_MAX_PAIRS so the prompt prefix
             # doesn't grow unboundedly over a long session. We pair-walk
@@ -186,8 +202,10 @@ class CodexRuntime:
                 f"{history_body}\n"
                 "=== END HISTORY ==="
             )
-        if not blocks:
-            return text
+        # blocks is never empty now — the time_line is always present —
+        # so the previous `if not blocks: return text` early-return is
+        # unreachable. Always wrap the user's request with the assembled
+        # context.
         blocks.append(f"Current user request:\n{text}")
         return "\n\n".join(blocks)
 
