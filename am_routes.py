@@ -20,11 +20,14 @@ from aiohttp import web
 
 import validators
 from am_docs import (
+    COMPONENT_SLUG_RE,
+    COMPONENTS_ROOT,
     DOC_SLUG_RE as _DOC_SLUG_RE,
     DOCS_ROOT,
     FRONTMATTER_RE as _FRONTMATTER_RE,
     _doc_path_for,
     _doc_slug_from_path,
+    list_all_components,
 )
 from am_origin import _require_localhost_origin
 from am_pending import (
@@ -744,4 +747,61 @@ async def set_api_key(request: web.Request) -> web.Response:
             "Saved to .env. Restart the backend (Ctrl+C, then "
             "`python start.py`) so the agent runtime picks up the new key."
         ),
+    })
+
+
+def _read_component_metadata(slug: str) -> dict:
+    """Parse a component's YAML-ish frontmatter into a metadata dict.
+    Returns at minimum {"slug": slug}; adds name, description, tags,
+    self_contained if the file has them. Robust to malformed YAML —
+    we don't import pyyaml here (no other module in the project does
+    either), so the parse is line-oriented and limited to the keys we
+    care about."""
+    out: dict = {"slug": slug}
+    f = COMPONENTS_ROOT / f"{slug}.md"
+    if not f.exists():
+        return out
+    try:
+        src = f.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return out
+    m = _FRONTMATTER_RE.match(src)
+    if not m:
+        return out
+    fm_text = m.group(1)
+    # Hand-parsed: each key: value at top level. Skip indented continuation
+    # lines (sub-mappings like `provenance: { ... }`). Tags can be either
+    # an inline JSON list `[a, b]` or omitted.
+    for raw in fm_text.splitlines():
+        line = raw.rstrip()
+        if not line or line.startswith("#") or line.startswith(" "):
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower()
+        value = value.strip().strip('"').strip("'")
+        if key in ("name", "description"):
+            out[key] = value
+        elif key == "self_contained":
+            out[key] = value.lower() in ("true", "yes", "1")
+        elif key == "tags":
+            # Inline list `[a, b, c]` — best-effort split.
+            if value.startswith("[") and value.endswith("]"):
+                inner = value[1:-1]
+                out["tags"] = [t.strip().strip('"').strip("'")
+                               for t in inner.split(",") if t.strip()]
+    # Default name = slug if frontmatter omitted it.
+    out.setdefault("name", slug)
+    return out
+
+
+async def list_components(request: web.Request) -> web.Response:
+    """GET /components — return metadata for every saved component.
+    Drives the agent's "list my components" path + (future) the
+    Components tab in the viewer."""
+    _require_localhost_origin(request)
+    slugs = list_all_components()
+    return web.json_response({
+        "components": [_read_component_metadata(s) for s in slugs],
     })

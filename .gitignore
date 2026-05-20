@@ -49,6 +49,15 @@ docs/*/pending.json
 # want to ship an asset with one of the example docs.
 docs/*/assets/
 
+# Components: reusable snippets the agent can save + insert anywhere.
+# User-saved components stay local. A small set of demo components
+# ship with the repo so first-run users can "insert the unit circle"
+# without having to save one first.
+components/*
+!components/unit-circle.md
+!components/dark-mode-toggle.md
+!components/clock.md
+
 # Local scratch
 scratch folder/
 

@@ -70,7 +70,8 @@ load_dotenv(ROOT / ".env")
 # canonical module (e.g. `from am_pending import save_pending`); don't
 # add re-exports here.
 from am_docs import (  # noqa: E402
-    ensure_doc_ids, ensure_working_copies, list_all_docs,
+    COMPONENTS_ROOT, ensure_doc_ids, ensure_working_copies,
+    list_all_components, list_all_docs,
 )
 from am_hooks import init_runtime, shutdown_runtime  # noqa: E402
 from am_origin import _check_static_origin  # noqa: E402
@@ -79,6 +80,7 @@ from am_routes import (  # noqa: E402
     list_pending, accept_pending, reject_pending,
     list_doc_skills, update_doc_skill, delete_doc_skill,
     add_doc_skill, reset_doc, save_baseline, set_api_key,
+    list_components,
 )
 from am_state import state  # noqa: E402
 from am_upload import (  # noqa: E402
@@ -124,36 +126,43 @@ async def serve_static(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
     if not target.exists() or not target.is_file():
         raise web.HTTPNotFound()
-    # Allowlist: a small set of root files, or docs/<slug>/current.md or
-    # docs/<slug>/baseline.md. snaps/ is NOT served — it's local backend
-    # state, not viewer-facing.
+    # Allowlist: a small set of root files; docs/<slug>/current.md or
+    # baseline.md or assets/<file>; or components/<slug>.md. snaps/,
+    # patches/, original.<ext>, etc. are NOT served — they're local
+    # backend state, not viewer-facing.
     if target.parent == ROOT:
         if target.name not in _STATIC_ROOT_FILES:
             raise web.HTTPNotFound()
     else:
-        try:
-            doc_rel = target.relative_to(DOCS_ROOT)
-        except ValueError:
-            raise web.HTTPNotFound()
-        parts = doc_rel.parts
-        # Allowed shapes under docs/<slug>/:
-        #   - current.md or baseline.md (the doc files the viewer loads)
-        #   - assets/<file>             (binary materials the doc embeds)
-        # Everything else (snaps/, patches/, original.<ext>) is backend
-        # state and must not be served to viewer-side iframes.
         ok = False
-        if len(parts) == 2 and _DOC_SLUG_RE.match(parts[0]) \
-                and parts[1] in ("current.md", "baseline.md"):
+        # Components: flat components/<slug>.md.
+        try:
+            comp_rel = target.relative_to(COMPONENTS_ROOT)
+        except ValueError:
+            comp_rel = None
+        if comp_rel is not None and len(comp_rel.parts) == 1 \
+                and target.suffix.lower() == ".md" \
+                and _DOC_SLUG_RE.match(target.stem):
             ok = True
-        elif len(parts) == 3 and _DOC_SLUG_RE.match(parts[0]) \
-                and parts[1] == "assets":
-            # Asset filename must have a recognized extension (defense in
-            # depth — agents and users shouldn't be able to coax the server
-            # into serving arbitrary file types).
-            asset_ext = Path(parts[2]).suffix.lower()
-            if (asset_ext in _ASSET_EXTS
-                    and asset_ext not in _ASSET_BLOCKED_EXTS):
+        # Docs: docs/<slug>/{current,baseline}.md or docs/<slug>/assets/<file>.
+        if not ok:
+            try:
+                doc_rel = target.relative_to(DOCS_ROOT)
+            except ValueError:
+                raise web.HTTPNotFound()
+            parts = doc_rel.parts
+            if len(parts) == 2 and _DOC_SLUG_RE.match(parts[0]) \
+                    and parts[1] in ("current.md", "baseline.md"):
                 ok = True
+            elif len(parts) == 3 and _DOC_SLUG_RE.match(parts[0]) \
+                    and parts[1] == "assets":
+                # Asset filename must have a recognized extension (defense
+                # in depth — agents and users shouldn't be able to coax
+                # the server into serving arbitrary file types).
+                asset_ext = Path(parts[2]).suffix.lower()
+                if (asset_ext in _ASSET_EXTS
+                        and asset_ext not in _ASSET_BLOCKED_EXTS):
+                    ok = True
         if not ok:
             raise web.HTTPNotFound()
     return web.FileResponse(target)
@@ -219,38 +228,64 @@ def ensure_skill_mirror() -> None:
 
 
 async def watch_docs_list(poll_seconds: float = 1.5) -> None:
-    """Poll docs/ and broadcast {type:"docs"} when the slug list changes.
+    """Poll docs/ + components/ and broadcast slug-list changes.
 
     Without this, the viewer's doc dropdown only refreshes when a file
     lands via the upload endpoint — drops via a file manager, `git pull`,
-    manual mkdir, etc. stay invisible until the user reloads. Polling at
-    1.5s is plenty fast for human-pace filesystem changes and avoids the
-    watchdog library (recursive monitors on Windows fire on every file
-    in a bulk operation, and the cross-platform event semantics drift)."""
-    last = tuple(list_all_docs())
+    manual mkdir, etc. stay invisible until the user reloads. Same for
+    components/ — saves from the agent broadcast their own update, but
+    out-of-band changes (git pull, manual file copy) wouldn't otherwise
+    surface. Polling at 1.5s is plenty fast for human-pace filesystem
+    changes and avoids the watchdog library (recursive monitors on
+    Windows fire on every file in a bulk operation, and the
+    cross-platform event semantics drift)."""
+    last_docs = tuple(list_all_docs())
+    last_components = tuple(list_all_components())
     while True:
         try:
             await asyncio.sleep(poll_seconds)
         except asyncio.CancelledError:
             return
+        # Docs
         try:
-            now = tuple(list_all_docs())
+            now_docs = tuple(list_all_docs())
         except OSError:
-            continue  # transient FS hiccup; try again next tick
-        if now != last:
-            added = sorted(set(now) - set(last))
-            removed = sorted(set(last) - set(now))
-            last = now
+            now_docs = last_docs
+        if now_docs != last_docs:
+            added = sorted(set(now_docs) - set(last_docs))
+            removed = sorted(set(last_docs) - set(now_docs))
+            last_docs = now_docs
             try:
-                await state.broadcast({"type": "docs", "list": list(now)})
+                await state.broadcast({"type": "docs", "list": list(now_docs)})
             except Exception as e:
                 print(f"[docs-watcher] broadcast failed: {e}", flush=True)
-                continue
             if added or removed:
                 msg_parts = []
                 if added: msg_parts.append("added: " + ", ".join(added))
                 if removed: msg_parts.append("removed: " + ", ".join(removed))
-                print(f"[docs-watcher] {' · '.join(msg_parts)}", flush=True)
+                print(f"[docs-watcher] docs {' · '.join(msg_parts)}", flush=True)
+        # Components
+        try:
+            now_components = tuple(list_all_components())
+        except OSError:
+            now_components = last_components
+        if now_components != last_components:
+            added = sorted(set(now_components) - set(last_components))
+            removed = sorted(set(last_components) - set(now_components))
+            last_components = now_components
+            try:
+                await state.broadcast(
+                    {"type": "components", "list": list(now_components)}
+                )
+            except Exception as e:
+                print(f"[docs-watcher] component broadcast failed: {e}",
+                      flush=True)
+            if added or removed:
+                msg_parts = []
+                if added: msg_parts.append("added: " + ", ".join(added))
+                if removed: msg_parts.append("removed: " + ", ".join(removed))
+                print(f"[docs-watcher] components {' · '.join(msg_parts)}",
+                      flush=True)
 
 
 async def on_startup(app: web.Application):
@@ -302,6 +337,7 @@ def make_app() -> web.Application:
     app.router.add_post("/reset", reset_doc)
     app.router.add_post("/save-baseline", save_baseline)
     app.router.add_post("/api-key", set_api_key)
+    app.router.add_get("/components", list_components)
     app.router.add_post("/edit-block", edit_block)
     app.router.add_post("/add-doc-skill", add_doc_skill)
     app.router.add_get("/doc-skills", list_doc_skills)

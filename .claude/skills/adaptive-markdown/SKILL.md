@@ -451,3 +451,64 @@ The chat panel renders your replies as markdown — bold, lists, code blocks, he
 - **No nested heavy structure.** A numbered list of 8 sub-bullets is hard to read in a ~380px chat column. Prefer one short paragraph + one example.
 - **Math in chat uses `$...$`** but the chat doesn't render KaTeX today (just shows the dollar-sign-wrapped source). Use sparingly; named quantities ("the derivative of `f` at `c`") often read better than tiny math expressions in a narrow column.
 - **For visual / interactive edits**, you can't see the rendered result. After the Edit, briefly say what was added; if the reader reports it looks wrong, iterate from their description.
+
+## Components: save & insert reusable snippets
+
+`components/<slug>.md` is the reusable-snippet library. When the reader makes something good in one doc (a snake game, an animated unit circle, a custom calculator, a dark-mode toggle) they can ask you to save it; later, in any doc, ask you to insert it — possibly adapted.
+
+**You ALSO have Edit/Write access to `components/<slug>.md`.** Same slug shape as docs (`[a-z0-9][a-z0-9-]{0,63}`). One file per component, flat directory.
+
+### When to save a component
+
+Only when the reader explicitly asks — *"save this as snake-game"*, *"keep this clock as a component called my-clock"*. Never proactively save "useful" snippets the reader didn't request.
+
+### Component file shape
+
+```markdown
+---
+name: snake-game
+description: One-line summary the reader and future-you can browse by.
+self_contained: true
+tags: [game, canvas, keyboard]
+provenance:
+  origin_doc: <current doc slug>
+  saved_by: agent:<model>
+---
+
+<HTML body — same flavor as a doc body, can include text, <style>, <script>>
+```
+
+- **`name`** — defaults to the slug if omitted.
+- **`description`** — one line. The agent's later-self will read this to decide whether to insert.
+- **`self_contained`** — `true` if the component lives in its own `<figure>` / `<div>` and doesn't touch the rest of the page. `false` if it injects global CSS, mutates `<body>`, attaches global event listeners, etc. **Inferred at save time** from inspecting the body; the reader doesn't have to declare it.
+- **`tags`** — short list, kebab-case items, used by the reader for browsing.
+
+### Saving — what to capture
+
+If the reader has a block selected (its block info is in the preamble's selections list), save THAT block plus any `<script>` / `<style>` siblings that target IDs/classes used in the block. If no selection: ask which block they mean.
+
+For multi-block components (a heading + body + figure as one unit): the reader will typically multi-select with Shift+click; capture all selected blocks in source order.
+
+Confirm in chat what you're saving — name, what blocks went in, the self-containment call — so the reader can correct.
+
+### Inserting — adapt, don't paste
+
+When the reader asks *"insert the X"*, optionally with a hint *"in red"* / *"with a bigger board"*:
+
+1. Read `components/<slug>.md`.
+2. **Uniquify any `id="..."` attributes** in the body if the current doc already has an element with that ID. Suffix with `-2`, `-3`, etc.
+3. **Apply the adaptation hint minimally** — if the hint is "in red", change a color value or two; do not rewrite logic. If the hint conflicts with the component's intent ("make it not a game"), surface that and ask.
+4. **Splice at the reader's insertion point** if they've clicked a gap, otherwise at the end of the relevant section.
+5. **Warn on non-self-contained collisions** — if the component is `self_contained: false` and the current doc already has a `<button id="dm-toggle">` or whatever the component injects, surface it in chat before inserting.
+
+### Listing — how the reader browses
+
+When the reader asks *"what components do I have"* or *"list my components"*, the listing lives at `GET /components` (the backend serves it). You don't have direct HTTP access; instead, list the files under `components/` (you can Read them) and show name + description + tags from each frontmatter.
+
+### Updating + deleting
+
+Saving with the same name overwrites the existing component. To delete, ask the reader to confirm, then use a Bash `rm components/<slug>.md` (the per-edit hook covers writes, not deletions; this is one of the few cases where Bash is the right tool).
+
+### Component-internal assets
+
+A component referenced an image via `![](assets/foo.png)`? The asset DOESN'T travel with the component file on insert. If the component depends on an image, inline it as a `data:image/...` URI in the component body so it self-contains. Tell the reader you did this if the file gets large.

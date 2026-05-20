@@ -31,6 +31,7 @@ import validators
 from agent_runtime import create_runtime
 
 from am_docs import (
+    COMPONENTS_ROOT,
     DOC_SLUG_RE as _DOC_SLUG_RE,
     DOCS_ROOT,
     ROOT,
@@ -53,23 +54,52 @@ _validate_revert_count: dict[str, int] = {}
 def _validate_agent_write_path(file_path: str) -> tuple[bool, str]:
     """Decide whether the agent is allowed to Edit/Write a given path.
 
-    The only writable target is `docs/<slug>/current.md`. Anything else —
-    baseline.md (the immutable history-0), snaps/, project source files,
-    dotfiles, absolute paths outside ROOT — is rejected. This is the
-    root-cause defense against a successful prompt injection convincing
-    the agent to clobber files outside its lane."""
+    Two writable lanes:
+      1. `docs/<slug>/current.md` — the active doc's working copy.
+      2. `components/<slug>.md` — saved reusable snippets (the component
+         library). Same slug shape, one .md per component, flat directory.
+
+    Anything else — baseline.md (the immutable history-0), snaps/, project
+    source files, dotfiles, absolute paths outside ROOT — is rejected.
+    This is the root-cause defense against a successful prompt injection
+    convincing the agent to clobber files outside its lanes."""
     if not file_path:
         return False, "missing file_path"
     try:
         p = Path(file_path).resolve()
     except (OSError, ValueError):
         return False, f"invalid file_path: {file_path!r}"
+
+    # Lane 2: components/<slug>.md
+    try:
+        p.relative_to(COMPONENTS_ROOT)
+    except ValueError:
+        pass
+    else:
+        if p.parent != COMPONENTS_ROOT:
+            return False, (
+                f"components live flat under components/, not in subdirs "
+                f"({file_path!r})."
+            )
+        if p.suffix.lower() != ".md":
+            return False, (
+                f"components are .md files ({p.suffix!r} given)."
+            )
+        if not _DOC_SLUG_RE.match(p.stem):
+            return False, (
+                f"component slug {p.stem!r} is not a valid name. Slugs "
+                "must match [a-zA-Z0-9][a-zA-Z0-9-]{0,63}."
+            )
+        return True, ""
+
+    # Lane 1: docs/<slug>/current.md
     try:
         p.relative_to(DOCS_ROOT)
     except ValueError:
         return False, (
-            f"writes outside docs/ are not permitted ({file_path!r}). "
-            "The agent may only modify docs/<slug>/current.md."
+            f"writes outside docs/ and components/ are not permitted "
+            f"({file_path!r}). The agent may only modify "
+            "docs/<slug>/current.md or components/<slug>.md."
         )
     if p.name != "current.md":
         return False, (

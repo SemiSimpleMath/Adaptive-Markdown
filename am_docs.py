@@ -20,7 +20,11 @@ from am_ids import gen_id
 
 ROOT = Path(__file__).resolve().parent
 DOCS_ROOT = ROOT / "docs"
+COMPONENTS_ROOT = ROOT / "components"
 DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$", re.IGNORECASE)
+# Components share the same slug shape (kebab-case, leading alnum). Reuse
+# the same regex so the agent doesn't need to learn two naming rules.
+COMPONENT_SLUG_RE = DOC_SLUG_RE
 
 # Frontmatter helpers — used by ensure_doc_ids and shared with am_pending's
 # review-mode reader. Re-defining the regex here keeps am_docs free of
@@ -42,6 +46,23 @@ def list_all_docs() -> list[str]:
             continue  # ignore weird names; agents never create them
         if (sub / "current.md").exists() or (sub / "baseline.md").exists():
             slugs.append(sub.name)
+    return sorted(slugs)
+
+
+def list_all_components() -> list[str]:
+    """Slugs of every saved component — one per components/<slug>.md file.
+    Sorted. Returns empty list if components/ doesn't exist yet (first
+    run, before any component has been saved or shipped)."""
+    if not COMPONENTS_ROOT.exists():
+        return []
+    slugs: list[str] = []
+    for entry in COMPONENTS_ROOT.iterdir():
+        if not entry.is_file() or entry.suffix.lower() != ".md":
+            continue
+        slug = entry.stem
+        if not COMPONENT_SLUG_RE.match(slug):
+            continue
+        slugs.append(slug)
     return sorted(slugs)
 
 
