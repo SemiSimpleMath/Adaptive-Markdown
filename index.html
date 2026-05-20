@@ -815,7 +815,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 .selection-bar .selection-clear:hover { color: var(--error); }
 
 .input-row {
-  position: relative;
   padding: 0.75rem;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
@@ -825,8 +824,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   width: 100%;
   resize: none;
   font: inherit;
-  /* Right pad leaves room for the inline Send button (32px + 8px gap). */
-  padding: 0.6rem 2.75rem 0.6rem 0.7rem;
+  padding: 0.6rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -839,39 +837,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .input-row textarea::placeholder { color: var(--muted); }
-/* Send button: inline corner, ChatGPT/Claude.ai pattern. 32×32 icon
-   button anchored to the bottom-right of the textarea visually, with
-   textarea's right-padding leaving room for it. Bottom offset accounts
-   for .input-row's padding + a small inset inside the textarea border. */
-.input-row button {
-  position: absolute;
-  right: 1.15rem;
-  bottom: 1.15rem;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent);
-  color: var(--accent-text);
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.12s, transform 0.08s;
-}
-.input-row button:hover:not(:disabled) { background: var(--accent-hover); }
-.input-row button:active:not(:disabled) { transform: scale(0.95); }
-.input-row button:disabled {
-  background: var(--border);
-  color: var(--muted);
-  cursor: default;
-}
-.input-row button svg {
-  width: 16px;
-  height: 16px;
-  display: block;
-}
 
 .error-banner {
   background: var(--error-bg); border: 1px solid var(--error-border); border-radius: 4px;
@@ -988,12 +953,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     </div>
     <div class="input-row">
       <textarea id="input" rows="3" placeholder="Ask the document anything..."></textarea>
-      <button id="send" type="button" title="Send (Enter)" aria-label="Send" disabled>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <line x1="12" y1="19" x2="12" y2="5"/>
-          <polyline points="5 12 12 5 19 12"/>
-        </svg>
-      </button>
     </div>
   </aside>
 </div>
@@ -1027,7 +986,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const newDocOverlay = document.getElementById('new-doc-overlay');
   const newDocClose = document.getElementById('new-doc-close');
   const newDocInput = document.getElementById('new-doc-input');
-  const sendBtn = document.getElementById('send');
   const input = document.getElementById('input');
   const selectionBar = document.getElementById('selection-bar');
   const selectionLabel = document.getElementById('selection-label');
@@ -3189,10 +3147,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws`);
-    ws.onopen = () => { statusEl.textContent = 'connected'; sendBtn.disabled = false; };
+    ws.onopen = () => { statusEl.textContent = 'connected'; };
     ws.onclose = () => {
       statusEl.textContent = 'disconnected — reconnecting...';
-      sendBtn.disabled = true;
       setTimeout(connect, 1500);
     };
     ws.onerror = () => { statusEl.textContent = 'error'; };
@@ -3617,9 +3574,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return true;
   }
 
-  sendBtn.addEventListener('click', () => {
+  function sendChat() {
     const text = input.value.trim();
-    if (!text || sendBtn.disabled) return;
+    if (!text) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
     // Slash commands run client-side instead of being forwarded as a
     // chat message. See runSlashCommand() for the full vocabulary.
     if (text.startsWith('/') && runSlashCommand(text)) {
@@ -3648,11 +3606,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     ws.send(JSON.stringify(payload));
     input.value = '';
     showActivity();
-  });
+  }
+  // Enter sends; Shift+Enter (or Meta/Ctrl+Enter) inserts a newline.
+  // No Send button — keyboard is the only way in. The disabled-state
+  // guard is gone too; sendChat() checks ws.readyState directly.
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendBtn.click();
+      sendChat();
     }
   });
   newChatBtn.addEventListener('click', () => {

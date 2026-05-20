@@ -2510,13 +2510,14 @@ def scenario_slash_commands(page, base: str, r: Results) -> None:
 
     page.goto(base + "/")
     page.wait_for_function(
-        "() => document.getElementById('send') && !document.getElementById('send').disabled",
+        "() => document.getElementById('input') && "
+        "document.getElementById('status')?.textContent === 'connected'",
         timeout=10000,
     )
 
     def send_command(cmd):
         page.fill("#input", cmd)
-        page.click("#send")
+        page.locator("#input").press("Enter")
 
     # /help — assistant message with the help text.
     send_command("/help")
@@ -2766,7 +2767,8 @@ def scenario_cancel_command(page, base: str, r: Results) -> None:
 
     page.goto(base + "/")
     page.wait_for_function(
-        "() => document.getElementById('send') && !document.getElementById('send').disabled",
+        "() => document.getElementById('input') && "
+        "document.getElementById('status')?.textContent === 'connected'",
         timeout=10000,
     )
 
@@ -2798,9 +2800,9 @@ def scenario_cancel_command(page, base: str, r: Results) -> None:
         }"""
     )
 
-    # Type /cancel and click Send.
+    # Type /cancel and press Enter.
     page.fill("#input", "/cancel")
-    page.click("#send")
+    page.locator("#input").press("Enter")
 
     # Wait for SOME assistant reply — either "Nothing to cancel" (idle path)
     # or "Turn cancelled by reader" (interrupted-an-in-flight-turn path).
@@ -2908,7 +2910,7 @@ def scenario_tex_skip_preview(page, base: str, r: Results) -> None:
     # tokens on a useless conversion AND so the next scenario starts with
     # no in-flight task.
     page.fill("#input", "/cancel")
-    page.click("#send")
+    page.locator("#input").press("Enter")
     page.wait_for_timeout(800)
 
     # Cleanup: remove the doc dir that the agent-fallback upload created.
