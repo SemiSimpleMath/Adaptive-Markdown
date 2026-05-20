@@ -221,10 +221,10 @@ Drag any `.md` onto the viewer to open it. Drop a `.tex` (or `.txt` / `.rst` / `
 A short list of the big ones — see [`ROADMAP.md`](ROADMAP.md) for the full picture, including active backlog, design questions, and recently-shipped work.
 
 - Codex parity (today: experimental — coarser snapshot granularity, no budget cap, see [Picking the runtime](#picking-the-runtime))
-- Variant blocks + audience presets, pending-changes review mode, annotation overlay
+- Variant blocks + audience presets, annotation overlay
+- Pending-changes review mode is functional today (review tab + accept/reject); future phases add per-block granularity and human-inline-edit-rejects-pending
 - Pyodide for in-browser Python / SymPy in computation blocks
 - Multi-document workspace with cross-doc references and dependency graphs
-- Asset drop — drop an image / data file / audio into the doc area and the agent gets a reference it can use
 - Lean verification of formal theorem statements
 - Hosted multi-user mode
 

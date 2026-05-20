@@ -177,8 +177,8 @@ What this means in practice:
 - `document.addEventListener('mousemove', ...)` inside a `<script>` only sees events inside the doc.
 - `position: fixed; top: 0; right: 0;` anchors to the iframe viewport, not the page viewport. Floating UI stays inside the doc.
 - `requestAnimationFrame`, `setTimeout`, `MutationObserver`, canvas/SVG drawing APIs, `Web Audio`, etc. all work as in any web page.
-- `localStorage` and `sessionStorage` are **not available** — browsers block storage access from null-origin contexts. Doc-side state survives within a single render only. This is intentional: it stops a hostile `<script>` from reading another doc's saved state or the viewer's preferences.
-- `fetch` works for cross-origin URLs that send CORS headers (CDNs, public APIs). Same-origin fetches to the local backend won't return readable bodies.
+- `localStorage` and `sessionStorage` **work**, scoped to the iframe's own origin (`localhost:<port>`). State survives across doc reloads within the same browser session. Use for per-doc preferences ("remember dark mode"). The cross-origin boundary keeps doc storage isolated from the parent viewer's storage, so a doc can't read viewer preferences and vice versa.
+- `fetch` works for CDN URLs and same-origin paths (the iframe's `<base href="/docs/<slug>/">` lets `fetch("assets/data.csv")` resolve correctly). Cross-origin reads to the viewer's parent origin (`127.0.0.1:<port>` from `localhost:<port>`) are CORS-blocked — you can't reach the viewer's backend from inside the doc.
 
 The doc is, literally, a self-contained webpage. Hand the `.md` file to someone else and they get your dark mode, your falling letters, your custom UI — all stored *in* the doc.
 

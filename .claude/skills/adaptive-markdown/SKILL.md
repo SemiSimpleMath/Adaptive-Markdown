@@ -39,12 +39,30 @@ Each chat turn includes:
 
 If no block is focused and the request is local-scope ("rewrite this for a kid"), ask which section they mean rather than guessing.
 
+## Writing `<script>` and `<style>` blocks
+
+The canonical template — copy this shape every time:
+
+```html
+<script>
+// your JavaScript here
+</script>
+```
+
+```html
+<style>
+/* your CSS here */
+</style>
+```
+
+The closing tag is literally `</script>` and `</style>`. Write the characters plainly. Anything else (including any backslash-escaped variant) makes the browser fail to terminate the block — the body runs past EOF, the rest of the doc gets parsed as JS / CSS source, the block never executes. The validator rejects unmatched opens before the edit lands.
+
 ## What happens when you Edit
 
 Each `Edit` to `current.md` goes through a validator before persisting:
 
 - **`<script>`** blocks are parsed with `node --check` (real script grammar). Syntax errors revert the edit.
-- **`<script>` and `<style>` tag balance.** Each opening must have a matching plain closing tag — `</script>` and `</style>`, never escaped. **Do NOT write `<\/script>` as a closing tag.** The backslash escape is correct ONLY inside a JS string literal (e.g. `const s = "<\/script>";` so the literal doesn't terminate the surrounding script body when read as bytes). As an actual closing tag, `<\/script>` makes the browser not terminate the script at all — the body extends past EOF, downstream markdown gets parsed as JS, throws, the script never runs. Same for `</style>`. The validator now rejects unmatched opens with a specific error.
+- **`<script>` / `<style>` tag balance.** Each opening tag must have one matching closing tag (see the canonical template above). Unmatched opens are rejected.
 - **`<style>`** blocks must have balanced braces.
 - **`<svg>`** blocks must be valid XML.
 - **HTML blocks** (`<aside>`, `<figure>`, `<section>`, `<div class="...">`) are passed through verbatim and styled by their class names. The browser is forgiving of unclosed tags, but make sure your structural blocks close cleanly — agents that leave a `<section>` open trail the rest of the doc inside it.
@@ -57,13 +75,13 @@ If validation fails, the edit is **reverted to the pre-edit state** and you rece
 
 ## The doc is a live webpage
 
-The active doc renders inside a sandboxed `<iframe>` at a **null origin** (`sandbox="allow-scripts allow-popups"`). Anything you embed in the source becomes the iframe's content: `<style>` blocks style only the doc, `<script>` blocks run in the iframe's window, event listeners only see iframe events, `position: fixed` is fixed to the iframe viewport.
+The active doc renders inside a sandboxed `<iframe>` loaded from a **different origin than the viewer** (the iframe is at `localhost:<port>`, the viewer is at `127.0.0.1:<port>` — same backend, different hostname → different origin per the browser's Same-Origin Policy). Sandbox is `allow-scripts allow-popups allow-same-origin`. Anything you embed in the source becomes the iframe's content: `<style>` blocks style only the doc, `<script>` blocks run in the iframe's window, event listeners only see iframe events, `position: fixed` is fixed to the iframe viewport.
 
 **The iframe IS the document.** What's in the iframe at render time is the doc, plus the runtime's pre-loaded baseline.
 
 ### Boundary: the iframe is your world
 
-The viewer's UI chrome (header bar, chat panel, dropdowns, buttons) lives in the **parent page**, on a different origin, in a completely separate DOM. None of the parent's CSS or JS reaches inside the iframe. Conversely, your `<style>` and `<script>` blocks cannot reach the parent (sandbox + null origin block it).
+The viewer's UI chrome (header bar, chat panel, dropdowns, buttons) lives in the **parent page**, on a different origin, in a completely separate DOM. None of the parent's CSS or JS reaches inside the iframe. Conversely, your `<style>` and `<script>` blocks cannot reach the parent — the cross-origin boundary blocks any access to parent DOM, storage, or cookies, even though the iframe has `allow-same-origin` (that flag scopes "same-origin" to the iframe's own origin, not the parent's).
 
 What this means in practice:
 
@@ -78,8 +96,8 @@ What this means in practice:
 | **KaTeX** (renderer + auto-render) | `window.katex`, `window.renderMathInElement` | `$...$` and `$$...$$` are auto-rendered |
 | **morphdom** | `window.morphdom` (used by the runtime; you usually don't call it) | DOM diffing on doc updates |
 | **Doc cleanup registry** | `window.__doc.cleanup(fn)` | Register teardown for timers/listeners (see below) |
-| **Re-render hook** | `window.__doc.rerender(el)` | Full rebuild — call after mutating a figure's source so the rendered output catches up. Re-runs OSMD for MusicXML, abcjs for ABC, KaTeX for math inside `el`. Do NOT re-import OSMD/abcjs/KaTeX yourself; the host owns those. |
-| **Live renderer access** | `window.__doc.getRenderer(figureEl)` | Returns `{kind, instance, source}` (or `null`). Use for *incremental* mutation when the renderer has its own API — e.g. `__doc.getRenderer(fig).instance.Sheet.Transpose = 2; instance.UpdateGraphic(); instance.render()`. Preferable to rewriting source for stateful libraries. |
+| **Re-render hook** | `window.__doc.rerender(el)` | Full rebuild — call after mutating a figure's source so the rendered output catches up. Re-runs OSMD for MusicXML, abcjs for ABC, Tabulator for CSV data figures, Mermaid for diagram figures, and KaTeX for math inside `el`. Do NOT re-import the underlying libraries yourself; the host owns those. |
+| **Live renderer access** | `window.__doc.getRenderer(figureEl)` | Returns `{kind, instance, source}` (or `null`). `kind` is `'musicxml'` (instance = OSMD), `'abc'` (instance = abcjs visualObj), `'csv'` (instance = Tabulator), or `'mermaid'` (instance = the global mermaid namespace; rerender via `__doc.rerender`). Use for *incremental* mutation when the renderer has its own API — e.g. `__doc.getRenderer(fig).instance.Sheet.Transpose = 2; instance.UpdateGraphic(); instance.render()` for MusicXML, or `__doc.getRenderer(fig).instance.setFilter(...)` for CSV. |
 | **Doc theming variables** | `--am-bg`, `--am-text`, `--am-muted`, `--am-link`, `--am-code-bg`, `--am-pre-bg`, `--am-blockquote-border`, `--am-blockquote-text`, `--am-theorem-color`, `--am-definition-color`, `--am-example-color`, `--am-note-bg`, `--am-note-border`, `--am-pinned-bg`, `--am-pinned-border`, `--am-figure-placeholder-border`, `--am-figure-caption`, `--am-selection-outline`, `--am-hover-outline`, `--am-error-bg`, `--am-error-border`, `--am-error-text` | Override on `:root` to re-theme |
 | **Standard browser APIs** | DOM, canvas, SVG, Web Audio, `fetch` (cross-origin only), `requestAnimationFrame`, `setTimeout`, `setInterval`, `MutationObserver`, `IntersectionObserver`, `ResizeObserver` | First-class platform |
 
@@ -105,9 +123,15 @@ If you need one, embed the CDN `<script src>` in your block and guard the use:
 
 ### What does NOT work
 
-- `localStorage` / `sessionStorage` — null origin blocks storage access. State survives within a single render only; don't write code that assumes persistence across reloads.
-- `parent.*` access (DOM, storage, location) — null-origin + sandbox; the parent rejects cross-origin reads.
-- Same-origin fetches to the viewer's backend — responses are opaque. Don't try to call the viewer's API from inside the doc.
+- `parent.*` access (DOM, storage, location) — the iframe is cross-origin to the viewer; the browser blocks reads of the parent's window. `parent.location.href`, `parent.document`, `parent.localStorage` all throw.
+- Fetches to the viewer's parent origin (`127.0.0.1:<port>`) — CORS-blocked. The viewer's `/upload`, `/edit-block`, etc. are not callable from inside the iframe.
+- Cookies set by the parent viewer — not visible to the iframe; different origin.
+
+### What DOES work
+
+- `localStorage` / `sessionStorage` — the iframe has `allow-same-origin`, so it has its own storage scoped to its origin. Survives doc reloads within the same browser session. Use for "remember the reader's dark-mode preference" etc.
+- `fetch()` to your iframe's own origin (`localhost:<port>`) and to cross-origin services that allow CORS — agent-asset paths like `assets/foo.png` resolve against the iframe's `<base href>` and are same-origin to the iframe.
+- Third-party embeds that bootstrap from their own origin (YouTube, CodePen, Observable, Figma) — `allow-same-origin` lets the embed's own scripts run in their own context.
 
 ### Surviving doc reloads — the cleanup registry
 
@@ -398,7 +422,7 @@ When the reader asks for an image:
 
 - **First preference:** generate it yourself as inline SVG, a `<canvas>` drawing, or a Desmos plot. You wrote the source; it can't be wrong about its own existence.
 - **Second preference:** ask the reader for the URL, or for them to drop the image into the doc area (it lands in `docs/<slug>/assets/` and you reference it as `assets/<file>`).
-- **Last resort:** only if you've already used `WebFetch` to load a specific URL and it returned 200 — and the tool is NOT available here (see Security). So in practice: never embed an unverified URL.
+- **There is no fallback for an unverified URL** — `WebFetch` is denied (see Security). So in practice: never embed an unverified URL.
 
 For hyperlinks: same rule. Don't add `[link](https://example.com)` unless verified or reader-provided. Prefer DOI form (`https://doi.org/...`) for papers — those resolve more stably than publisher URLs.
 
