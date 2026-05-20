@@ -146,48 +146,11 @@ Power-user opt-out (rarely needed): `python start.py --unsafe-bash` disables the
 
 ## Picking the runtime
 
-**Claude mode** (`--claude`) runs the Claude Agent SDK in-process. Per-edit
-snapshots and patches via the SDK's hook system; per-turn budget cap
-(`MAX_BUDGET_USD`). This is the supported path for v0.1.
+**Claude mode** (`--claude`) is the supported path. Runs the Claude Agent SDK in-process with per-edit snapshots via the SDK's hook system and a per-turn budget cap (`MAX_BUDGET_USD`, default $1/turn).
 
-**Codex mode** (`--codex`) wraps OpenAI's `codex exec` CLI. The substrate
-(history snapshots, derived patches, alias bookkeeping) still works — but
-with these known limitations vs Claude mode:
+**Codex mode** (`--codex`) is experimental and wraps OpenAI's `codex exec` CLI. Substrate parity (history snapshots, alias bookkeeping, network-off default) is in place, but with coarser per-edit granularity, a wider in-project blast radius covered by post-turn revert, no per-turn budget cap, and conversation history replayed via prompt. See [`ROADMAP.md`](ROADMAP.md) for the full list of known gaps. Requires the Codex CLI installed; set `CODEX_COMMAND` if it isn't on PATH (usually only needed on Windows).
 
-- **Coarser snapshot granularity.** Codex CLI's hooks don't fire on file
-  edits (only on Bash), so the runtime snapshots once per changed file per
-  turn rather than once per `Edit` tool call. Block-level undo is still
-  functional; you just get one history entry per file per turn instead of
-  one per Edit.
-- **Wider in-project blast radius.** Codex's `workspace-write` sandbox makes
-  the whole project root writable; we can't gate writes at edit time the
-  way Claude's pre-edit hook does. Instead, the runtime runs a post-turn
-  validator that snapshots protected files before the turn and reverts any
-  modifications outside `docs/<slug>/current.md` after. The reverted bytes
-  briefly hit disk; you'll see a warning in chat if this fires.
-- **No conversation memory by default.** Each `codex exec` is a fresh
-  subprocess. The adapter replays prior turns into the prompt so the model has
-  context, but it costs tokens. Use the **New chat** button (or a model
-  switch) to reset history.
-- **No per-turn budget cap.** Claude mode caps at `MAX_BUDGET_USD` (default
-  $1/turn). Codex has no equivalent today — set spending alerts at your
-  provider.
-- **JSONL parsing is heuristic.** If the Codex CLI changes its event-stream
-  format, the adapter may mislabel events or surface fewer tool indicators.
-- **Network egress off by default.** The adapter passes
-  `-c sandbox_workspace_write.network_access=false` regardless of your
-  global Codex config. Override per-session with `CODEX_WORKSPACE_NETWORK=true`.
-- **Requires Codex CLI installed.** Set `CODEX_COMMAND` if `codex` isn't on
-  PATH (usually only needed on Windows). API-key mode reads `OPENAI_API_KEY`;
-  ChatGPT-account mode uses Codex's own auth (`codex auth login`).
-
-The runtime is captured at backend start, so switching providers requires a
-restart (`python start.py --claude` / `--codex`). The model dropdown inside the
-viewer only switches *within* the current provider.
-
-You can keep both providers' keys in `.env` at the same time — the flag is the
-only thing that decides which runtime reads them, and each runtime ignores the
-other's env vars. No need to comment-out blocks when switching.
+The runtime is captured at backend start, so switching providers requires a restart (`python start.py --claude` / `--codex`). You can keep both providers' keys in `.env` simultaneously — the flag is the only thing that decides which runtime reads them.
 
 ## First run — the tutorial
 
