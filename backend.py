@@ -28,6 +28,7 @@ WS protocol — `doc` fields are SLUGS (e.g. "intro"), not paths:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import sys
@@ -69,7 +70,7 @@ load_dotenv(ROOT / ".env")
 # canonical module (e.g. `from am_pending import save_pending`); don't
 # add re-exports here.
 from am_docs import (  # noqa: E402
-    ensure_doc_ids, ensure_working_copies,
+    ensure_doc_ids, ensure_working_copies, list_all_docs,
 )
 from am_hooks import init_runtime, shutdown_runtime  # noqa: E402
 from am_origin import _check_static_origin  # noqa: E402
@@ -217,15 +218,62 @@ def ensure_skill_mirror() -> None:
         print(f"[skill-mirror] write failed for {dst}: {e}", flush=True)
 
 
+async def watch_docs_list(poll_seconds: float = 1.5) -> None:
+    """Poll docs/ and broadcast {type:"docs"} when the slug list changes.
+
+    Without this, the viewer's doc dropdown only refreshes when a file
+    lands via the upload endpoint — drops via a file manager, `git pull`,
+    manual mkdir, etc. stay invisible until the user reloads. Polling at
+    1.5s is plenty fast for human-pace filesystem changes and avoids the
+    watchdog library (recursive monitors on Windows fire on every file
+    in a bulk operation, and the cross-platform event semantics drift)."""
+    last = tuple(list_all_docs())
+    while True:
+        try:
+            await asyncio.sleep(poll_seconds)
+        except asyncio.CancelledError:
+            return
+        try:
+            now = tuple(list_all_docs())
+        except OSError:
+            continue  # transient FS hiccup; try again next tick
+        if now != last:
+            added = sorted(set(now) - set(last))
+            removed = sorted(set(last) - set(now))
+            last = now
+            try:
+                await state.broadcast({"type": "docs", "list": list(now)})
+            except Exception as e:
+                print(f"[docs-watcher] broadcast failed: {e}", flush=True)
+                continue
+            if added or removed:
+                msg_parts = []
+                if added: msg_parts.append("added: " + ", ".join(added))
+                if removed: msg_parts.append("removed: " + ", ".join(removed))
+                print(f"[docs-watcher] {' · '.join(msg_parts)}", flush=True)
+
+
 async def on_startup(app: web.Application):
     ensure_working_copies()  # baseline.md -> current.md on fresh clones
     ensure_doc_ids()
     ensure_history_zero()    # current.md -> baseline.md for new user docs
     ensure_skill_mirror()
     await init_runtime()
+    # Filesystem polling: broadcast doc-list changes that didn't come
+    # through the upload endpoint (out-of-band file drops, git pulls).
+    app["docs_watcher"] = asyncio.create_task(watch_docs_list())
 
 
 async def on_cleanup(app: web.Application):
+    # Stop the docs watcher first so it doesn't try to broadcast onto
+    # WebSockets we're about to close.
+    task = app.get("docs_watcher")
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
     # Close all WebSocket connections first so aiohttp's task cancellation
     # doesn't have to wait for IOCP reads to time out. On Windows the
     # ProactorEventLoop blocks in GetQueuedCompletionStatus while there are
