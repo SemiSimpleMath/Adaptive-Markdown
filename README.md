@@ -28,6 +28,21 @@ Open <http://127.0.0.1:8090>. On first launch the viewer shows a setup card — 
 
 > ▶ Demos on YouTube: [demo 1](https://youtu.be/H4MnFs8irm8) · [demo 2](https://youtu.be/xf6jxf-hyP4)
 
+## What it can do
+
+The agent has the full web platform; the doc has the full filesystem. Some of what falls out:
+
+- **Live figures** — drop a `.csv` and get a sortable, filterable Tabulator grid. Drop a `.abc` / `.musicxml` / `.mid` and get notation + playback. Drop a `.mmd` and get a Mermaid diagram. All authored as `<figure>` blocks the agent can rewrite.
+- **Custom widgets** — calculators, sliders, dark-mode toggles, transpose controls, anything you'd build with HTML + CSS + JS. The agent writes them as inline `<script>` blocks.
+- **Inline editing** — click into any paragraph and just start typing. Bold / italic / math / links survive the edit. Use Source view for code, lists, and tables.
+- **Click-to-focus** — click a paragraph, theorem, or figure to focus the agent on that block. `Shift+click` for multi-select; `Alt+click` to escalate to the parent (e.g., the wrapping collapsible section).
+- **Per-doc skills** — every doc can carry its own `<section class="agent-skill">` blocks: voice rules, format conventions, domain facts. The agent reads them as authoritative for that doc; readers don't see them.
+- **History & restore** — every pre-edit state is snapshotted automatically. Browse, restore, undo, or pin the current state as a new baseline.
+- **Themes** — light, dark, system. The whole chrome and the doc body both theme together; live-renderer canvases (music, data, diagrams) stay readable in both.
+- **Export & print** — single self-contained `.html` for sharing (no AM needed to open it), or PDF / printer with proper page flow.
+- **File drops** — `.md` loads directly. `.pdf` / `.docx` / `.xlsx` / `.pptx` / `.tex` / `.rst` / `.org` convert to AM via server-side or vision-model paths.
+- **Built-in help** — `?` button in the toolbar opens an in-app guide.
+
 ---
 
 ## Prerequisites
