@@ -821,6 +821,59 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
 }
 .selection-bar .selection-clear:hover { color: var(--error); }
 
+/* First-run setup card: shown when the backend's active provider has
+   no API key. Sits above the chat input so the reader can still browse
+   the doc, change tabs, etc. — only chat is gated. */
+.setup-card {
+  padding: 0.85rem 1rem;
+  margin: 0.5rem 0.75rem;
+  border: 1px solid var(--accent-soft);
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.setup-card[hidden] { display: none; }
+.setup-card-title { font-weight: 600; margin-bottom: 0.35rem; color: var(--accent); }
+.setup-card-body { line-height: 1.5; margin-bottom: 0.6rem; }
+.setup-card-body code {
+  background: var(--code-bg); padding: 0.05em 0.35em; border-radius: 3px;
+  font-family: ui-monospace, monospace; font-size: 0.85em;
+}
+.setup-card-body a { color: var(--accent); }
+.setup-card-input-row { display: flex; gap: 0.4rem; }
+.setup-card-input {
+  flex: 1 1 auto; min-width: 0;
+  font: inherit; font-family: ui-monospace, monospace; font-size: 0.82rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--surface); color: var(--text);
+}
+.setup-card-input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.setup-card-save {
+  background: var(--accent); color: var(--accent-text); border: 0;
+  padding: 0.4rem 0.85rem; border-radius: 4px; cursor: pointer;
+  font: inherit; font-size: 0.85rem; font-weight: 600;
+}
+.setup-card-save:hover { background: var(--accent-hover); }
+.setup-card-save:disabled { background: var(--muted); cursor: default; }
+.setup-card-msg {
+  margin-top: 0.55rem; padding: 0.5rem 0.65rem;
+  border-radius: 4px; font-size: 0.82rem; line-height: 1.45;
+}
+.setup-card-msg.is-error {
+  background: var(--error-bg); color: var(--error-text);
+  border: 1px solid var(--error-border);
+}
+.setup-card-msg.is-ok {
+  background: var(--success-bg); color: var(--success-text);
+  border: 1px solid var(--success-border);
+}
 .input-row {
   padding: 0.75rem;
   border-top: 1px solid var(--border);
@@ -958,6 +1011,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <span>📍</span>
       <span class="selection-label" id="selection-label"></span>
       <button class="selection-clear" id="selection-clear" title="Clear focus">×</button>
+    </div>
+    <div id="setup-card" class="setup-card" hidden>
+      <div class="setup-card-title">Set up your API key</div>
+      <div class="setup-card-body" id="setup-card-body"></div>
+      <div class="setup-card-input-row">
+        <input type="password" id="setup-card-key" class="setup-card-input" placeholder="paste your key here" autocomplete="off" spellcheck="false">
+        <button type="button" id="setup-card-save" class="setup-card-save">Save</button>
+      </div>
+      <div id="setup-card-msg" class="setup-card-msg" hidden></div>
     </div>
     <div class="input-row">
       <textarea id="input" rows="3" placeholder="Ask the document anything..."></textarea>
@@ -3267,6 +3329,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       currentDoc = urlDoc || data.doc;
       if (Array.isArray(data.docs)) populateDocs(data.docs);
       if (Array.isArray(data.models)) populateModels(data.models, data.model);
+      // First-run setup card. When the backend's active provider has no
+      // API key, the first chat turn would fail with a cryptic auth
+      // error. Show a friendly setup banner over the chat input instead.
+      paintSetupCard(!data.api_key_present, data.api_key_var);
       loadDoc(docUrl(currentDoc));
       return;
     }
@@ -3604,6 +3670,91 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     );
     return true;
   }
+
+  // ---- First-run setup card -----------------------------------------------
+  // Shown when the backend reports no API key for the active provider.
+  // The card explains where to get one, takes the key, POSTs to /api-key,
+  // then tells the user to restart so the agent runtime picks up the
+  // new auth. Doesn't block reading the doc — only chat is gated.
+  const setupCard = document.getElementById('setup-card');
+  const setupCardBody = document.getElementById('setup-card-body');
+  const setupCardKey = document.getElementById('setup-card-key');
+  const setupCardSave = document.getElementById('setup-card-save');
+  const setupCardMsg = document.getElementById('setup-card-msg');
+  let setupCardVar = null;  // ANTHROPIC_API_KEY | OPENAI_API_KEY | null
+
+  const API_KEY_LINKS = {
+    ANTHROPIC_API_KEY: 'https://console.anthropic.com/settings/keys',
+    OPENAI_API_KEY: 'https://platform.openai.com/api-keys',
+  };
+  const API_KEY_PROVIDER_NAME = {
+    ANTHROPIC_API_KEY: 'Anthropic',
+    OPENAI_API_KEY: 'OpenAI',
+  };
+
+  function paintSetupCard(missing, varName) {
+    setupCardVar = varName || null;
+    if (!missing || !varName) {
+      setupCard.hidden = true;
+      input.placeholder = 'Ask the document anything...';
+      input.disabled = false;
+      return;
+    }
+    const provider = API_KEY_PROVIDER_NAME[varName] || 'your provider';
+    const link = API_KEY_LINKS[varName] || null;
+    setupCardBody.innerHTML = '';
+    const linkFrag = link
+      ? `Get one at <a href="${link}" target="_blank" rel="noopener noreferrer">${link}</a>.`
+      : '';
+    setupCardBody.innerHTML =
+      `The chat needs a ${provider} API key to reach the model. ${linkFrag} ` +
+      `Paste it below — it'll be saved to your local <code>.env</code> file.`;
+    setupCardMsg.hidden = true;
+    setupCardMsg.className = 'setup-card-msg';
+    setupCardSave.disabled = false;
+    setupCard.hidden = false;
+    // Disable chat input + give a clear placeholder so the user knows why
+    // their message wouldn't go anywhere.
+    input.placeholder = 'Set up your API key above to start chatting.';
+    input.disabled = true;
+  }
+
+  function setupCardSaveClick() {
+    const key = setupCardKey.value.trim();
+    if (!key || !setupCardVar) return;
+    setupCardSave.disabled = true;
+    setupCardMsg.hidden = true;
+    fetch('/api-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ var: setupCardVar, key }),
+    }).then(r => r.json().then(j => ({ ok: r.ok, body: j })))
+      .then(({ ok, body }) => {
+        if (!ok) {
+          setupCardMsg.textContent = body.error || 'Save failed.';
+          setupCardMsg.className = 'setup-card-msg is-error';
+          setupCardMsg.hidden = false;
+          setupCardSave.disabled = false;
+          return;
+        }
+        setupCardMsg.textContent = body.message ||
+          'Saved. Restart the backend so it picks up the new key.';
+        setupCardMsg.className = 'setup-card-msg is-ok';
+        setupCardMsg.hidden = false;
+        setupCardKey.value = '';
+        setupCardKey.disabled = true;
+      })
+      .catch(err => {
+        setupCardMsg.textContent = 'Save failed: ' + (err.message || err);
+        setupCardMsg.className = 'setup-card-msg is-error';
+        setupCardMsg.hidden = false;
+        setupCardSave.disabled = false;
+      });
+  }
+  setupCardSave.addEventListener('click', setupCardSaveClick);
+  setupCardKey.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); setupCardSaveClick(); }
+  });
 
   function sendChat() {
     const text = input.value.trim();

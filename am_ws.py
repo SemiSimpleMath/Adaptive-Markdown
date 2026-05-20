@@ -25,6 +25,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import os
+
 from aiohttp import web, WSMsgType
 
 from am_docs import (
@@ -38,6 +40,28 @@ from am_state import state
 from am_tracking import mint_track_id_for
 
 DEFAULT_DOC = "intro"  # slug; resolves to docs/intro/current.md
+
+
+def _api_key_status() -> tuple[bool, str | None]:
+    """Whether the active runtime has the env var it needs to talk to its
+    provider, and the env var's name. Drives the first-run setup card —
+    no API key means the user's first chat turn would fail with a
+    cryptic auth error; surface the gap up-front instead.
+
+    Returns (present, var_name). var_name is None when the provider
+    needs no env var (Codex in chatgpt mode authenticates out-of-band)."""
+    provider = state.current_provider or "claude"
+    if provider == "claude":
+        return (bool(os.environ.get("ANTHROPIC_API_KEY")), "ANTHROPIC_API_KEY")
+    if provider == "codex":
+        # CODEX_AUTH_MODE=api needs OPENAI_API_KEY; otherwise (chatgpt
+        # default) auth is via the codex CLI's own login flow.
+        mode = os.environ.get("CODEX_AUTH_MODE", "chatgpt").lower()
+        if mode in {"api", "api-key", "apikey"}:
+            return (bool(os.environ.get("OPENAI_API_KEY")), "OPENAI_API_KEY")
+        return (True, None)
+    # Unknown provider: don't gate.
+    return (True, None)
 
 
 def _safe_inline_doc_slug(slug: str) -> Path | None:
@@ -122,6 +146,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     async with state.client_lock:
         state.clients.add(ws)
 
+    _key_present, _key_var = _api_key_status()
     await ws.send_json({
         "type": "ready",
         "doc": DEFAULT_DOC,
@@ -129,6 +154,8 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
         "provider": state.current_provider,
         "model": state.current_model,
         "models": state.runtime.model_aliases if state.runtime else [],
+        "api_key_present": _key_present,
+        "api_key_var": _key_var,
     })
 
     try:

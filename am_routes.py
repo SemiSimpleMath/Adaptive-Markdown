@@ -12,6 +12,7 @@ share the same imports and look identical at the top.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -658,3 +659,89 @@ async def reset_doc(request: web.Request) -> web.Response:
         flush=True,
     )
     return web.json_response({"doc": slug, "snap_id": "baseline", "ok": True})
+
+
+# Whitelist of env var names the first-run setup card may write. Keeps
+# the endpoint from being a generic ".env writer" (a future foothold for
+# anyone who tricks a reader into POSTing arbitrary keys).
+_API_KEY_VARS = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY"})
+# Surface-shape validators per provider. Catches paste mistakes (extra
+# whitespace, missing prefix) at the boundary so the user gets feedback
+# now instead of a cryptic auth error later. Not a security check —
+# the provider's auth service is what actually validates the key.
+_API_KEY_SHAPE = {
+    "ANTHROPIC_API_KEY": re.compile(r"^sk-ant-[A-Za-z0-9_\-]{20,}$"),
+    "OPENAI_API_KEY":    re.compile(r"^sk-[A-Za-z0-9_\-]{20,}$"),
+}
+
+
+async def set_api_key(request: web.Request) -> web.Response:
+    """POST /api-key — first-run setup card writes the user's API key to
+    .env so subsequent backend starts pick it up. Also injects into the
+    running process's os.environ (so any code path that reads env at
+    call-time benefits without a restart), but the reader is told to
+    restart anyway because the active agent runtime may have cached
+    its auth from process start.
+
+    Body JSON: {"var": "ANTHROPIC_API_KEY", "key": "sk-ant-…"}
+    """
+    _require_localhost_origin(request)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    var = (data.get("var") or "").strip()
+    key = (data.get("key") or "").strip()
+    if var not in _API_KEY_VARS:
+        return web.json_response(
+            {"error": f"unsupported env var: {var!r}"}, status=400,
+        )
+    shape = _API_KEY_SHAPE.get(var)
+    if shape is not None and not shape.fullmatch(key):
+        return web.json_response(
+            {"error": f"{var} doesn't match the expected shape — paste error?"},
+            status=400,
+        )
+    env_path = Path(__file__).resolve().parent / ".env"
+    # Read existing .env, replace the line for this var (if present), or
+    # append. Comment-prefixed and blank lines pass through untouched.
+    lines: list[str] = []
+    if env_path.exists():
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        except OSError as e:
+            return web.json_response(
+                {"error": f"could not read .env: {e}"}, status=500,
+            )
+    new_line = f"{var}={key}"
+    replaced = False
+    for i, raw in enumerate(lines):
+        s = raw.strip()
+        if s.startswith("#") or "=" not in s:
+            continue
+        existing_key = s.split("=", 1)[0].strip()
+        if existing_key == var:
+            lines[i] = new_line
+            replaced = True
+            break
+    if not replaced:
+        lines.append(new_line)
+    try:
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as e:
+        return web.json_response(
+            {"error": f"could not write .env: {e}"}, status=500,
+        )
+    # Inject into current process so non-runtime call sites pick it up
+    # (am_convert.py reads ANTHROPIC_API_KEY at call-time, for example).
+    os.environ[var] = key
+    print(f"[setup] wrote {var} to .env", flush=True)
+    return web.json_response({
+        "ok": True,
+        "var": var,
+        "restart_required": True,
+        "message": (
+            "Saved to .env. Restart the backend (Ctrl+C, then "
+            "`python start.py`) so the agent runtime picks up the new key."
+        ),
+    })
