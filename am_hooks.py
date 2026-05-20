@@ -43,7 +43,8 @@ from am_state import state
 from am_tracking import detect_id_drift
 
 # Per-tool-call stash so post-edit hook can diff for drift + derive patches.
-# Keyed by tool_use_id; value: {"file_path": str, "before_text": str, "snap_id": str}
+# Keyed by tool_use_id; value: {"file_path": str, "before_text": str,
+#   "before_bytes": bytes, "snap_id": str}
 _pre_edit_state: dict[str, dict] = {}
 # Per-file consecutive-revert counter for the validator retry-cap.
 _validate_revert_count: dict[str, int] = {}
@@ -117,11 +118,17 @@ async def pre_tool_use_hook(input_data, tool_use_id, context):
 
     try:
         p = Path(file_path)
-        before_text = p.read_text(encoding="utf-8") if p.exists() else ""
-        snap_id = save_snapshot(p, before_text) if before_text else None
+        # Capture raw bytes for byte-perfect snapshot + revert, AND decoded
+        # text for drift detection / pending entries. Different consumers,
+        # different needs — feeding text through write_bytes after decode
+        # would silently normalize \\r\\n -> \\n.
+        before_bytes = p.read_bytes() if p.exists() else b""
+        before_text = before_bytes.decode("utf-8") if before_bytes else ""
+        snap_id = save_snapshot(p, before_bytes) if before_bytes else None
         _pre_edit_state[tool_use_id] = {
             "file_path": file_path,
             "before_text": before_text,
+            "before_bytes": before_bytes,
             "snap_id": snap_id,
         }
     except Exception as e:
@@ -225,6 +232,7 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
 
     stash = _pre_edit_state.pop(tool_use_id, None)
     before_text = stash["before_text"] if stash else None
+    before_bytes = stash.get("before_bytes") if stash else None
     snap_id = stash["snap_id"] if stash else None
     p = Path(file_path)
 
@@ -268,7 +276,13 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
         # delete it if this was a brand-new file. Skip finalize_md_edit
         # entirely — on-disk state matches what the viewer already has.
         try:
-            if before_text:
+            if before_bytes:
+                # write_bytes is byte-exact — the pre-edit file's line
+                # endings, BOM, and trailing-newline state survive revert.
+                p.write_bytes(before_bytes)
+                action = "reverted"
+            elif before_text:
+                # Defensive fallback if stash predates the bytes capture.
                 with p.open("w", encoding="utf-8", newline="") as f:
                     f.write(before_text)
                 action = "reverted"

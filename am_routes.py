@@ -74,18 +74,24 @@ def _snapshot_if_changed(doc_path: Path) -> str | None:
     Acceptable v0 trade — losing recent work to a single Reset/Restore click
     is the much more common surprise. The longer-term fix is a HEAD-pointer
     or post-edit hook model (see ROADMAP, "Snapshot semantics")."""
+    # Bytes-vs-bytes throughout: text-mode reads do universal-newline
+    # normalization (\\r\\n -> \\n), so two files that differ only in line
+    # endings would compare equal and we'd skip the safety snap — but the
+    # subsequent restore (write_bytes) reintroduces the difference, leaving
+    # the working copy in a state that no snap matches. Bytes avoid this
+    # trap and give true round-trip equality.
     try:
-        current = doc_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        current = doc_path.read_bytes()
+    except OSError:
         return None
     hist = _history_dir_for(doc_path)
     if hist.exists():
         snaps = sorted(hist.glob("snap-*.md"))
         if snaps:
             try:
-                if snaps[-1].read_text(encoding="utf-8") == current:
+                if snaps[-1].read_bytes() == current:
                     return None
-            except (OSError, UnicodeDecodeError):
+            except OSError:
                 pass  # treat as different and save defensively
     return save_snapshot(doc_path, current)
 

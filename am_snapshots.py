@@ -30,11 +30,18 @@ def _history_zero_path(doc_path: Path) -> Path | None:
     return baseline if baseline.exists() else None
 
 
-def save_snapshot(doc_path: Path, text: str) -> str:
-    """Save text as a snapshot under docs/<slug>/snaps/, returning the id."""
+def save_snapshot(doc_path: Path, content: str | bytes) -> str:
+    """Save content as a snapshot under docs/<slug>/snaps/, returning the id.
+
+    Always writes bytes — never write_text. write_text on Windows applies
+    \\n -> \\r\\n translation, which breaks byte-fidelity with the source
+    file. Callers that have raw bytes (read_bytes()) get round-trip
+    equality; callers that only have decoded str get UTF-8 encoding
+    without newline translation."""
     d = _history_dir_for(doc_path)
     d.mkdir(parents=True, exist_ok=True)
     # gen_id("snap") already prefixes "snap-" — don't double-prefix.
     snap_id = gen_id("snap")
-    (d / f"{snap_id}.md").write_text(text, encoding="utf-8")
+    data = content if isinstance(content, bytes) else content.encode("utf-8")
+    (d / f"{snap_id}.md").write_bytes(data)
     return snap_id
