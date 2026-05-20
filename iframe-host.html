@@ -95,7 +95,7 @@ article#body code { background: var(--am-code-bg); padding: 0.1em 0.4em; border-
 article#body pre { background: var(--am-pre-bg); padding: 0.8em; border-radius: 3px; overflow-x: auto; }
 article#body pre code { background: transparent; padding: 0; }
 article#body a { color: var(--am-link); }
-article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,article,section,aside,figure,div.pinned) { cursor: pointer; }
+article#body :is(h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,pre,table,article,section,aside,details,figure,div.pinned,div.narrative) { cursor: pointer; }
 article#body .hover-block { outline: 1px dashed var(--am-hover-outline); outline-offset: 6px; }
 article#body .selected-block, article#body .selected-block.hover-block { outline: 2px solid var(--am-selection-outline); outline-offset: 6px; border-radius: 2px; }
 article#body .insertion-marker { height: 2px; background: var(--am-selection-outline); margin: 6px 0; border-radius: 1px; pointer-events: none; opacity: 0.85; }
@@ -840,13 +840,44 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
   }
 
   // ---- Block / selection / insertion -------------------------------------
+  // Predicate for "selectable block". A reader-meaningful unit the agent
+  // can be focused on. Includes wrappers (figure, section, details, ...)
+  // AND content (p, headings, blockquote, list, ...) — both levels can
+  // be selected, click default = deepest, Alt+click escalates one level.
+  // Excludes inline elements, interactive widgets, and the hidden
+  // agent-skill meta sections.
+  const SELECTABLE_TAGS = new Set([
+    'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'P', 'UL', 'OL', 'BLOCKQUOTE', 'TABLE', 'PRE', 'HR',
+    'FIGURE', 'ASIDE', 'SECTION', 'DETAILS', 'ARTICLE', 'DIV',
+  ]);
+  function isSelectable(el) {
+    if (!el || el === body || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if (!SELECTABLE_TAGS.has(el.tagName)) return false;
+    if (el.classList && el.classList.contains('agent-skill')) return false;
+    return true;
+  }
   function findBlock(el) {
+    // Deepest selectable ancestor. Used by hover, focusin, and (default
+    // path of) click. Replaces the old "direct child of <article#body>"
+    // rule that broke any time a wrapper like <details> nested content.
     let c = el;
     while (c && c !== body) {
-      if (c.parentElement === body) return c;
+      if (isSelectable(c)) return c;
       c = c.parentElement;
     }
     return null;
+  }
+  function findBlockChain(el) {
+    // All selectable ancestors, deepest first. Used by Alt+click to
+    // escalate from a currently-selected block to its parent block.
+    const chain = [];
+    let c = el;
+    while (c && c !== body) {
+      if (isSelectable(c)) chain.push(c);
+      c = c.parentElement;
+    }
+    return chain;
   }
   // Source-equivalent text: like textContent, but for am-math-keep spans
   // emit the `data-source` (the original `$...$` / `$$...$$`) instead of
@@ -891,9 +922,19 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
   }
   const selectedKeys = new Set();
   function applySelection() {
-    for (const ch of body.children) {
-      if (selectedKeys.has(keyOf(ch))) ch.classList.add('selected-block');
-      else ch.classList.remove('selected-block');
+    // Walk every selectable descendant, not just body.children. After
+    // the structural-block default flipped, selected blocks routinely
+    // live inside <details>/<section>/<figure>/etc., and applying the
+    // .selected-block class only at the top level would leave nested
+    // selections invisible even when click correctly picked them.
+    const all = body.querySelectorAll(
+      'h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, table, pre, hr, '
+      + 'figure, aside, section, details, article, div'
+    );
+    for (const el of all) {
+      if (!isSelectable(el)) continue;
+      if (selectedKeys.has(keyOf(el))) el.classList.add('selected-block');
+      else el.classList.remove('selected-block');
     }
   }
 
@@ -943,7 +984,15 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
   const EDITABLE_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 
   function applyEditableMode() {
-    for (const block of body.children) {
+    // Walk all p/heading DESCENDANTS, not just direct body.children.
+    // Docs nest blocks inside <details>/<section>/<figure>/<aside>/etc.
+    // and the reader still wants to inline-edit a paragraph that lives
+    // inside a collapsible week or inside a theorem section. Skip
+    // hidden meta sections (agent-skill) and the text inside <summary>
+    // (the summary IS its own click affordance — toggle collapse).
+    const blocks = body.querySelectorAll('p, h1, h2, h3, h4, h5, h6');
+    for (const block of blocks) {
+      if (block.closest('.agent-skill, summary')) continue;
       if (editableMode && EDITABLE_TAGS.has(block.tagName)) {
         block.setAttribute('contenteditable', 'plaintext-only');
       } else {
@@ -1024,8 +1073,22 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     // standard interactive set.
     if (e.target.closest('button, input, select, textarea, summary, label')) return;
     if (userIsTextSelecting()) return; // let native selection survive
-    const b = findBlock(e.target);
+    // Default click = deepest selectable. Alt+click escalates one level
+    // up the selectable chain when there's exactly one block currently
+    // selected and the click lands inside it. Repeated Alt+clicks walk
+    // further up. Falls back to deepest if there's no escalation context
+    // (no selection, multiple selected, or click outside current).
+    const chain = findBlockChain(e.target);
+    let b = chain[0] || null;
     const add = e.shiftKey || e.metaKey || e.ctrlKey;
+    const escalate = e.altKey;
+    if (escalate && selectedKeys.size === 1 && chain.length > 1) {
+      const currentKey = [...selectedKeys][0];
+      const idx = chain.findIndex(el => keyOf(el) === currentKey);
+      if (idx >= 0 && idx + 1 < chain.length) {
+        b = chain[idx + 1];
+      }
+    }
     // preventDefault would cancel caret-placement on a contenteditable
     // block, breaking inline edit. Block-focus still fires either way;
     // for editable blocks the browser also places the caret naturally.
@@ -1034,10 +1097,12 @@ figure.diagram script[type="text/x-mermaid"] { display: none; }
     if (b) b.classList.remove('hover-block');
     if (b) {
       clearInsertionMarker();
-      if (!add) { selectedKeys.clear(); selectedKeys.add(keyOf(b)); }
+      // Alt+click always replaces — escalation is a single-block intent;
+      // combining it with additive (Shift) would be ambiguous.
+      if (escalate || !add) { selectedKeys.clear(); selectedKeys.add(keyOf(b)); }
       else { const k = keyOf(b); if (selectedKeys.has(k)) selectedKeys.delete(k); else selectedKeys.add(k); }
       applySelection();
-      toParent({ type: 'selection', block: blockInfo(b), additive: add });
+      toParent({ type: 'selection', block: blockInfo(b), additive: add && !escalate });
       return;
     }
     if (e.target.closest('article#body')) {
