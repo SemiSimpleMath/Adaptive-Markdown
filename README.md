@@ -1,19 +1,32 @@
 # Adaptive Markdown
 
-**Documents that are programmable objects.** Write plain markdown; a coding agent on the side rewrites, translates, illustrates, animates, or extends it in place — including arbitrary HTML, CSS, and JavaScript that ships *inside* the doc. The page you see is the file, executing.
+**A document shouldn't have to stay static.** It should be something a coding agent can extend, reshape, and turn into an interactive workspace.
 
-Most agent-driven editing tools box the agent into a fixed component palette: it can rewrite text or fill in a sandboxed widget. **Here it has the full web platform** — every CSS rule, every `<script>` tag, every API the browser exposes — and the output is a normal `.md` file you can share, fork, and check into git. Dark mode toggle, animated headings, falling-letter effect, a snake game in the corner? All by asking, all stored as plain markdown.
+This is not a canvas you edit with a chatbot. The document itself becomes both the source of truth and the programmable interface — a living app. You write the document, drop in your data, keep your notes, and then tell a coding agent what you want the surface to become. The agent edits the file directly: adds charts, restyles sections, builds calculators, imports data, generates summaries, turns static notes into interactive tools.
+
+A single `.md` file holds the text, data, styling, interactivity, history, and agent instructions together. Open it in any markdown viewer and it reads as a normal document. Open it in this viewer and it becomes the app.
+
+Most agent-driven editing tools box the agent into a fixed component palette — it can rewrite text or fill in a sandboxed widget. **Here it has the full web platform**: every CSS rule, every `<script>` tag, every API the browser exposes. The output is still a normal `.md` file you can share, fork, and check into git. Dark mode toggle, animated headings, a snake game in the corner — all by asking, all stored as plain markdown.
+
+**Example.** Start with a fitness log — just a plain markdown journal. Ask the agent to chart your weekly volume. Ask it to import a Garmin export. Ask for rolling averages, weekly summaries, goal tracking, an export-to-CSV button. The document doesn't move *into* an app. It *becomes* the app.
+
+Instead of juggling a document, a spreadsheet, a dashboard, a separate AI chat, and a changelog for each, you have one living file with all those layers in it.
+
+## Quick start
+
+```bash
+git clone https://github.com/SemiSimpleMath/Adaptive-Markdown
+cd Adaptive-Markdown
+pip install -r requirements.txt
+python start.py --claude
+```
+
+Open <http://127.0.0.1:8090>. On first launch the viewer shows a setup card — paste your [Anthropic API key](https://console.anthropic.com/settings/keys), restart, and you're talking to your document. Detailed per-OS install + Codex alternative are [below](#install).
 
 [![Adaptive Markdown — demo](https://img.youtube.com/vi/H4MnFs8irm8/maxresdefault.jpg)](https://youtu.be/H4MnFs8irm8)
 [![Adaptive Markdown — demo 2](https://img.youtube.com/vi/xf6jxf-hyP4/maxresdefault.jpg)](https://youtu.be/xf6jxf-hyP4)
 
 > ▶ Demos on YouTube: [demo 1](https://youtu.be/H4MnFs8irm8) · [demo 2](https://youtu.be/xf6jxf-hyP4)
-
-```text
-$ python start.py --claude
-[start] provider=claude (flag, saved to .am-provider)
-Adaptive Markdown listening on http://127.0.0.1:8090
-```
 
 ---
 
