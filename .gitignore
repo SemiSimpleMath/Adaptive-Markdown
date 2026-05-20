@@ -28,7 +28,7 @@ screenshots/
 *.id-aliases.json
 .am-provider
 
-# Doc-as-folder layout: docs/<slug>/ — only the three ship-with examples
+# Doc-as-folder layout: docs/<slug>/ — only the ship-with examples
 # may land in git, and even within those, only baseline.md + optional
 # original.<ext> + assets/ are tracked. current.md (working copy), snaps/
 # (pre-edit captures), and patches/ (legacy, soon-removed) stay local.
@@ -36,6 +36,7 @@ docs/*
 !docs/intro/
 !docs/paper/
 !docs/textbook/
+!docs/help/
 docs/*/current.md
 docs/*/snaps/
 docs/*/patches/

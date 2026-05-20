@@ -188,13 +188,20 @@ body {
   max-width: 240px;
   align-self: center;
 }
-.theme-toggle {
+.theme-toggle, .help-btn {
   align-self: center;
   padding: 0.18rem 0.45rem;
   line-height: 1;
   font-size: 0.95rem;
 }
 .theme-toggle .theme-icon { display: inline-block; }
+.help-btn {
+  /* Snug round-ish "?" — same footprint as theme toggle so the two
+     read as a pair on the right edge of the toolbar. */
+  min-width: 1.6em;
+  font-weight: 600;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
 .view-dropdown-wrap {
   position: relative;
   align-self: stretch;
@@ -867,6 +874,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="view-tab-buttons" id="view-tab-buttons"></div>
       <select id="doc-select" class="doc-select" title="Switch document"></select>
       <button id="new-doc-btn" class="btn-tiny" title="Add a new document — drop a file or browse">＋ Doc</button>
+      <button id="help-btn" class="btn-tiny help-btn" type="button" title="Open the Help doc" aria-label="Help">?</button>
       <button id="theme-toggle-btn" class="btn-tiny theme-toggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">
         <span class="theme-icon" aria-hidden="true">🌙</span>
       </button>
@@ -1809,6 +1817,22 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   function broadcastThemeOnReady() {
     sendToFrame({ type: 'theme', theme: currentTheme() });
   }
+
+  // ---- Help button --------------------------------------------------------
+  // The Help doc lives at docs/help/. Loading it goes through the same
+  // path as picking from the doc-select dropdown: set currentDoc, load
+  // the source, reflect the URL so a reload keeps you on Help.
+  const helpBtn = document.getElementById('help-btn');
+  helpBtn.addEventListener('click', () => {
+    const target = 'help';
+    if (currentDoc === target) return;
+    currentDoc = target;
+    docSelect.value = target;
+    loadDoc(docUrl(target));
+    const url = new URL(window.location);
+    url.searchParams.set('doc', target);
+    history.replaceState(null, '', url);
+  });
 
   window.addEventListener('message', (e) => {
     // Two-layer filter: source must be our iframe AND origin must be the
