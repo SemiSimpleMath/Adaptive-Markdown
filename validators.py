@@ -269,6 +269,48 @@ def validate_doc(text: str) -> list[ValidationError]:
     HTML the browser is forgiving and the user sees a visual glitch
     rather than a hard failure."""
     errors: list[ValidationError] = []
+
+    # Tag-balance check: each <script> opening should have exactly one
+    # matching </script>. Catches the agent regression where Haiku writes
+    # `<\/script>` (escaped) as the closing tag, thinking the backslash
+    # makes it safe — actually it makes the browser NOT terminate the
+    # script, the body extends past EOF, the script throws on the markdown
+    # that follows, and the button (or whatever) never gets created.
+    #
+    # Same shape for <style>. Mask markdown code spans first so prose
+    # mentions like `<script>` in backticks don't count.
+    masked = _mask_markdown_code(text)
+    for tag in ("script", "style"):
+        opens = len(re.findall(rf"<{tag}\b", masked, re.IGNORECASE))
+        closes = len(re.findall(rf"</{tag}\b", masked, re.IGNORECASE))
+        if opens != closes:
+            # Find the line of the first orphan open (best heuristic).
+            line = 1
+            m = re.search(rf"<{tag}\b", masked, re.IGNORECASE)
+            if m:
+                line = masked[:m.start()].count("\n") + 1
+            esc_present = "<\\/" + tag + ">" in text
+            esc_hint = ""
+            if esc_present:
+                esc_hint = (
+                    f" Found `<\\/{tag}>` (escaped) in the source — that's "
+                    f"wrong as a closing tag. The HTML parser does NOT "
+                    f"recognize the backslash form; it treats the body as "
+                    f"unterminated. Write `</{tag}>` plain — the escape "
+                    f"trick is only correct INSIDE a JS string literal "
+                    f"(e.g. `const s = \"<\\/{tag}>\"`), never as the "
+                    f"actual closing tag."
+                )
+            errors.append({
+                "kind": f"{tag}-tag-balance",
+                "line": line,
+                "message": (
+                    f"<{tag}> open / close count mismatch: {opens} opening "
+                    f"tag(s), {closes} closing tag(s)."
+                    + esc_hint
+                ),
+            })
+
     for s in _extract_blocks(text, "script"):
         if not _is_js_script(s["attrs"]):
             continue  # data block — body is opaque, not JS

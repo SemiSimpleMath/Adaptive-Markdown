@@ -44,6 +44,7 @@ If no block is focused and the request is local-scope ("rewrite this for a kid")
 Each `Edit` to `current.md` goes through a validator before persisting:
 
 - **`<script>`** blocks are parsed with `node --check` (real script grammar). Syntax errors revert the edit.
+- **`<script>` and `<style>` tag balance.** Each opening must have a matching plain closing tag — `</script>` and `</style>`, never escaped. **Do NOT write `<\/script>` as a closing tag.** The backslash escape is correct ONLY inside a JS string literal (e.g. `const s = "<\/script>";` so the literal doesn't terminate the surrounding script body when read as bytes). As an actual closing tag, `<\/script>` makes the browser not terminate the script at all — the body extends past EOF, downstream markdown gets parsed as JS, throws, the script never runs. Same for `</style>`. The validator now rejects unmatched opens with a specific error.
 - **`<style>`** blocks must have balanced braces.
 - **`<svg>`** blocks must be valid XML.
 - **HTML blocks** (`<aside>`, `<figure>`, `<section>`, `<div class="...">`) are passed through verbatim and styled by their class names. The browser is forgiving of unclosed tags, but make sure your structural blocks close cleanly — agents that leave a `<section>` open trail the rest of the doc inside it.
