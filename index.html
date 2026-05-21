@@ -473,6 +473,49 @@ body {
 .view-skills .skill-card-editor textarea:focus { outline: none; border-color: var(--accent); }
 .view-skills .skill-card-editor-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
 
+/* Components tab — reuses the skills-tab card pattern (same .skill-card
+   shape, slightly different metadata: tags + self-contained badge,
+   Insert button as the primary action). */
+.view-components { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; padding: 1rem 1.5rem; }
+.view-components .components-actions { display: flex; gap: 0.45rem; padding: 0.4rem 0 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
+.view-components .components-list { display: flex; flex-direction: column; gap: 0.55rem; max-width: 760px; }
+.view-components .components-empty { color: var(--muted); font-style: italic; padding: 1.5rem; text-align: center; line-height: 1.5; }
+.view-components .components-empty code { background: var(--code-bg); padding: 0.05em 0.35em; border-radius: 3px; font-family: ui-monospace, monospace; }
+.view-components .skill-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 0.9rem; background: var(--surface); }
+.view-components .skill-card-name { font-weight: 600; color: var(--accent); margin-bottom: 0.25rem; font-size: 0.95rem; display: flex; align-items: center; gap: 0.4rem; }
+.view-components .skill-card-name .badge {
+  display: inline-block; font-size: 0.65rem; font-weight: 500;
+  padding: 0.05rem 0.4rem; border-radius: 3px;
+  background: var(--code-bg); color: var(--muted);
+  font-family: ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.02em;
+}
+.view-components .skill-card-name .badge.global {
+  background: var(--warn-bg); color: var(--warn-text);
+  border: 1px solid var(--warn-border);
+}
+.view-components .skill-card-desc { color: var(--text); font-size: 0.85rem; margin-bottom: 0.35rem; line-height: 1.4; }
+.view-components .skill-card-tags { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.6rem; font-family: ui-monospace, monospace; }
+.view-components .skill-card-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+.view-components .skill-card-actions .btn-insert { background: var(--accent); color: var(--accent-text); border: 0; }
+.view-components .skill-card-actions .btn-insert:hover { background: var(--accent-hover); }
+.view-components .skill-card-editor { display: flex; flex-direction: column; gap: 0.5rem; }
+.view-components .skill-card-editor .slug-row { display: flex; gap: 0.4rem; align-items: center; }
+.view-components .skill-card-editor .slug-row label { font-size: 0.78rem; color: var(--muted); font-weight: 500; }
+.view-components .skill-card-editor .slug-row input { flex: 1; font: inherit; font-size: 0.85rem; padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
+.view-components .skill-card-editor .slug-row input:focus { outline: none; border-color: var(--accent); }
+.view-components .skill-card-editor textarea { width: 100%; min-height: 280px; box-sizing: border-box; font: inherit; font-family: ui-monospace, monospace; font-size: 0.82rem; padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px; resize: vertical; }
+.view-components .skill-card-editor textarea:focus { outline: none; border-color: var(--accent); }
+.view-components .skill-card-editor-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+
+/* Save-as-component button on the selection bar (only shown when 1+
+   blocks are selected). Matches the existing selection-clear style. */
+.selection-bar .selection-save-component {
+  background: var(--accent-soft); color: var(--accent);
+  border: 1px solid transparent; padding: 0.15rem 0.5rem;
+  border-radius: 4px; cursor: pointer; font: inherit; font-size: 0.72rem;
+}
+.selection-bar .selection-save-component:hover { background: var(--accent); color: var(--accent-text); }
+
 .view-tab {
   padding: 0.4rem 0.95rem;
   background: transparent; border: 0;
@@ -1010,6 +1053,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     <div class="selection-bar" id="selection-bar">
       <span>📍</span>
       <span class="selection-label" id="selection-label"></span>
+      <button class="selection-save-component" id="selection-save-component" type="button" title="Save the selected block(s) as a reusable component">⤓ Save as component</button>
       <button class="selection-clear" id="selection-clear" title="Clear focus">×</button>
     </div>
     <div id="setup-card" class="setup-card" hidden>
@@ -1085,9 +1129,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // ---- View tabs ----------------------------------------------------------
   // Plain views: always visible as top-level tabs.
   const VIEW_TYPES = [
-    { id: 'doc',     label: 'Doc'     },
-    { id: 'history', label: 'History' },
-    { id: 'skills',  label: 'Skills'  },
+    { id: 'doc',        label: 'Doc'        },
+    { id: 'history',    label: 'History'    },
+    { id: 'skills',     label: 'Skills'     },
+    { id: 'components', label: 'Components' },
   ];
   // Alternate views: tucked under a "View ▾" dropdown. Source is the
   // universal item — present on every doc. Graph + LaTeX appear only
@@ -2654,6 +2699,273 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   }
 
+  // ---- Components tab -----------------------------------------------------
+  // Lists reusable components from components/<slug>.md. Each card has:
+  //   Insert  — sends "insert the <slug>" through chat; agent does the
+  //             adaptation (uniquify IDs, apply hints) and the splice.
+  //   Edit    — inline editor (textarea), Save POSTs the new content
+  //             directly to the backend (no agent round-trip needed for
+  //             routine edits).
+  //   Delete  — confirm + DELETE /components/<slug>.
+  // "+ Add new" opens a blank inline editor; the user enters a slug
+  // and the body, Save POSTs the file.
+  async function renderComponentsView() {
+    body.className = 'view-components';
+    body.innerHTML = '';
+    const actions = document.createElement('div');
+    actions.className = 'components-actions';
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn-tiny';
+    addBtn.textContent = '＋ Add new';
+    addBtn.title = 'Create a new component from scratch';
+    addBtn.addEventListener('click', () => addNewComponentInline());
+    actions.appendChild(addBtn);
+    body.appendChild(actions);
+
+    const list = document.createElement('div');
+    list.className = 'components-list';
+    list.id = 'components-list-inline';
+    list.innerHTML = '<div class="components-empty">loading…</div>';
+    body.appendChild(list);
+    await refreshComponentsList(list);
+  }
+
+  async function fetchComponents() {
+    try {
+      const resp = await fetch('/components');
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return Array.isArray(data.components) ? data.components : [];
+    } catch (_) { return []; }
+  }
+
+  async function refreshComponentsList(listEl) {
+    listEl = listEl || document.getElementById('components-list-inline');
+    if (!listEl) return;
+    const comps = await fetchComponents();
+    listEl.innerHTML = '';
+    if (!comps.length) {
+      const empty = document.createElement('div');
+      empty.className = 'components-empty';
+      empty.innerHTML =
+        'No components yet. Click <strong>＋ Add new</strong> above, '
+        + 'or select a block in a doc and click <strong>Save as component</strong> '
+        + 'in the selection bar. Later, in any doc, ask the agent to '
+        + '<code>insert the &lt;name&gt;</code>.';
+      listEl.appendChild(empty);
+      return;
+    }
+    for (const c of comps) listEl.appendChild(makeComponentCard(c));
+  }
+
+  function makeComponentCard(comp) {
+    const card = document.createElement('div');
+    card.className = 'skill-card';
+    card.dataset.slug = comp.slug;
+    const name = document.createElement('div');
+    name.className = 'skill-card-name';
+    const nameText = document.createElement('span');
+    nameText.textContent = comp.name || comp.slug;
+    name.appendChild(nameText);
+    if (comp.self_contained === false) {
+      const badge = document.createElement('span');
+      badge.className = 'badge global';
+      badge.textContent = 'global';
+      badge.title = 'Affects the whole page (e.g., injects global CSS or '
+        + 'attaches body-level listeners). Inserting more than one of these '
+        + 'into the same doc may conflict.';
+      name.appendChild(badge);
+    }
+    card.appendChild(name);
+    if (comp.description) {
+      const desc = document.createElement('div');
+      desc.className = 'skill-card-desc';
+      desc.textContent = comp.description;
+      card.appendChild(desc);
+    }
+    if (Array.isArray(comp.tags) && comp.tags.length) {
+      const tags = document.createElement('div');
+      tags.className = 'skill-card-tags';
+      tags.textContent = comp.tags.map(t => `#${t}`).join(' ');
+      card.appendChild(tags);
+    }
+    const acts = document.createElement('div');
+    acts.className = 'skill-card-actions';
+    const insertBtn = document.createElement('button');
+    insertBtn.className = 'btn-tiny btn-insert';
+    insertBtn.textContent = 'Insert';
+    insertBtn.title = currentDoc
+      ? `Insert "${comp.slug}" into ${currentDoc}`
+      : 'Insert (open a doc first)';
+    insertBtn.disabled = !currentDoc;
+    insertBtn.addEventListener('click', () => insertComponent(comp.slug));
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn-tiny';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => editComponentInline(card, comp));
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn-tiny';
+    delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', () => deleteComponent(comp));
+    acts.appendChild(insertBtn);
+    acts.appendChild(editBtn);
+    acts.appendChild(delBtn);
+    card.appendChild(acts);
+    return card;
+  }
+
+  async function editComponentInline(card, comp) {
+    card.innerHTML = '';
+    card.classList.add('skill-card-editing');
+    const editor = document.createElement('div');
+    editor.className = 'skill-card-editor';
+    // Show the slug at the top so the user knows what they're editing
+    // (read-only on edit; the file would have to be renamed otherwise).
+    const slugRow = document.createElement('div');
+    slugRow.className = 'slug-row';
+    const slugLabel = document.createElement('label');
+    slugLabel.textContent = 'editing component:';
+    const slugDisp = document.createElement('input');
+    slugDisp.value = comp.slug;
+    slugDisp.readOnly = true;
+    slugRow.appendChild(slugLabel);
+    slugRow.appendChild(slugDisp);
+    const ta = document.createElement('textarea');
+    ta.value = 'loading…';
+    ta.disabled = true;
+    try {
+      const r = await fetch('/components/' + encodeURIComponent(comp.slug) + '.md');
+      ta.value = r.ok ? await r.text() : '(could not load file)';
+      ta.disabled = false;
+    } catch (e) {
+      ta.value = '(error loading: ' + (e.message || e) + ')';
+    }
+    const acts = document.createElement('div');
+    acts.className = 'skill-card-editor-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-tiny';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => refreshComponentsList());
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-tiny';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', async () => {
+      await saveComponentDirect(comp.slug, ta.value);
+    });
+    acts.appendChild(cancelBtn);
+    acts.appendChild(saveBtn);
+    editor.appendChild(slugRow);
+    editor.appendChild(ta);
+    editor.appendChild(acts);
+    card.appendChild(editor);
+    setTimeout(() => ta.focus(), 0);
+  }
+
+  function addNewComponentInline() {
+    const list = document.getElementById('components-list-inline');
+    if (!list) return;
+    const emptyMsg = list.querySelector('.components-empty');
+    if (emptyMsg) emptyMsg.remove();
+    const card = document.createElement('div');
+    card.className = 'skill-card';
+    list.appendChild(card);
+
+    const editor = document.createElement('div');
+    editor.className = 'skill-card-editor';
+    const slugRow = document.createElement('div');
+    slugRow.className = 'slug-row';
+    const slugLabel = document.createElement('label');
+    slugLabel.textContent = 'slug:';
+    const slugInput = document.createElement('input');
+    slugInput.placeholder = 'my-component';
+    slugInput.pattern = '[a-z0-9][a-z0-9-]{0,63}';
+    slugRow.appendChild(slugLabel);
+    slugRow.appendChild(slugInput);
+    const ta = document.createElement('textarea');
+    ta.placeholder =
+      '---\nname: my-component\ndescription: One-line summary.\nself_contained: true\ntags: [tag1, tag2]\n---\n\n<!-- Component body — HTML, <style>, <script> as needed -->\n';
+    const acts = document.createElement('div');
+    acts.className = 'skill-card-editor-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-tiny';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => refreshComponentsList());
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-tiny';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', async () => {
+      const slug = slugInput.value.trim();
+      if (!/^[a-z0-9][a-z0-9-]{0,63}$/i.test(slug)) {
+        appendMessage('error',
+          'Invalid slug ' + JSON.stringify(slug) + ' — must be kebab-case '
+          + '(a-z, 0-9, dashes), starting with a letter or digit.');
+        slugInput.focus();
+        return;
+      }
+      await saveComponentDirect(slug, ta.value);
+    });
+    acts.appendChild(cancelBtn);
+    acts.appendChild(saveBtn);
+    editor.appendChild(slugRow);
+    editor.appendChild(ta);
+    editor.appendChild(acts);
+    card.appendChild(editor);
+    setTimeout(() => slugInput.focus(), 0);
+  }
+
+  async function saveComponentDirect(slug, content) {
+    try {
+      const r = await fetch('/components/' + encodeURIComponent(slug), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      if (!r.ok) {
+        let msg = `save failed: ${r.status}`;
+        try { const j = await r.json(); if (j.error) msg = j.error; } catch (_) {}
+        appendMessage('error', msg);
+        return;
+      }
+      // The fs watcher will broadcast {type:"components"} within ~1.5s,
+      // refreshing the list. Refresh now too for immediate feedback.
+      await refreshComponentsList();
+    } catch (err) {
+      appendMessage('error', 'save component error: ' + (err.message || err));
+    }
+  }
+
+  async function deleteComponent(comp) {
+    if (!confirm(`Delete component "${comp.slug}"? This removes the file `
+        + 'from components/ and can\'t be undone (unless you saved it to git).')) return;
+    try {
+      const r = await fetch('/components/' + encodeURIComponent(comp.slug), {
+        method: 'DELETE',
+      });
+      if (!r.ok) {
+        let msg = `delete failed: ${r.status}`;
+        try { const j = await r.json(); if (j.error) msg = j.error; } catch (_) {}
+        appendMessage('error', msg);
+        return;
+      }
+      await refreshComponentsList();
+    } catch (err) {
+      appendMessage('error', 'delete component error: ' + (err.message || err));
+    }
+  }
+
+  function insertComponent(slug) {
+    if (!currentDoc) {
+      appendMessage('error', 'Insert: open a doc first.');
+      return;
+    }
+    // Send through chat — the agent handles the adaptation work
+    // (uniquify IDs, namespace CSS, warn on global-component
+    // collisions). Pre-fill the chat input so the user can amend
+    // with a hint like "in red" before sending.
+    input.value = `Insert the ${slug} component.`;
+    input.focus();
+  }
+
   function renderCurrentView() {
     if (currentView === 'doc') {
       // Render markdown to HTML in the parent, then ship to the iframe.
@@ -2688,6 +3000,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       renderHistoryView();
     } else if (currentView === 'skills') {
       renderSkillsView();
+    } else if (currentView === 'components') {
+      renderComponentsView();
     }
   }
 
@@ -3236,6 +3550,46 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     setSelections([]);
   });
 
+  // Save-as-component button on the selection bar. Visible whenever 1+
+  // blocks are selected (selection-bar visibility already gates on that).
+  // Click opens a tiny prompt for the component slug + an optional
+  // description, then sends a chat message asking the agent to save
+  // the selected blocks. Going through the agent lets it infer
+  // self_contained, capture dependencies (sibling <script>/<style> that
+  // target the block's IDs), and write the right frontmatter.
+  const selectionSaveComponentBtn =
+    document.getElementById('selection-save-component');
+  selectionSaveComponentBtn.addEventListener('click', () => {
+    if (!currentSelections.length) {
+      appendMessage('error', 'Save as component: select at least one block first.');
+      return;
+    }
+    const rawSlug = window.prompt(
+      'Save selection as a component.\n\n'
+      + 'Slug (kebab-case, e.g. "snake-game"):'
+    );
+    if (rawSlug === null) return;
+    const slug = rawSlug.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(slug)) {
+      appendMessage('error',
+        'Invalid slug. Use kebab-case: a-z, 0-9, dashes; '
+        + 'starts with a letter or digit; max 64 chars.');
+      return;
+    }
+    const desc = window.prompt(
+      `Saving as "${slug}".\n\nOne-line description (optional, helps you find it later):`
+    );
+    if (desc === null) return;  // cancelled
+    // Build the chat message and submit. The agent reads the selection
+    // from the preamble (inlined every turn), captures the block(s) +
+    // any sibling script/style dependencies, infers self_contained,
+    // writes components/<slug>.md with the right frontmatter.
+    const descClause = desc.trim()
+      ? ` Description: ${desc.trim()}` : '';
+    input.value = `Save the selected block(s) as component \`${slug}\`.${descClause}`;
+    sendChat();
+  });
+
   // ---- WebSocket ----------------------------------------------------------
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -3351,6 +3705,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         const url = new URL(window.location);
         url.searchParams.set('doc', data.doc);
         history.replaceState(null, '', url);
+      }
+      return;
+    }
+    if (data.type === 'components') {
+      // Components list changed (save / delete / out-of-band file drop).
+      // If the Components tab is currently visible, refresh it; otherwise
+      // the next time it's opened it'll fetch fresh.
+      if (currentView === 'components') {
+        refreshComponentsList().catch(() => {});
       }
       return;
     }

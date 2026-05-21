@@ -80,7 +80,7 @@ from am_routes import (  # noqa: E402
     list_pending, accept_pending, reject_pending,
     list_doc_skills, update_doc_skill, delete_doc_skill,
     add_doc_skill, reset_doc, save_baseline, set_api_key,
-    list_components,
+    list_components, save_component, delete_component,
 )
 from am_state import state  # noqa: E402
 from am_upload import (  # noqa: E402
@@ -338,6 +338,8 @@ def make_app() -> web.Application:
     app.router.add_post("/save-baseline", save_baseline)
     app.router.add_post("/api-key", set_api_key)
     app.router.add_get("/components", list_components)
+    app.router.add_post("/components/{slug}", save_component)
+    app.router.add_delete("/components/{slug}", delete_component)
     app.router.add_post("/edit-block", edit_block)
     app.router.add_post("/add-doc-skill", add_doc_skill)
     app.router.add_get("/doc-skills", list_doc_skills)

@@ -798,10 +798,88 @@ def _read_component_metadata(slug: str) -> dict:
 
 async def list_components(request: web.Request) -> web.Response:
     """GET /components — return metadata for every saved component.
-    Drives the agent's "list my components" path + (future) the
-    Components tab in the viewer."""
+    Drives the agent's "list my components" path + the Components tab
+    in the viewer."""
     _require_localhost_origin(request)
     slugs = list_all_components()
     return web.json_response({
         "components": [_read_component_metadata(s) for s in slugs],
     })
+
+
+def _component_path_for(slug: str) -> Path | None:
+    """Validate a slug and return its components/<slug>.md path.
+    Returns None if the slug is malformed (the caller should 400)."""
+    if not slug or not COMPONENT_SLUG_RE.match(slug):
+        return None
+    return COMPONENTS_ROOT / f"{slug}.md"
+
+
+async def save_component(request: web.Request) -> web.Response:
+    """POST /components/<slug> — write a component file directly from
+    the viewer (Components-tab inline editor + Add-new flow). Body JSON:
+    {"content": "<full .md including frontmatter>"}.
+
+    Distinct from the agent's write path: this is a user-blessed direct
+    write (the click came from the viewer chrome, not from a chat turn),
+    so it skips the pre-edit hook + validator. We still validate the
+    slug shape, ensure components/ exists, and reject content that's
+    obviously not markdown (binary bytes / extreme size)."""
+    _require_localhost_origin(request)
+    slug = request.match_info.get("slug", "").strip()
+    p = _component_path_for(slug)
+    if p is None:
+        return web.json_response(
+            {"error": f"invalid component slug: {slug!r}"}, status=400,
+        )
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON body"}, status=400)
+    content = data.get("content", "")
+    if not isinstance(content, str):
+        return web.json_response(
+            {"error": "content must be a string"}, status=400,
+        )
+    if len(content) > 256 * 1024:
+        return web.json_response(
+            {"error": "component too large (>256KB)"}, status=413,
+        )
+    try:
+        COMPONENTS_ROOT.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8", newline="")
+    except OSError as e:
+        return web.json_response(
+            {"error": f"could not write component: {e}"}, status=500,
+        )
+    print(f"[components] saved {slug}.md ({len(content)} chars)", flush=True)
+    # The filesystem watcher will broadcast {type:"components"} within
+    # ~1.5s, refreshing any open Components tab. No need to broadcast
+    # here too.
+    return web.json_response({
+        "ok": True, "slug": slug, "size": len(content),
+    })
+
+
+async def delete_component(request: web.Request) -> web.Response:
+    """DELETE /components/<slug> — remove a component file. The viewer's
+    Components-tab Delete button gates this with a confirm()."""
+    _require_localhost_origin(request)
+    slug = request.match_info.get("slug", "").strip()
+    p = _component_path_for(slug)
+    if p is None:
+        return web.json_response(
+            {"error": f"invalid component slug: {slug!r}"}, status=400,
+        )
+    if not p.exists():
+        return web.json_response(
+            {"error": f"component {slug!r} not found"}, status=404,
+        )
+    try:
+        p.unlink()
+    except OSError as e:
+        return web.json_response(
+            {"error": f"could not delete component: {e}"}, status=500,
+        )
+    print(f"[components] deleted {slug}.md", flush=True)
+    return web.json_response({"ok": True, "slug": slug})
