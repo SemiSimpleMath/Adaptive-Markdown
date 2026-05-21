@@ -178,6 +178,17 @@ class ClaudeRuntime:
             permission_mode="acceptEdits",
             model=chosen,
             max_budget_usd=MAX_BUDGET_USD,
+            # exclude_dynamic_sections strips per-session bits (cwd,
+            # git status, auto-memory) from the system prompt so the
+            # prompt-caching prefix stays stable across restarts and
+            # across users. Within a single session this is a no-op
+            # (the stable system prompt is cached either way); the
+            # win is on session restarts and on shared installs.
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "exclude_dynamic_sections": True,
+            },
             hooks={
                 "PreToolUse": pre_tool_use_hooks,
                 "PostToolUse": [

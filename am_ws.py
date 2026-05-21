@@ -222,10 +222,28 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 # Pre-loading the active doc into context spares the agent a
                 # Read tool round-trip every turn — for AM, the doc IS the
                 # subject of the conversation, so the agent will Read it
-                # almost always. Inlining is amortized by prompt caching
-                # across turns where the doc doesn't change. Soft cap of
-                # 50 KB; above that, fall back to Read-on-demand.
-                INLINE_DOC_CAP = 50 * 1024
+                # almost always. Soft cap of 50 KB; above that, fall back
+                # to Read-on-demand.
+                #
+                # Caching nuance: doc content inlined into the USER message
+                # is NOT cached by Claude Code's prompt-cache breakpoints
+                # (those sit at end-of-system-prompt / end-of-tools /
+                # sliding-window-into-history, not in the current user
+                # message). So inlining is amortized only WITHIN a turn's
+                # tool loop, not across turns. For Opus — where the
+                # inlined doc is the largest per-turn line item — we skip
+                # inlining entirely and let the agent Read on demand. The
+                # Read tool result lands in conversation history, which
+                # IS cached by the sliding window, so the doc gets
+                # billed once per session instead of once per turn.
+                # Haiku / Sonnet stay on the inline path since their
+                # per-token cost is low enough that the latency win of
+                # skipping the Read tool roundtrip dominates.
+                _model = (state.current_model or "").lower()
+                _is_opus = "opus" in _model
+                # -1 (not 0) so the `len(doc_text) <= INLINE_DOC_CAP`
+                # check correctly fails for empty docs too.
+                INLINE_DOC_CAP = -1 if _is_opus else 50 * 1024
                 preamble = []
                 # Current wall-clock time. LLMs have no clock and otherwise
                 # confabulate plausible-but-wrong digits when a doc-skill
