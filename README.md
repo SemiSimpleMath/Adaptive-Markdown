@@ -42,6 +42,16 @@ The agent has the full web platform; the doc has the full filesystem. Some of wh
 - **File drops** — `.md` loads directly. `.pdf` / `.docx` / `.xlsx` / `.pptx` / `.tex` / `.rst` / `.org` convert to AM via server-side or vision-model paths.
 - **Built-in help** — `?` button in the toolbar opens an in-app guide.
 
+## Why `.md`?
+
+**The file is the source, not the build output.**
+
+HTML is what browsers render; markdown is what humans (and agents) write. Editing in markdown is roughly 10× less syntactic noise per change than maintaining HTML — `## Theorem` instead of `<h2 class="theorem">…</h2>`, `**bold**` instead of `<strong>…</strong>`, `- item` instead of `<ul><li>…</li></ul>`. The agent makes fewer mechanical mistakes, turns finish faster, the file you commit reads as prose rather than tag soup.
+
+When the doc needs to reach for the platform — a chart, a custom widget, scoped CSS, an interactive figure — you drop HTML / CSS / JS inline. The escape hatch is always there. But that's the escape hatch, not the primary mode.
+
+Net: your file stays portable. Open it in GitHub, Obsidian, VS Code's preview, `mdcat` in a terminal, a markdown-rendering iOS app — it reads as a normal document. Pipe it through pandoc for LaTeX, ePub, DOCX, or a static-site generator. The AM viewer is what makes the doc *adaptive*, but its absence doesn't trap your content: every other markdown tool on earth can still read what you wrote. The .md is the artifact you keep; AM is the runtime that brings it to life.
+
 ---
 
 ## Prerequisites
