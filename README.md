@@ -155,7 +155,7 @@ Power-user opt-out (rarely needed): `python start.py --unsafe-bash` disables the
 
 ## Picking the runtime
 
-**Claude mode** (`--claude`) is the supported path. Runs the Claude Agent SDK in-process with per-edit snapshots via the SDK's hook system and a per-turn budget cap (`MAX_BUDGET_USD`, default $1/turn).
+**Claude mode** (`--claude`) is the supported path. Runs the Claude Agent SDK in-process with per-edit snapshots via the SDK's hook system and a per-turn budget cap (`MAX_BUDGET_USD`, default $3/turn — raise via `.env` for Opus-heavy workflows).
 
 **Codex mode** (`--codex`) is experimental and wraps OpenAI's `codex exec` CLI. Substrate parity (history snapshots, alias bookkeeping, network-off default) is in place, but with coarser per-edit granularity, a wider in-project blast radius covered by post-turn revert, no per-turn budget cap, and conversation history replayed via prompt. See [`ROADMAP.md`](ROADMAP.md) for the full list of known gaps. Requires the Codex CLI installed; set `CODEX_COMMAND` if it isn't on PATH (usually only needed on Windows).
 
@@ -184,7 +184,7 @@ Environment variables (all optional):
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Claude | (required for `--claude`) | Your Anthropic API key. |
 | `MODEL` | Claude | `claude-haiku-4-5-20251001` | Claude default model. Override with a full SDK model id, or use the chat dropdown to switch between Haiku / Sonnet / Opus per session. |
-| `MAX_BUDGET_USD` | Claude | `1.0` | Per-turn budget cap (USD). The SDK aborts a turn if costs would exceed it. |
+| `MAX_BUDGET_USD` | Claude | `3.0` | Per-turn budget cap (USD). The SDK aborts a turn if costs would exceed it; the viewer surfaces a clear chat error when this happens. Raise for Opus on large docs (a single Opus turn on a ~30KB doc can easily hit $1+). |
 | `CODEX_COMMAND` | Codex | `codex` | Codex executable name or path. Set this if `codex` isn't on PATH. |
 | `CODEX_AUTH_MODE` | Codex | `api-key` if `OPENAI_API_KEY` is set, else `chatgpt` | Codex auth path. Use `api-key` for OpenAI API billing/models, `chatgpt` for ChatGPT-account auth. |
 | `OPENAI_API_KEY` | Codex | — | Required when `CODEX_AUTH_MODE=api-key`. |

@@ -24,7 +24,42 @@ from .base import AgentEvent
 
 
 DEFAULT_MODEL = os.environ.get("MODEL", "claude-haiku-4-5-20251001")
-MAX_BUDGET_USD = float(os.environ.get("MAX_BUDGET_USD", "1.0"))
+MAX_BUDGET_USD = float(os.environ.get("MAX_BUDGET_USD", "3.0"))
+
+
+def _format_result_error(message, budget_usd: float) -> str:
+    """Translate a ResultMessage with subtype != 'success' into a
+    human-readable error for chat. Without this, the viewer sees a
+    `turn_done` with a cost but no explanation of why the agent
+    stopped mid-task — looks like the chat hung."""
+    subtype = (getattr(message, "subtype", "") or "").strip()
+    cost = getattr(message, "total_cost_usd", None)
+    api_status = getattr(message, "api_error_status", None)
+    if subtype == "error_max_budget_usd":
+        return (
+            f"Turn stopped: per-turn budget cap (${budget_usd:g}) reached "
+            f"(spent ≈ ${cost:.2f}). "
+            "Raise the cap by setting MAX_BUDGET_USD in .env (e.g. "
+            "`MAX_BUDGET_USD=5.0`) and restart the backend. Or switch to "
+            "a cheaper model — Haiku is ~30× cheaper than Opus per turn."
+        )
+    if subtype == "error_max_turns":
+        return (
+            "Turn stopped: max-turns cap reached. The agent kept calling "
+            "tools without finishing. Try a more specific prompt, or break "
+            "the task into smaller asks."
+        )
+    if api_status:
+        return (
+            f"Turn stopped: provider returned HTTP {api_status}. "
+            + ("Rate limited — wait a moment and retry." if api_status == 429
+               else "Provider error — check status.anthropic.com.")
+        )
+    errs = getattr(message, "errors", None)
+    err_tail = ""
+    if isinstance(errs, list) and errs:
+        err_tail = " — " + "; ".join(str(e) for e in errs[:2])
+    return f"Turn stopped: {subtype or 'unknown error'}{err_tail}"
 
 MODEL_ALIASES = {
     "haiku": "claude-haiku-4-5-20251001",
@@ -182,6 +217,22 @@ class ClaudeRuntime:
                     if event:
                         yield {"role": "assistant", **event}
             elif isinstance(message, ResultMessage):
+                # ResultMessage.subtype indicates HOW the turn ended.
+                # "success" means normal completion; anything starting
+                # with "error" means the SDK aborted (budget exhausted,
+                # API error, permission denial, etc.). Without surfacing
+                # these, the viewer just looks frozen — agent emitted
+                # some tool calls, then nothing. Make the failure mode
+                # visible in chat so the reader knows what to do.
+                if message.is_error or (
+                    message.subtype and message.subtype != "success"
+                ):
+                    yield {
+                        "type": "error",
+                        "text": _format_result_error(
+                            message, MAX_BUDGET_USD,
+                        ),
+                    }
                 yield {
                     "type": "turn_done",
                     "session_id": message.session_id,
