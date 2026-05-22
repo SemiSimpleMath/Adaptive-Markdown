@@ -32,6 +32,7 @@ from agent_runtime import create_runtime
 
 from am_docs import (
     COMPONENTS_ROOT,
+    DATA_ROOT,
     DOC_SLUG_RE as _DOC_SLUG_RE,
     DOCS_ROOT,
     ROOT,
@@ -427,9 +428,17 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
 
 
 async def init_runtime(model: str | None = None):
+    # The runtime's `root` becomes the agent's cwd. Agents reach docs at
+    # `docs/<slug>/current.md` (relative path; we tell them so in
+    # am_ws's preamble), so cwd needs to point at the data root, not the
+    # code root. In dev the two are identical; in an installed shell
+    # they diverge (code in Program Files-style location, data in
+    # %APPDATA%). ensure_agent_config_in_data_root() runs before this
+    # so the SDK can still find .claude/settings.json + skills under
+    # the new cwd.
     state.runtime = create_runtime(
         state.current_provider,
-        ROOT,
+        DATA_ROOT,
         pre_tool_use_hook,
         post_tool_use_hook,
         finalize_md_edit,

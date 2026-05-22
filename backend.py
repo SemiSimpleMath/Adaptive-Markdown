@@ -218,6 +218,43 @@ def ensure_history_zero() -> None:
         print(f"ensured baseline ({minted} new)", flush=True)
 
 
+def ensure_agent_config_in_data_root() -> None:
+    """When DATA_ROOT diverges from ROOT (installed shell case), mirror
+    the agent-config dirs (`.claude/`, `.agents/`) from ROOT to DATA_ROOT.
+
+    The Claude Agent SDK loads its skill files + settings.json from the
+    runtime's cwd (`.claude/skills/`, `.claude/settings.json`). The
+    runtime cwd is DATA_ROOT (so the agent's relative paths like
+    `docs/<slug>/current.md` resolve under the user's data dir, where
+    the files actually live). But those config files SHIP with the code,
+    not the data, so on a fresh installed copy DATA_ROOT/.claude/ is
+    empty and the agent loads no skill / no settings — degraded
+    behavior, no error.
+
+    Fix: copy ROOT/.claude/ and ROOT/.agents/ trees into DATA_ROOT each
+    startup. Uses dirs_exist_ok so any per-user files the user dropped
+    into DATA_ROOT/.claude/ survive — we overwrite shipped files but
+    don't wipe extras.
+
+    No-op when DATA_ROOT == ROOT (the default repo case)."""
+    if DATA_ROOT == ROOT:
+        return
+    import shutil  # local import — only the install-mode path needs it
+    for sub in (".claude", ".agents"):
+        src = ROOT / sub
+        if not src.is_dir():
+            continue
+        dst = DATA_ROOT / sub
+        try:
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            print(f"[agent-config] mirrored {sub}/ to DATA_ROOT", flush=True)
+        except OSError as e:
+            print(
+                f"[agent-config] failed to mirror {sub}/ to DATA_ROOT: {e}",
+                flush=True,
+            )
+
+
 def ensure_skill_mirror() -> None:
     """Keep the Codex-discoverable copy of SKILL.md byte-identical to the
     Claude-discoverable one. The two paths exist because each runtime has its
@@ -315,6 +352,10 @@ async def on_startup(app: web.Application):
     ensure_doc_ids()
     ensure_history_zero()    # current.md -> baseline.md for new user docs
     ensure_skill_mirror()
+    # Order matters: agent config has to be in DATA_ROOT BEFORE the runtime
+    # boots, because the SDK reads .claude/{settings,skills}/ from cwd
+    # (which init_runtime sets to DATA_ROOT) at start() time.
+    ensure_agent_config_in_data_root()
     await init_runtime()
     # Filesystem polling: broadcast doc-list changes that didn't come
     # through the upload endpoint (out-of-band file drops, git pulls).
