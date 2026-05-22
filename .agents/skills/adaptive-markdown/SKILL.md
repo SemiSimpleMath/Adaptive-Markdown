@@ -167,7 +167,7 @@ const fig = document.querySelector('figure.music');
 const r = window.__doc.getRenderer(fig);   // { kind, instance, source } or null
 if (r && r.kind === 'musicxml') {
   r.instance.Sheet.Transpose = 2;
-  r.instance.UpdateGraphic();
+  r.instance.updateGraphic();
   r.instance.render();
 }
 ```

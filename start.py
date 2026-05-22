@@ -48,6 +48,16 @@ def _ensure_utf8_mode() -> None:
         or os.environ.get("PYTHONUTF8") == "1"
         or os.environ.get("AM_UTF8_RESPAWNED") == "1"
     )
+    # PyInstaller-frozen builds: sys.executable IS sys.argv[0] (both are
+    # the .exe path), so the standard respawn `[sys.executable] + sys.argv`
+    # below would double the .exe path and argparse would blow up on the
+    # extra positional. The frozen interpreter's encoding mode is also
+    # fixed at build time — setting PYTHONUTF8 in env can't change it,
+    # so the respawn would be useless anyway. Skip to the
+    # console-CP + stdio-reconfigure branch; that part still works and
+    # makes subprocesses (claude.exe) inherit UTF-8.
+    if not already_utf8 and getattr(sys, "frozen", False):
+        already_utf8 = True
     if already_utf8:
         # Belt-and-suspenders: also set the Windows console to UTF-8 so
         # subprocesses we spawn (the Claude Code CLI under Bun, the Codex

@@ -159,7 +159,7 @@ semantics about what the source file ends up containing.
        r.instance.TransposeCalculator = new ns.TransposeCalculator();
      }
      r.instance.Sheet.Transpose = semitones;
-     r.instance.UpdateGraphic();
+     r.instance.updateGraphic();
      r.instance.render();
    }
    ```
