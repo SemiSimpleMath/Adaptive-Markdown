@@ -1129,14 +1129,25 @@ figure.vega script[type="application/json"] { display: none; }
 
   function applyEditableMode() {
     // Walk all p/heading DESCENDANTS, not just direct body.children.
-    // Docs nest blocks inside <details>/<section>/<figure>/<aside>/etc.
-    // and the reader still wants to inline-edit a paragraph that lives
-    // inside a collapsible week or inside a theorem section. Skip
-    // hidden meta sections (agent-skill) and the text inside <summary>
-    // (the summary IS its own click affordance — toggle collapse).
+    // Docs nest blocks inside <details>/<section>/<aside>/etc. and the
+    // reader still wants to inline-edit a paragraph that lives inside
+    // a collapsible week or inside a theorem section.
+    //
+    // Skip set:
+    //   - .agent-skill — hidden meta section, never reader-editable
+    //   - summary — the summary IS its own click affordance
+    //     (toggles collapse), can't double as edit target
+    //   - figure — agent-built widgets live here and they own their
+    //     internal text. Inline-editing inside a figure tends to
+    //     break the figure's serialization (the agent rebuilds from
+    //     the source, not from the live DOM). The toggle was also a
+    //     real bug source: every agent turn-start/end re-toggled
+    //     contenteditable on every <p>/<h> in the figure, which
+    //     caused layout micro-shifts in the figure's chrome (the
+    //     transposition-widget bug surfaced this).
     const blocks = body.querySelectorAll('p, h1, h2, h3, h4, h5, h6');
     for (const block of blocks) {
-      if (block.closest('.agent-skill, summary')) continue;
+      if (block.closest('.agent-skill, summary, figure')) continue;
       if (editableMode && EDITABLE_TAGS.has(block.tagName)) {
         block.setAttribute('contenteditable', 'plaintext-only');
       } else {
