@@ -30,7 +30,7 @@ import os
 from aiohttp import web, WSMsgType
 
 from am_docs import (
-    ROOT,
+    DATA_ROOT,
     _doc_path_for,
     list_all_docs,
 )
@@ -200,7 +200,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 # The block becomes stably-identifiable from this point on.
                 doc_changed_after_mint = False
                 if doc:
-                    doc_path = ROOT / doc
+                    doc_path = DATA_ROOT / doc
                     for s in selections:
                         if isinstance(s, dict) and not s.get("track_id"):
                             new_id = mint_track_id_for(doc_path, s)
@@ -277,7 +277,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         except (OSError, UnicodeDecodeError):
                             doc_text = None
                     rel_for_agent = (
-                        safe_path.relative_to(ROOT).as_posix()
+                        safe_path.relative_to(DATA_ROOT).as_posix()
                         if safe_path is not None else f"docs/{doc}/current.md"
                     )
                     if doc_text is not None and len(doc_text) <= INLINE_DOC_CAP:

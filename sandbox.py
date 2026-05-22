@@ -49,7 +49,15 @@ from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parent
-DOCS_ROOT = ROOT / "docs"
+# Honor AM_DATA_DIR so an installed shell that routes user content to
+# %APPDATA%/<app>/ doesn't end up sandboxing the agent into the empty
+# bundle docs/ dir. sandbox.py runs as a subprocess invoked by the
+# PreToolUse hook (`python -m sandbox ...`) and inherits env from the
+# parent — so AM_DATA_DIR propagates automatically. Mirrors the same
+# fallback (blank string = unset) am_docs.py uses for the main process.
+_data_env = os.environ.get("AM_DATA_DIR", "").strip()
+DATA_ROOT = Path(_data_env).resolve() if _data_env else ROOT
+DOCS_ROOT = DATA_ROOT / "docs"
 
 DEFAULT_TIMEOUT = 30
 
