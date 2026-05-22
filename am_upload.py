@@ -922,6 +922,38 @@ async def _upload_binary_doc(
     })
 
 
+# Format-specific upload handlers, keyed by the set of extensions each one
+# owns. Order matters only when sets overlap (which today they don't —
+# .xlsx is in DATA, not BINARY_CONVERT). Adding a new wrap-and-render
+# format = one extension-set constant + one async handler + one entry
+# here. Handlers all share the same `(request, field, raw_name, ext)`
+# signature so the dispatcher can call them uniformly.
+#
+# What does NOT belong in this table: formats handled by the generic
+# text path below (.md, .tex, .txt, .rst, .org). Those go through a
+# shared read-validate-write pipeline with optional Claude conversion
+# (for .tex). A new "needs Claude conversion" text format goes in
+# _LLM_CONVERT_TEXT_EXTS instead; a new "wrap-and-render" format goes
+# here.
+_UPLOAD_HANDLERS = [
+    # Music (.abc / .musicxml / .mxl / .xml / .mid / .midi) →
+    # <figure class="music"> with the right inner block; iframe runtime
+    # lazy-loads abcjs / OSMD / html-midi-player.
+    (_MUSIC_TEXT_EXTS | _MUSIC_BINARY_EXTS, _upload_music_doc),
+    # Data (.csv text, .xlsx via openpyxl) → <figure class="data"> with
+    # CSV body, rendered live via Tabulator. Sits before binary-doc so
+    # .xlsx is owned here.
+    (_DATA_TEXT_EXTS | _DATA_BINARY_EXTS, _upload_data_doc),
+    # Diagrams (.mmd / .mermaid) → <figure class="diagram"> with Mermaid
+    # source, rendered live by mermaid.js.
+    (_DIAGRAM_TEXT_EXTS, _upload_diagram_doc),
+    # Binary docs (.pdf / .docx / .pptx) → markitdown server-side
+    # conversion. Owns this branch because the text-path's NUL-byte
+    # guard would refuse the raw binary bytes.
+    (_BINARY_CONVERT_EXTS, _upload_binary_doc),
+]
+
+
 async def upload_md(request: web.Request) -> web.Response:
     _require_localhost_origin(request)
     reader = await request.multipart()
@@ -936,30 +968,11 @@ async def upload_md(request: web.Request) -> web.Response:
     raw_name = field.filename or "uploaded.md"
     ext = Path(raw_name).suffix.lower()
 
-    # Music file imports: wrap source / MIDI binary in a `<figure class=
-    # "music">` block and save as a new doc. Iframe runtime lazy-loads
-    # the right renderer (abcjs / OSMD / html-midi-player) on view.
-    if ext in _MUSIC_TEXT_EXTS or ext in _MUSIC_BINARY_EXTS:
-        return await _upload_music_doc(request, field, raw_name, ext)
-
-    # Data-table imports: .csv (text) or .xlsx (binary, extracted to CSV
-    # via openpyxl) → `<figure class="data">` rendered live via Tabulator.
-    # Sits before the binary-doc branch so .xlsx is owned here; falls back
-    # nowhere else if openpyxl is absent — _upload_data_doc returns a 501
-    # with install instructions in that case.
-    if ext in _DATA_TEXT_EXTS or ext in _DATA_BINARY_EXTS:
-        return await _upload_data_doc(request, field, raw_name, ext)
-
-    # Diagram imports: .mmd / .mermaid → `<figure class="diagram">` with
-    # Mermaid source, rendered live by mermaid.js in the iframe.
-    if ext in _DIAGRAM_TEXT_EXTS:
-        return await _upload_diagram_doc(request, field, raw_name, ext)
-
-    # Binary-doc imports (PDF, DOCX, PPTX) go through markitdown server-side.
-    # They're not text and would fail the NUL-byte guard below; branch out
-    # before any of the text-handling.
-    if ext in _BINARY_CONVERT_EXTS:
-        return await _upload_binary_doc(request, field, raw_name, ext)
+    # Dispatch to a registered format handler if any. See _UPLOAD_HANDLERS
+    # for what a "wrap-and-render format" is vs the generic text path.
+    for exts, handler in _UPLOAD_HANDLERS:
+        if ext in exts:
+            return await handler(request, field, raw_name, ext)
 
     # Well-known text-ish formats route through the conversion path directly.
     # Anything else is allowed when the client passes ?allow_unknown=1 —
