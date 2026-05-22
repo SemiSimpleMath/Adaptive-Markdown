@@ -27,7 +27,9 @@ from am_convert import (
     _LLM_CONVERT_TEXT_EXTS,
     _convert_pdf_via_claude, _convert_tex_via_claude,
 )
-from am_docs import DOC_SLUG_RE, DOCS_ROOT, ROOT, ensure_doc_ids, list_all_docs
+from am_docs import (
+    DATA_ROOT, DOC_SLUG_RE, DOCS_ROOT, ensure_doc_ids, list_all_docs,
+)
 from am_origin import _require_localhost_origin
 from am_state import state
 
@@ -1053,7 +1055,7 @@ async def upload_md(request: web.Request) -> web.Response:
     with target.open("w", encoding="utf-8", newline="") as f:
         f.write(text)
 
-    rel = target.relative_to(ROOT).as_posix()
+    rel = target.relative_to(DATA_ROOT).as_posix()
 
     # Server-side conversion via Claude for selected text formats (.tex).
     # original.<ext> is already on disk; we just need to produce current.md
@@ -1187,7 +1189,7 @@ async def upload_asset(request: web.Request) -> web.Response:
             out.write(chunk)
 
     rel_in_doc = f"assets/{target.name}"
-    rel_full = target.relative_to(ROOT).as_posix()
+    rel_full = target.relative_to(DATA_ROOT).as_posix()
     size_kb = total / 1024
     size_str = (
         f"{size_kb:.1f} KB" if size_kb < 1024

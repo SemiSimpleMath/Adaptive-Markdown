@@ -38,7 +38,20 @@ from aiohttp import web
 
 
 ROOT = Path(__file__).resolve().parent
-DOCS_ROOT = ROOT / "docs"            # all docs live under docs/<slug>/
+# DATA_ROOT defaults to ROOT, but AM_DATA_DIR overrides it (used by the
+# desktop shell to route user content into %APPDATA%/Prism/ since the
+# install dir is read-only). We compute it locally here BEFORE importing
+# am_docs so .env loading can use it; am_docs computes the same value
+# (idempotent — env var read twice, same answer) and is the canonical
+# source for downstream importers.
+_data_env = os.environ.get("AM_DATA_DIR", "").strip()
+DATA_ROOT = Path(_data_env).resolve() if _data_env else ROOT
+# First-launch bootstrap: when AM_DATA_DIR points at a fresh dir, create it
+# so .env / docs/ / components/ have a place to land. Skipped in the
+# default repo case (ROOT always exists).
+if _data_env:
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+DOCS_ROOT = DATA_ROOT / "docs"
 # Pre-tool-use writes are restricted to `docs/<slug>/current.md`; baseline.md
 # is the immutable history-0 and stays untouchable by the agent.
 _DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$", re.IGNORECASE)
@@ -62,7 +75,10 @@ def load_dotenv(path: Path) -> None:
         os.environ[key] = value
 
 
-load_dotenv(ROOT / ".env")
+# .env lives next to the user's docs/, not next to the code. This matters
+# for the installed shell, where Program Files is read-only — the user's
+# API keys need to land somewhere writable.
+load_dotenv(DATA_ROOT / ".env")
 
 # This file is the aiohttp wiring: static routes, doc-folder bootstrap,
 # make_app(), startup/shutdown. The real work lives in the am_* modules.
@@ -119,9 +135,15 @@ async def serve_static(request: web.Request) -> web.Response:
     if (not rel or rel.startswith("/") or ".." in rel.replace("\\", "/").split("/")
             or "\\" in rel):
         raise web.HTTPNotFound()
-    target = (ROOT / rel).resolve()
+    # Pick the on-disk base by URL prefix: `docs/...` and `components/...`
+    # are user content (DATA_ROOT, possibly overridden by AM_DATA_DIR);
+    # everything else (favicon.svg, etc.) is shipped code (ROOT). When
+    # DATA_ROOT == ROOT (the default), both branches resolve identically.
+    first = rel.split("/", 1)[0]
+    base = DATA_ROOT if first in ("docs", "components") else ROOT
+    target = (base / rel).resolve()
     try:
-        target.relative_to(ROOT)
+        target.relative_to(base)
     except ValueError:
         raise web.HTTPNotFound()
     if not target.exists() or not target.is_file():

@@ -13,14 +13,29 @@ turn a slug into a path or list the workspace.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 from am_ids import gen_id
 
+# CODE root: where the .py files live. Stays under the install / repo dir.
+# Used for shipping assets (index.html, .claude/, etc.) — never written by
+# the user, and read-only in an installed bundle.
 ROOT = Path(__file__).resolve().parent
-DOCS_ROOT = ROOT / "docs"
-COMPONENTS_ROOT = ROOT / "components"
+
+# DATA root: where user content lives — docs/, components/, .env. Defaults
+# to the CODE root for the repo / dev case (so `git clone && python start.py`
+# behaves as before). The desktop shell (Prism) overrides via AM_DATA_DIR
+# to route writes to %APPDATA%/Prism/, since Program Files is read-only
+# for the user. If you change this default, audit serve_static in
+# backend.py and the .env writer in am_routes.py — both pick the right
+# base by reading these constants.
+_data_env = os.environ.get("AM_DATA_DIR", "").strip()
+DATA_ROOT = Path(_data_env).resolve() if _data_env else ROOT
+
+DOCS_ROOT = DATA_ROOT / "docs"
+COMPONENTS_ROOT = DATA_ROOT / "components"
 DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$", re.IGNORECASE)
 # Components share the same slug shape (kebab-case, leading alnum). Reuse
 # the same regex so the agent doesn't need to learn two naming rules.

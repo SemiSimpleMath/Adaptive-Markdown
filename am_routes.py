@@ -22,6 +22,7 @@ import validators
 from am_docs import (
     COMPONENT_SLUG_RE,
     COMPONENTS_ROOT,
+    DATA_ROOT,
     DOC_SLUG_RE as _DOC_SLUG_RE,
     DOCS_ROOT,
     FRONTMATTER_RE as _FRONTMATTER_RE,
@@ -705,7 +706,11 @@ async def set_api_key(request: web.Request) -> web.Response:
             {"error": f"{var} doesn't match the expected shape — paste error?"},
             status=400,
         )
-    env_path = Path(__file__).resolve().parent / ".env"
+    # .env lives in DATA_ROOT (which is AM_DATA_DIR if set, otherwise the
+    # repo root). The installed desktop shell routes this to %APPDATA%/Prism/
+    # so the API key persists across upgrades and survives a read-only
+    # install dir.
+    env_path = DATA_ROOT / ".env"
     # Read existing .env, replace the line for this var (if present), or
     # append. Comment-prefixed and blank lines pass through untouched.
     lines: list[str] = []
