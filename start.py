@@ -233,10 +233,8 @@ def main() -> None:
 
     _install_sigint_watchdog(3.0)
 
-    # Import backend AFTER setting env vars — DEFAULT_PROVIDER is captured at
-    # agent_runtime import time, which happens during backend import.
     from aiohttp import web
-    import backend  # noqa: E402 — order is load-bearing
+    import backend  # noqa: E402
 
     chosen = os.environ.get("AGENT_PROVIDER", "claude").lower()
     port = int(os.environ.get("PORT", "8090"))

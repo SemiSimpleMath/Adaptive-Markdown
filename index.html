@@ -1541,12 +1541,30 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // Sentinel format chosen to survive markdown-it 13 + markdown-it-attrs
   // intact (verified with a probe). The `@@` delimiter style matches the
   // existing protectMath sentinels (`@@MATHB<n>@@` / `@@MATHI<n>@@`) so
-  // the pattern is already trusted. Reserve `@@AM_STRUCT_BLOCK_*@@` —
-  // never write that string in a doc body.
-  const STRUCT_SENTINEL_PREFIX = '@@AM_STRUCT_BLOCK_';
-  const STRUCT_SENTINEL_SUFFIX = '@@';
-  const STRUCT_SENTINEL_RE =
-    /<p>@@AM_STRUCT_BLOCK_(\d+)@@<\/p>/g;
+  // the pattern is already trusted.
+  //
+  // The per-render NONCE is the critical correctness piece: without it,
+  // any user / agent doc containing literal "@@AM_STRUCT_BLOCK_0@@" or
+  // "@@MATHB0@@" text (e.g. a doc ABOUT Adaptive Markdown that prints
+  // these sentinels as examples — likely!) would have those substrings
+  // replaced by random structural / math content on render. With 64
+  // bits of randomness per render call, accidental collision is
+  // astronomically improbable.
+  function newRenderNonce() {
+    const buf = new Uint8Array(8);
+    crypto.getRandomValues(buf);
+    return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+  }
+  function structSentinelPrefix(nonce) {
+    return '@@AM_STRUCT_BLOCK_' + nonce + '_';
+  }
+  function structSentinelRe(nonce) {
+    // The full <p>…</p> wrapping comes from markdown-it parsing the
+    // sentinel line as a paragraph. Escape the nonce (hex-only, but
+    // be defensive in case the impl changes).
+    const esc = nonce.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('<p>@@AM_STRUCT_BLOCK_' + esc + '_(\\d+)@@<\\/p>', 'g');
+  }
 
   function renderOpeningTag(tag, attrs) {
     const parts = Object.entries(attrs).map(([k, v]) =>
@@ -1564,7 +1582,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // position, then splice from end so earlier offsets stay valid. This
   // also produces the right placeholder ordering: index in placeholders
   // matches the sentinel number, and matches doc order.
-  function extractStructuralBlocks(text) {
+  function extractStructuralBlocks(text, nonce) {
     const all = [];
     for (const tag of STRUCTURAL_TAGS) {
       for (const b of findHtmlBlocks(text, tag)) all.push(b);
@@ -1581,27 +1599,39 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (!inside) kept.push(b);
     }
     const placeholders = kept;
+    const prefix = structSentinelPrefix(nonce);
     // Splice from end so earlier indices stay valid
     for (let i = placeholders.length - 1; i >= 0; i--) {
       const b = placeholders[i];
-      const sentinel = `\n\n${STRUCT_SENTINEL_PREFIX}${i}${STRUCT_SENTINEL_SUFFIX}\n\n`;
+      const sentinel = `\n\n${prefix}${i}@@\n\n`;
       text = text.slice(0, b.start) + sentinel + text.slice(b.end);
     }
     return { source: text, placeholders };
   }
 
-  // For each <p>@@AM_STRUCT_BLOCK_N@@</p> in the rendered HTML, look up
-  // placeholder N, recursively render its inner body through the full
-  // pipeline (so inner structural blocks AND inner markdown both
+  // For each <p>@@AM_STRUCT_BLOCK_<nonce>_N@@</p> in the rendered HTML,
+  // look up placeholder N, recursively render its inner body through the
+  // full pipeline (so inner structural blocks AND inner markdown both
   // resolve), then wrap with the original opening/closing tags.
-  function reinsertStructuralBlocks(html, placeholders, depth) {
-    return html.replace(STRUCT_SENTINEL_RE, (_match, idxStr) => {
+  function reinsertStructuralBlocks(html, placeholders, depth, nonce) {
+    const re = structSentinelRe(nonce);
+    return html.replace(re, (_match, idxStr) => {
       const idx = parseInt(idxStr, 10);
       const b = placeholders[idx];
-      if (!b) return _match; // shouldn't happen; safety net
+      if (!b) {
+        // With nonce-based sentinels this really shouldn't happen —
+        // the only way to produce a matching sentinel is via
+        // extractStructuralBlocks, which always populates placeholders.
+        // If it does fire, log so we notice; fall back to returning the
+        // raw match so user content is preserved (degraded but not
+        // destroyed).
+        console.warn('reinsertStructuralBlocks: missing placeholder',
+                     { idx, sentinel: _match });
+        return _match;
+      }
       // Recursive renders skip protectMath — the parent already did it
       // and we restore at the very top once on the assembled HTML.
-      const inner = _renderDocInner(b.body, depth + 1);
+      const inner = _renderDocInner(b.body, depth + 1, nonce);
       return renderOpeningTag(b.tag, b.attrs) + inner + `</${b.tag}>`;
     });
   }
@@ -1615,15 +1645,18 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // the outer call's table — so they leaked through as literal
   // `@@MATHI12@@` text in nested theorem/definition/figure bodies.
   function renderDoc(text) {
-    const { text: pt, ph } = protectMath(text);
-    const html = _renderDocInner(pt, 0);
+    // One nonce per render call; passed to every helper that needs to
+    // produce or recognise a sentinel. Lifetime = this render only.
+    const nonce = newRenderNonce();
+    const { text: pt, ph } = protectMath(text, nonce);
+    const html = _renderDocInner(pt, 0, nonce);
     return restoreMath(html, ph);
   }
 
   // Inner pipeline: structural-block extraction + recursive render.
   // Operates on math-protected text; never touches protectMath/
   // restoreMath itself.
-  function _renderDocInner(text, depth) {
+  function _renderDocInner(text, depth, nonce) {
     depth = depth || 0;
     if (depth > 10) {
       // Recursion safety net. Real nesting depth in any sane doc is
@@ -1644,9 +1677,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // renders use mdInner (indented-code-block rule disabled) so a
     // pretty-printed `<div>` body doesn't get wrapped in <pre><code>.
     const renderer = depth === 0 ? md : mdInner;
-    const { source, placeholders } = extractStructuralBlocks(preserved);
+    const { source, placeholders } = extractStructuralBlocks(preserved, nonce);
     let html = renderer.render(source);
-    html = reinsertStructuralBlocks(html, placeholders, depth);
+    html = reinsertStructuralBlocks(html, placeholders, depth, nonce);
     return html;
   }
   window.__amRenderDoc = renderDoc;
@@ -2428,14 +2461,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // Math protection — replace $$...$$ and $...$ with sentinels before
   // markdown-it sees them, restore after. Without this, multi-line block
   // math gets split by paragraph breaks and KaTeX can't match delimiters.
-  function protectMath(text) {
+  function protectMath(text, nonce) {
+    // Nonce is the per-render unique token from renderDoc — without it
+    // a doc that literally contains "@@MATHB0@@" (e.g. AM-self-documenting
+    // content) would have that substring replaced by random math on
+    // render. See newRenderNonce.
     const ph = {};
     let i = 0;
+    const blockK = (n) => '@@MATHB_' + nonce + '_' + n + '@@';
+    const inlineK = (n) => '@@MATHI_' + nonce + '_' + n + '@@';
     text = text.replace(/\$\$[\s\S]+?\$\$/g, m => {
-      const k = '@@MATHB' + (i++) + '@@'; ph[k] = m; return k;
+      const k = blockK(i++); ph[k] = m; return k;
     });
     text = text.replace(/\$[^$\n]+?\$/g, m => {
-      const k = '@@MATHI' + (i++) + '@@'; ph[k] = m; return k;
+      const k = inlineK(i++); ph[k] = m; return k;
     });
     return { text, ph };
   }

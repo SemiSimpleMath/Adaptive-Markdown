@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -53,8 +52,9 @@ if _data_env:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
 DOCS_ROOT = DATA_ROOT / "docs"
 # Pre-tool-use writes are restricted to `docs/<slug>/current.md`; baseline.md
-# is the immutable history-0 and stays untouchable by the agent.
-_DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$", re.IGNORECASE)
+# is the immutable history-0 and stays untouchable by the agent. The slug
+# regex itself comes from am_docs (imported below after load_dotenv runs);
+# we shadow the name via re-export there.
 
 
 def load_dotenv(path: Path) -> None:
@@ -86,7 +86,8 @@ load_dotenv(DATA_ROOT / ".env")
 # canonical module (e.g. `from am_pending import save_pending`); don't
 # add re-exports here.
 from am_docs import (  # noqa: E402
-    COMPONENTS_ROOT, ensure_doc_ids, ensure_working_copies,
+    COMPONENTS_ROOT, DOC_SLUG_RE as _DOC_SLUG_RE,
+    ensure_doc_ids, ensure_working_copies,
     list_all_components, list_all_docs,
 )
 from am_hooks import init_runtime, shutdown_runtime  # noqa: E402

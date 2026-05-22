@@ -9,7 +9,18 @@ from typing import Any, Callable
 from .base import AgentRuntime
 
 
-DEFAULT_PROVIDER = os.environ.get("AGENT_PROVIDER", "claude").lower()
+def default_provider() -> str:
+    """Resolve the active provider from env at CALL time, not import time.
+
+    Reading AGENT_PROVIDER at import time made the import order
+    `set env var -> import agent_runtime` load-bearing — callers had
+    to remember to set `os.environ['AGENT_PROVIDER']` BEFORE any
+    transitive import of this module, or the constant captured the
+    pre-set value (usually 'claude') and ignored later changes.
+    Making it a function removes the coupling: any code path that
+    needs to know the current default just calls this."""
+    return os.environ.get("AGENT_PROVIDER", "claude").lower()
+
 
 _RUNTIMES = {
     "claude": ("agent_runtime.claude_runtime", "ClaudeRuntime"),
@@ -36,7 +47,7 @@ def create_runtime(
     on Windows to wrap commands through the subprocess sandbox (since the
     CLI's built-in sandbox is macOS/Linux/WSL2-only). Codex ignores it.
     """
-    selected = (provider or DEFAULT_PROVIDER).lower()
+    selected = (provider or default_provider()).lower()
     try:
         module_name, class_name = _RUNTIMES[selected]
     except KeyError as exc:

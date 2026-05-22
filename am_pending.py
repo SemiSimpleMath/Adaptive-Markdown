@@ -29,19 +29,26 @@ File-level shape:
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from am_docs import (
+    DOC_SLUG_RE as _DOC_SLUG_RE,
+    DOCS_ROOT as _DOCS_ROOT,
+    FRONTMATTER_RE as _FRONTMATTER_RE,
+)
 from am_ids import gen_id
 
-# Local copies of the constants backend.py also defines. Duplication is one
-# regex per module — cheaper than introducing a sixth "paths" module just
-# to hold three values.
-_ROOT = Path(__file__).resolve().parent
-_DOCS_ROOT = _ROOT / "docs"
-_DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$", re.IGNORECASE)
-_FRONTMATTER_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n")
+# Previously this file defined its own _ROOT / _DOCS_ROOT / _DOC_SLUG_RE /
+# _FRONTMATTER_RE copies with a comment defending the duplication. Two
+# problems with that:
+#   1. _DOCS_ROOT used `_ROOT = Path(__file__).parent` — the CODE root,
+#      not the DATA root. In an installed shell (AM_DATA_DIR set) this
+#      pointed at the empty bundle docs/ dir, so pending edits couldn't
+#      be located. Same shape as the bugs M3b swept up; this one was
+#      missed.
+#   2. am_docs.py is the canonical home for these constants — no "sixth
+#      paths module" needed, the import is one line.
 
 _PENDING_SCHEMA_VERSION = 1
 _PENDING_REQUIRED_FIELDS = ("tool_use_id", "block", "old_text", "new_text",

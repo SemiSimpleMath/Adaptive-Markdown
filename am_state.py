@@ -16,7 +16,7 @@ import json
 
 from aiohttp import web
 
-from agent_runtime import AgentRuntime, DEFAULT_PROVIDER
+from agent_runtime import AgentRuntime, default_provider
 
 
 class State:
@@ -25,7 +25,7 @@ class State:
         self.client_lock = asyncio.Lock()
         self.runtime: AgentRuntime | None = None
         self.busy = asyncio.Lock()
-        self.current_provider: str = DEFAULT_PROVIDER
+        self.current_provider: str = default_provider()
         self.current_model: str = ""
         # Reference to the in-flight `run_turn` task so /cancel can
         # interrupt it. Cleared when the turn finishes (either way).
