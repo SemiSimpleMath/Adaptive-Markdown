@@ -2861,6 +2861,33 @@ def scenario_tex_skip_preview(page, base: str, r: Results) -> None:
         timeout=10000,
     )
 
+    # Mock the /upload response. This test verifies FRONTEND behavior —
+    # the .tex drop fires a POST to /upload and doesn't open the
+    # convert-preview dialog. Whether the backend's actual Claude
+    # conversion succeeds is a different concern; calling the real
+    # Anthropic API here makes the test slow + flaky + costs money +
+    # ties up the backend for downstream effects (post-scenario WS
+    # broadcasts, async agent turns the test then has to clean up).
+    #
+    # Per-scenario context isolation removes the cross-scenario leak,
+    # but the in-process backend would still be busy serving the
+    # Claude call — risking page.goto timeouts in the next scenario.
+    # Mocking the response cuts the entire backend chain out of the
+    # test, keeping the scope tight to what the test actually
+    # asserts.
+    page.route(
+        "**/upload",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"path":"docs/tex-skip-preview/current.md",'
+                '"slug":"tex-skip-preview","name":"tex-skip-preview.md",'
+                '"kind":".tex","converted":true,"converter":"smoke-mock"}'
+            ),
+        ),
+    )
+
     upload_urls = []
     page.on(
         "request",
@@ -2896,29 +2923,13 @@ def scenario_tex_skip_preview(page, base: str, r: Results) -> None:
         detail=f"dialog.open={dialog_open}",
     )
 
-    # And a POST to /upload should have fired.
-    page.wait_for_timeout(1500)
     r.assert_(
         ".tex drop POSTs directly to /upload",
         any("/upload" in u for u in upload_urls),
         detail=f"upload urls observed: {upload_urls}",
     )
 
-    # The upload triggers an agent turn (the markitdown-fallback path asks
-    # the agent to convert original.tex → current.md). Cancel it through
-    # the same UI path the user would use — so the smoke run doesn't burn
-    # tokens on a useless conversion AND so the next scenario starts with
-    # no in-flight task.
-    page.fill("#input", "/cancel")
-    page.locator("#input").press("Enter")
-    page.wait_for_timeout(800)
-
-    # Cleanup: remove the doc dir that the agent-fallback upload created.
-    import shutil
-    for slug in ("tex-skip-preview", "tex-skip-preview-2", "tex-skip-preview-3"):
-        d = ROOT / "docs" / slug
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
+    # No cleanup needed — the mock means no file was created.
 
 
 def scenario_reset_confirm_dialog(page, base: str, r: Results) -> None:
@@ -3103,41 +3114,72 @@ def main() -> int:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=not args.headed)
             try:
-                context = browser.new_context()
-                page = context.new_page()
-                scenario_http_routes(page, base, results)
-                scenario_iframe_isolation(page, base, results)
-                scenario_history_undo_reset(page, base, results)
-                scenario_cross_origin_rejected(page, base, results)
-                scenario_iframe_runtime(page, base, results)
-                scenario_data_figure_renders(page, base, results)
-                scenario_diagram_renders(page, base, results)
-                scenario_structural_block_robustness(page, base, results)
-                scenario_html_block_structured_content(page, base, results)
-                scenario_agent_skill_hidden(page, base, results)
-                scenario_add_doc_skill(page, base, results)
-                scenario_doc_skill_crud(page, base, results)
-                # scenario_music_upload(page, base, results) — moved out
-                # of the harness to tests/test_music_upload.py. The
-                # uploads trigger a docs broadcast that switches the
-                # page to a music doc; the iframe then lazy-loads abcjs
-                # from CDN and that race poisons the next scenario's
-                # WS handshake on Windows. Same backend coverage via
-                # urllib in the standalone script.
-                scenario_pending_review(page, base, results)
-                scenario_pending_cleared_on_restore(page, base, results)
-                scenario_text_selection(page, base, results)
-                scenario_insertion_point(page, base, results)
-                scenario_asset_drop(page, base, results)
-                scenario_pdf_import(page, base, results)
-                scenario_tex_skip_preview(page, base, results)
-                scenario_inline_edit(page, base, results)
-                scenario_inline_edit_roundtrip(page, base, results)
-                scenario_cancel_command(page, base, results)
-                scenario_slash_commands(page, base, results)
-                scenario_export(page, base, results)
-                scenario_reset_confirm_dialog(page, base, results)
-                scenario_drop_preview_dialog(page, base, results)
+                # Each scenario gets its own browser CONTEXT (fresh storage,
+                # fresh cookies, fresh WebSocket). State from scenario N —
+                # in-flight uploads, agent turns the test moved on without
+                # awaiting, accumulated event listeners, pending broadcasts —
+                # cannot leak into scenario N+1 because the WS connection
+                # the broadcast would have arrived on is closed.
+                #
+                # Without this isolation, the smoke harness has historically
+                # papered over cross-scenario state-bleed (see scenario_music
+                # _upload removed at the harness level, scenario_cancel_command
+                # accommodating "tex may leave a turn in flight", and the
+                # flake that prompted this refactor — late agent-write
+                # broadcast from tex_skip_preview navigating
+                # inline_edit_roundtrip's page to the wrong doc).
+                #
+                # Cost: ~0.5-1s context-setup per scenario, ~25 scenarios.
+                # Worth it for deterministic CI.
+                def run_scenario(fn) -> None:
+                    context = browser.new_context()
+                    try:
+                        page = context.new_page()
+                        # Bootstrap navigation. Several scenarios implicitly
+                        # assumed the page was already at base (relative-URL
+                        # fetch calls etc.) — that assumption was hidden by
+                        # the shared-page setup. With fresh contexts, the
+                        # page starts at about:blank. Doing the goto here
+                        # once removes the assumption without forcing every
+                        # scenario to duplicate the boilerplate. Scenarios
+                        # that want a different starting URL just call
+                        # page.goto themselves (idempotent).
+                        page.goto(base + "/")
+                        fn(page, base, results)
+                    finally:
+                        context.close()
+
+                run_scenario(scenario_http_routes)
+                run_scenario(scenario_iframe_isolation)
+                run_scenario(scenario_history_undo_reset)
+                run_scenario(scenario_cross_origin_rejected)
+                run_scenario(scenario_iframe_runtime)
+                run_scenario(scenario_data_figure_renders)
+                run_scenario(scenario_diagram_renders)
+                run_scenario(scenario_structural_block_robustness)
+                run_scenario(scenario_html_block_structured_content)
+                run_scenario(scenario_agent_skill_hidden)
+                run_scenario(scenario_add_doc_skill)
+                run_scenario(scenario_doc_skill_crud)
+                # scenario_music_upload was previously removed at the harness
+                # level due to cross-scenario state-bleed. With per-scenario
+                # context isolation that root cause is gone — left out for
+                # now to avoid CDN load on every smoke run, not because of
+                # the original race. Still covered via tests/test_music_upload.py.
+                run_scenario(scenario_pending_review)
+                run_scenario(scenario_pending_cleared_on_restore)
+                run_scenario(scenario_text_selection)
+                run_scenario(scenario_insertion_point)
+                run_scenario(scenario_asset_drop)
+                run_scenario(scenario_pdf_import)
+                run_scenario(scenario_tex_skip_preview)
+                run_scenario(scenario_inline_edit)
+                run_scenario(scenario_inline_edit_roundtrip)
+                run_scenario(scenario_cancel_command)
+                run_scenario(scenario_slash_commands)
+                run_scenario(scenario_export)
+                run_scenario(scenario_reset_confirm_dialog)
+                run_scenario(scenario_drop_preview_dialog)
             finally:
                 browser.close()
 
