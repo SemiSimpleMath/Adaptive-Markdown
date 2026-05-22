@@ -3727,6 +3727,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       }
       return;
     }
+    if (data.type === 'api_key_set') {
+      // Server-side restart of the agent runtime completed (the user
+      // just saved their first API key). Dismiss the setup card and
+      // re-enable chat. Covers the multi-tab case where one tab saved
+      // the key and the other tabs need to catch up.
+      paintSetupCard(false, null);
+      return;
+    }
     if (data.type === 'doc_changed') {
       // Insertion is one-shot; once the doc has changed, the gap is stale.
       if (currentInsertion) clearInsertion();
@@ -4085,7 +4093,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   function setupCardSaveClick() {
     const key = setupCardKey.value.trim();
     if (!key || !setupCardVar) return;
+    // Show in-progress state. The backend restarts the agent runtime
+    // after writing .env, which takes ~3-6s for the Claude SDK to
+    // come up. Without this signal the user might double-click or
+    // assume the form is broken.
     setupCardSave.disabled = true;
+    setupCardSave.textContent = 'Saving + starting agent…';
     setupCardMsg.hidden = true;
     fetch('/api-key', {
       method: 'POST',
@@ -4098,20 +4111,22 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           setupCardMsg.className = 'setup-card-msg is-error';
           setupCardMsg.hidden = false;
           setupCardSave.disabled = false;
+          setupCardSave.textContent = 'Save';
           return;
         }
-        setupCardMsg.textContent = body.message ||
-          'Saved. Restart the backend so it picks up the new key.';
-        setupCardMsg.className = 'setup-card-msg is-ok';
-        setupCardMsg.hidden = false;
+        // Backend restarted the runtime successfully. Clear the card
+        // and re-enable chat without making the user restart anything.
+        // The `api_key_set` broadcast also fires; that handler is the
+        // multi-tab catch-all but here the local POST already won.
         setupCardKey.value = '';
-        setupCardKey.disabled = true;
+        paintSetupCard(false, null);
       })
       .catch(err => {
         setupCardMsg.textContent = 'Save failed: ' + (err.message || err);
         setupCardMsg.className = 'setup-card-msg is-error';
         setupCardMsg.hidden = false;
         setupCardSave.disabled = false;
+        setupCardSave.textContent = 'Save';
       });
   }
   setupCardSave.addEventListener('click', setupCardSaveClick);

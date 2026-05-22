@@ -30,6 +30,7 @@ from am_docs import (
     _doc_slug_from_path,
     list_all_components,
 )
+from am_hooks import init_runtime, shutdown_runtime
 from am_origin import _require_localhost_origin
 from am_pending import (
     clear_pending,
@@ -744,14 +745,39 @@ async def set_api_key(request: web.Request) -> web.Response:
     # (am_convert.py reads ANTHROPIC_API_KEY at call-time, for example).
     os.environ[var] = key
     print(f"[setup] wrote {var} to .env", flush=True)
+
+    # Restart the agent runtime in-place so it captures the new key.
+    # The Claude SDK reads ANTHROPIC_API_KEY at start() time, which
+    # already ran with the key missing — without this restart the
+    # user would have to kill + relaunch the whole backend, which is
+    # impossible in an installed desktop shell. We tear down + reboot
+    # the runtime; chat history resets (acceptable on first-run).
+    try:
+        await shutdown_runtime()
+        await init_runtime()
+    except Exception as e:
+        print(f"[setup] runtime restart failed after key save: {e!r}",
+              flush=True)
+        return web.json_response({
+            "ok": False,
+            "error": (
+                f"Saved {var} to .env, but failed to restart the agent "
+                f"runtime: {type(e).__name__}: {e}. Close and relaunch the "
+                "app to pick up the new key."
+            ),
+        }, status=500)
+
+    # Notify any other open WS clients so their setup card clears too.
+    # (Single-window is the common case; multi-tab still possible in dev.)
+    await state.broadcast({
+        "type": "api_key_set", "var": var,
+        "provider": state.current_provider,
+        "model": state.current_model,
+    })
+    print(f"[setup] runtime restarted with {var}", flush=True)
     return web.json_response({
-        "ok": True,
-        "var": var,
-        "restart_required": True,
-        "message": (
-            "Saved to .env. Restart the backend (Ctrl+C, then "
-            "`python start.py`) so the agent runtime picks up the new key."
-        ),
+        "ok": True, "var": var,
+        "message": "Saved. The agent is ready — chat below.",
     })
 
 
