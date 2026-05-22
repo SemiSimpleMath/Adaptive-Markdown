@@ -1167,9 +1167,25 @@ figure.vega script[type="application/json"] { display: none; }
   // block. We stash the pre-edit signature on the element via a WeakMap.
   const _editFocusInfo = new WeakMap();
 
+  // Tight contract for inline-edit eligibility — must match the
+  // attribute applyEditableMode sets AND be a tag we registered. Widgets
+  // can legitimately use `contenteditable=true` or `contenteditable=""`
+  // on their own custom editor elements (a JSON editor, a label
+  // rename, etc.); those should NOT route through AM's block-edit
+  // pipeline. Without this narrowing, focusin on a widget's editor
+  // would capture state and focusout would POST /edit-block — which
+  // the backend rejects because the widget element isn't a paragraph
+  // or heading in the source markdown, producing the user-facing
+  // "could not locate or refusing to inline-edit this block" error.
+  function isAmInlineEditTarget(block) {
+    if (!block) return false;
+    if (!EDITABLE_TAGS.has(block.tagName)) return false;
+    return block.getAttribute('contenteditable') === 'plaintext-only';
+  }
+
   body.addEventListener('focusin', e => {
     const block = findBlock(e.target);
-    if (!block || !block.hasAttribute('contenteditable')) return;
+    if (!isAmInlineEditTarget(block)) return;
     if (!_editFocusInfo.has(block)) {
       _editFocusInfo.set(block, {
         origMarkdown: blockToMarkdown(block),
