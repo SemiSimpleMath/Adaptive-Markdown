@@ -742,6 +742,14 @@ figure.vega script[type="application/json"] { display: none; }
         const table = new window.Tabulator(target, {
           data, columns,
           layout: 'fitDataStretch',
+          // Treat field names as literal property keys, never nested
+          // accessors. Tabulator's default is to split on `.` so e.g.
+          // `field: "Sepal.Length"` would resolve as `row.Sepal.Length`
+          // and return undefined. Standard R-exported CSVs (iris,
+          // mtcars, etc.) use dotted column names, and so do plenty of
+          // hand-built JSON datasets with namespaced keys. Disabling
+          // the separator entirely makes any flat dataset Just Work.
+          nestedFieldSeparator: false,
           // Reasonable defaults; the agent can mutate via
           // __doc.getRenderer(fig).instance.setColumns(...) etc.
           pagination: data.length > 100 ? 'local' : false,
