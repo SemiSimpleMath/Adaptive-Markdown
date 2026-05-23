@@ -1653,6 +1653,55 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return restoreMath(html, ph);
   }
 
+  // Strip <p> wrappers that markdown-it added around inline-only HTML.
+  // Background: when a structural block's body contains lines that start
+  // with inline HTML tags (<span>, <button>, <input>, etc.) — none of
+  // which are in markdown-it's HTML-block tag list — markdown-it treats
+  // those lines as paragraph text and wraps them in <p>. For a widget
+  // like the BeetAnGeSample transposition control, this produces
+  //     <div class="transpose-widget">
+  //       <p><span class="label">Transpose</span></p>
+  //       <div class="segmented">
+  //         <p><button>−12</button>...<button>+12</button></p>
+  //       </div>
+  //     </div>
+  // which is wrong (the widget source has no <p>s) and also causes
+  // downstream bugs: applyEditableMode adds contenteditable to those
+  // <p>s, widget JS mutates their textContent, focusin/focusout fire
+  // /edit-block POSTs the backend can't satisfy.
+  //
+  // Heuristic for "this <p> was an inline-HTML wrap, not a user
+  // paragraph": no direct text-node children with non-whitespace
+  // content. A real markdown paragraph almost always has bare text
+  // ("This is **bold** text" → `<p>This is <strong>bold</strong> text</p>`,
+  // direct text "This is " and " text" present). An auto-wrap around
+  // inline HTML has only element children plus whitespace text nodes.
+  //
+  // Only applied at depth > 0 (inside structural blocks). At depth 0
+  // unwrapping would damage legitimate top-level paragraphs like
+  // `_italic_` → `<p><em>italic</em></p>` that the reader actually
+  // wrote and expects to be paragraph-shaped.
+  function unwrapInlineHtmlParagraphs(html) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    for (const p of Array.from(tmp.querySelectorAll('p'))) {
+      let hasDirectText = false;
+      for (const child of p.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE
+            && child.textContent.trim() !== '') {
+          hasDirectText = true;
+          break;
+        }
+      }
+      // Skip if it has direct text (real paragraph) OR is empty (let it be).
+      if (hasDirectText || p.children.length === 0) continue;
+      const parent = p.parentNode;
+      while (p.firstChild) parent.insertBefore(p.firstChild, p);
+      parent.removeChild(p);
+    }
+    return tmp.innerHTML;
+  }
+
   // Inner pipeline: structural-block extraction + recursive render.
   // Operates on math-protected text; never touches protectMath/
   // restoreMath itself.
@@ -1679,6 +1728,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const renderer = depth === 0 ? md : mdInner;
     const { source, placeholders } = extractStructuralBlocks(preserved, nonce);
     let html = renderer.render(source);
+    // At depth > 0 we're rendering a structural block's body — strip
+    // <p> wrappers that markdown-it added around inline-HTML lines
+    // (widget content etc.). See unwrapInlineHtmlParagraphs for the
+    // why. Do this BEFORE reinsertStructuralBlocks so we don't walk
+    // into already-reinserted recursive content.
+    if (depth > 0) {
+      html = unwrapInlineHtmlParagraphs(html);
+    }
     html = reinsertStructuralBlocks(html, placeholders, depth, nonce);
     return html;
   }
