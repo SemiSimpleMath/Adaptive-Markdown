@@ -1384,13 +1384,28 @@ figure.vega script[type="application/json"] { display: none; }
     meta.textContent = metaTxt || '';
     annotateHs(body);
     attachIds(body);
+    // Render math BEFORE doc scripts run. KaTeX wraps each `$...$` in a
+    // `.katex` span and protectMathSource wraps the source in
+    // `.am-math-keep`. Doc scripts that walk text nodes (snake-game-on-
+    // the-page, word counters, falling-letters effects, etc.) can then
+    // safely exclude those classes — the existing `EXCLUDE_SEL`s already
+    // list `.katex` / `.katex-display`. Without this order the math text
+    // gets shredded into one-character spans before KaTeX can detect
+    // `$...$`, and every equation renders as literal source.
+    //
+    // Trade-off: a doc script that *dynamically inserts* `$...$` via
+    // innerHTML and expects auto-render will no longer get rendered (math
+    // has already passed). The recommended pattern for that case is to
+    // call window.__doc.rerender(el) after the insertion, or write into
+    // a `.am-math-keep` span with the desired source — both already
+    // documented affordances.
+    renderMath();
     const newScripts = new Map();
     body.querySelectorAll('script').forEach(s => newScripts.set(scriptKey(s), s));
     for (const [k, s] of oldScripts) { if (!newScripts.has(k)) runScriptCleanups(s); }
     for (const [k, s] of newScripts) { if (!oldScripts.has(k)) reExec(s); }
     applySelection();
     applyEditableMode();
-    renderMath();
     renderMusicBlocks(body).catch(e => console.warn('music render:', e));
     renderDataBlocks(body).catch(e => console.warn('data render:', e));
     // Generic-renderer figure types (plot, vega, diagram, ...).
