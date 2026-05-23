@@ -1409,6 +1409,16 @@ figure.vega script[type="application/json"] { display: none; }
           // dropping any agent-set runtime state (Tabulator
           // rowFormatter, Plotly chart customizations, etc.) the
           // doc author can't reach from pure markdown.
+          //
+          // TODO: deeper fix — move renderer markers from `data-am-*`
+          // attributes to a module-private WeakMap keyed by the
+          // script element. WeakMap entries survive morphdom diffs
+          // for free (morphdom preserves element identity; only
+          // attributes and children are reconciled), which would
+          // eliminate this preservation block entirely and also keep
+          // exported HTML clean of runtime bookkeeping. Worth doing
+          // the next time a figure renderer is touched for an
+          // unrelated reason — don't make a special trip.
           if (f.attributes) {
             for (const attr of f.attributes) {
               if (attr.name.startsWith('data-am-')
