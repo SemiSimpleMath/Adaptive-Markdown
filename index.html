@@ -1311,6 +1311,18 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return { frontmatter: fm, body: text.slice(m[0].length) };
   }
 
+  // Cheap multiset of <script> tags (inline + external) from a markdown
+  // body, used by loadDoc to decide whether the new content includes JS
+  // changes that need a full iframe rebuild. We capture the entire tag
+  // including attributes and body — any change to src=, type=, or the
+  // inline code counts as a JS change. <style>/<link> are intentionally
+  // excluded: CSS is declarative and morphdom updates it safely in place.
+  function extractScriptTagsKey(body) {
+    const tags = body.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
+    tags.sort();
+    return tags.join('\x00');
+  }
+
   function escapeAttr(s) {
     return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
                     .replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -2394,25 +2406,47 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     try {
       const resp = await fetch(path, { cache: 'no-store' });
       if (!resp.ok) throw new Error(`fetch ${path} -> ${resp.status}`);
+      // Capture the previous body's <script> set before currentBody is
+      // overwritten — needed for JS-change detection below.
+      const prevScriptsKey = (iframeDoc === currentDoc && currentBody)
+        ? extractScriptTagsKey(currentBody) : null;
       currentText = await resp.text();
-      // No iframe rebuild on edits — morphdom diffs the DOM in place, the
-      // cleanup registry tears down removed-script resources, and unchanged
-      // scripts keep their state.
+      // No iframe rebuild on prose edits — morphdom diffs the DOM in
+      // place, the cleanup registry tears down removed-script resources,
+      // and unchanged scripts keep their state.
       //
-      // On a genuine doc switch we DO rebuild: morphdom-in-place is the
-      // wrong tool when crossing a doc boundary because most agent-
-      // generated scripts never register __doc.cleanup, so their
-      // setIntervals, document/window listeners, and globals survive into
-      // the next doc (the famous "snake game from intro shows up in the
-      // next doc" symptom). A full iframe reload wipes the runtime; the
-      // setContent sent immediately after gets queued in pendingFrameContent
-      // and flushed when iframeReady fires.
-      if (iframeDoc !== null && iframeDoc !== currentDoc) {
+      // Two cases DO require a full iframe rebuild:
+      //
+      // 1. Doc switch (iframeDoc !== currentDoc). morphdom-in-place is
+      //    wrong when crossing a doc boundary because most agent-
+      //    generated scripts never register __doc.cleanup, so their
+      //    setIntervals, document/window listeners, and globals survive
+      //    into the next doc (the "snake from intro shows up in the next
+      //    doc" symptom).
+      //
+      // 2. JS change within the same doc (script tags differ between
+      //    old and new body). The cleanup/reExec dance morphdom does
+      //    around <script> elements only fires teardown functions the
+      //    script explicitly registered via __doc.cleanup; ad-hoc IIFE
+      //    sentinels (`if (window.__foo) return;`) survive re-exec and
+      //    silently no-op the new code, leaking the old setInterval and
+      //    requiring a manual page refresh. Reloading the iframe wipes
+      //    the JS environment so the new script runs from scratch.
+      //
+      // CSS-only changes (<style> blocks differ) are NOT covered here —
+      // CSS is declarative and morphdom updates it safely in place.
+      //
+      // In either case, setContent sent immediately after gets queued in
+      // pendingFrameContent and flushed when iframeReady fires.
+      const { frontmatter, body: bodyText } = splitFrontmatter(currentText);
+      const docChanged = iframeDoc !== null && iframeDoc !== currentDoc;
+      const scriptsChanged = prevScriptsKey !== null
+        && prevScriptsKey !== extractScriptTagsKey(bodyText);
+      if (docChanged || scriptsChanged) {
         initIframe();
       }
       iframeDoc = currentDoc;
       paintAssetBtn();
-      const { frontmatter, body: bodyText } = splitFrontmatter(currentText);
       currentFm = frontmatter;
       currentBody = bodyText;
       renderFrontmatter(frontmatter);

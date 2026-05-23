@@ -133,11 +133,18 @@ If you need one, embed the CDN `<script src>` in your block and guard the use:
 - `fetch()` to your iframe's own origin (`localhost:<port>`) and to cross-origin services that allow CORS — agent-asset paths like `assets/foo.png` resolve against the iframe's `<base href>` and are same-origin to the iframe.
 - Third-party embeds that bootstrap from their own origin (YouTube, CodePen, Observable, Figma) — `allow-same-origin` lets the embed's own scripts run in their own context.
 
-### Surviving doc reloads — the cleanup registry
+### Surviving doc reloads — edit policy and the cleanup registry
 
-The viewer keeps the iframe alive across doc edits and **morphdom-diffs the DOM in place**. Unchanged blocks (and their event listeners, in-progress canvas animations, registered timers) stay intact. Changed or removed `<script>` blocks are re-executed or torn down respectively.
+How the viewer applies an edit depends on what changed:
 
-If your `<script>` allocates anything that outlives its initial run (interval timers, event listeners on `window`, observers), register a cleanup callback. The runtime invokes the cleanup when the registering script is later removed or replaced — so unchanged scripts keep running, and changed ones tear down cleanly before re-running.
+- **Prose, headings, lists, tables, attributes, `<style>` blocks**: applied in place via morphdom. Unchanged elements (and their event listeners, in-progress canvas animations, registered timers) stay intact.
+- **Any `<script>` change** — content edit, addition, removal: triggers a **full iframe reload**. The JS environment (`window` globals, intervals, listeners on `document`/`window`) is wiped, then the new content renders against a clean slate. This avoids the silent-no-op failure where leaked `setInterval`s and undisposed IIFE sentinels from the old script leave the page visibly unchanged until a manual refresh.
+
+You usually don't need to think about which path runs; write clean code and let the viewer pick the safe approach. Two patterns still matter:
+
+#### Register cleanup for anything that outlives the script's body
+
+If your `<script>` allocates anything that outlives its initial run — interval timers, event listeners on `window`/`document`, observers, DOM appended outside the script's own subtree — register a cleanup callback:
 
 ```html
 <script>
@@ -155,6 +162,34 @@ If your `<script>` allocates anything that outlives its initial run (interval ti
 Register cleanups **synchronously** in the script body (inside the IIFE) so the runtime can attribute them to the right script. Cleanups registered later from a callback may be orphaned and won't fire.
 
 Scripts that are purely one-shot (draw to canvas once, append a DOM node, set a CSS variable) don't need cleanup — they're idempotent on re-run as long as they guard against duplicating state. Idiom: `if (!document.getElementById('my-widget')) { /* create */ }`.
+
+#### Idempotent init: `__doc.guard`, never bare sentinels
+
+For scripts that want defensive guard against being initialized twice (e.g., from `__doc.rerender` triggering a re-init, or any other future re-execution path), use `__doc.guard(name)`:
+
+```html
+<script>
+(function() {
+  if (!window.__doc?.guard('my-widget')) return;
+  // ... do everything; safe; runs exactly once per iframe lifetime ...
+})();
+</script>
+```
+
+`guard` registers a cleanup that releases the claim when the script is removed, so the next iframe lifetime starts fresh.
+
+**Never use the bare-sentinel pattern:**
+
+```js
+// BAD — sentinel never released; new script silently no-ops after re-exec
+(function() {
+  if (window.__myWidget) return;
+  window.__myWidget = true;
+  // ...
+})();
+```
+
+This pattern is the footgun `__doc.guard` was added to replace. It looks fine, but on any re-execution (without a full iframe reload) the new script sees the old `true` and early-returns, producing the exact "I made changes but nothing visibly changed" symptom that motivated the JS-reload policy. Use `__doc.guard` instead.
 
 ### Widgets that mutate other figures
 

@@ -220,6 +220,13 @@ figure.vega script[type="application/json"] { display: none; }
   // WeakMap so the entry is GC'd when the figure leaves the DOM.
   const FIGURE_RENDERERS = new WeakMap();
 
+  // Claim/release registry for window.__doc.guard. Set-of-strings; an
+  // entry exists while a script holds the guard. Released automatically
+  // by the cleanup the guard call registered. The Set survives across
+  // setContent (it lives on the iframe's window, not in body DOM); a
+  // full iframe reload (which we trigger for JS edits) wipes it.
+  const _DOC_GUARDS = new Set();
+
   window.__doc = {
     cleanup(fn) {
       if (typeof fn !== 'function') return;
@@ -227,6 +234,28 @@ figure.vega script[type="application/json"] { display: none; }
         const a = SCRIPT_CLEANUPS.get(_currentScript);
         if (a) a.push(fn);
       }
+    },
+    // Idempotent claim. Returns true the first time it's called with a
+    // given name in this iframe's lifetime; false on subsequent calls
+    // (the guard is held). The first claimant automatically registers
+    // a cleanup that releases the guard when the script is removed,
+    // so re-execution after edit is safe.
+    //
+    // Replaces the ad-hoc `if (window.__sentinel) return;` pattern
+    // which never released its sentinel and silently no-op'd on
+    // re-exec. Use this for scripts that need to be guarded against
+    // re-execution within the same iframe session (rare, given that
+    // JS edits trigger a full iframe reload — but the API exists for
+    // defense in depth).
+    guard(name) {
+      if (typeof name !== 'string' || !name) return true;
+      if (_DOC_GUARDS.has(name)) return false;
+      _DOC_GUARDS.add(name);
+      if (_currentScript) {
+        const a = SCRIPT_CLEANUPS.get(_currentScript);
+        if (a) a.push(() => _DOC_GUARDS.delete(name));
+      }
+      return true;
     },
     // Re-run the figure renderers (and KaTeX) over `el`. Use this from
     // an in-doc widget that mutated a figure's source — change the
