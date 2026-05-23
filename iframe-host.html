@@ -1392,6 +1392,31 @@ figure.vega script[type="application/json"] { display: none; }
             if (f.dataset.amMusicSource === newSource) return false;
           }
           if (f.isEqualNode(t)) return false;
+          // Preserve runtime `data-am-*` markers across the diff.
+          // The figure renderers (data, music, plot, vega, diagram)
+          // tag their source `<script>`/`<div>` elements with a marker
+          // attribute (`data-am-data-source`, `data-am-music-source`,
+          // etc.) after a successful render. The renderer's filter
+          // then skips elements where marker === textContent, so an
+          // unrelated edit elsewhere in the doc doesn't blow away an
+          // already-rendered figure. The markers never appear in the
+          // source markdown — they're runtime-only — so morphdom's
+          // default reconciliation would strip them from `f` because
+          // `t` doesn't have them. Re-attaching them onto `t` before
+          // morphdom proceeds keeps them in the live DOM and the skip
+          // logic continues to work. Without this, an edit anywhere
+          // in the doc force-re-instantiates every figure's renderer,
+          // dropping any agent-set runtime state (Tabulator
+          // rowFormatter, Plotly chart customizations, etc.) the
+          // doc author can't reach from pure markdown.
+          if (f.attributes) {
+            for (const attr of f.attributes) {
+              if (attr.name.startsWith('data-am-')
+                  && !t.hasAttribute(attr.name)) {
+                t.setAttribute(attr.name, attr.value);
+              }
+            }
+          }
           return true;
         },
         onBeforeNodeDiscarded(node) {
