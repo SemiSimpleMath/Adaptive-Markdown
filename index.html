@@ -970,6 +970,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       <div class="view-tab-buttons" id="view-tab-buttons"></div>
       <select id="doc-select" class="doc-select" title="Switch document"></select>
       <button id="new-doc-btn" class="btn-tiny" title="Add a new document — drop a file or browse">＋ Doc</button>
+      <button id="new-asset-btn" class="btn-tiny" type="button" title="Attach a file (image, audio, video, CSV, JSON…) to the current document" disabled>＋ Asset</button>
       <button id="help-btn" class="btn-tiny help-btn" type="button" title="Open the Help doc" aria-label="Help">?</button>
       <button id="theme-toggle-btn" class="btn-tiny theme-toggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">
         <span class="theme-icon" aria-hidden="true">🌙</span>
@@ -1023,16 +1024,29 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     </dialog>
     <div id="new-doc-overlay" class="new-doc-overlay" hidden>
       <div class="new-doc-card">
-        <strong>Drop a file to import</strong>
-        <div class="new-doc-hint">.md, .tex, .txt, .rst, .org — or any text-ish file (you'll be asked to confirm unfamiliar formats)</div>
+        <strong>New document</strong>
+        <div class="new-doc-hint">Start blank, or import a file (.md, .tex, .txt, .rst, .org, .pdf, .docx, .csv, .xlsx, music, diagrams — unfamiliar formats prompt for confirmation).</div>
         <div class="new-doc-actions">
-          <button id="new-doc-choose" class="btn-primary" type="button">Choose file…</button>
+          <button id="new-doc-blank" class="btn-primary" type="button">Start blank</button>
+          <button id="new-doc-choose" class="btn-tiny" type="button">Choose file…</button>
           <button id="new-doc-close" class="btn-tiny" type="button">Cancel</button>
         </div>
-        <div class="new-doc-dismiss">Drop anywhere in this area · or click anywhere to browse · Esc / Cancel to close</div>
+        <div class="new-doc-dismiss">Drop a file anywhere in this area · Esc / Cancel to close</div>
       </div>
     </div>
     <input type="file" id="new-doc-input" style="display:none;">
+    <div id="new-asset-overlay" class="new-doc-overlay" hidden>
+      <div class="new-doc-card">
+        <strong id="new-asset-title">Attach a file</strong>
+        <div class="new-doc-hint">Images, audio, video, .csv / .json / .parquet. Saved to <code>docs/&lt;doc&gt;/assets/</code> and referenceable as <code>assets/&lt;name&gt;</code> from the doc.</div>
+        <div class="new-doc-actions">
+          <button id="new-asset-choose" class="btn-primary" type="button">Choose file…</button>
+          <button id="new-asset-close" class="btn-tiny" type="button">Cancel</button>
+        </div>
+        <div class="new-doc-dismiss">Drop a file anywhere in this area · Esc / Cancel to close</div>
+      </div>
+    </div>
+    <input type="file" id="new-asset-input" style="display:none;">
     <div class="scroll" id="doc-scroll" hidden>
       <main>
         <header class="frontmatter" id="frontmatter"></header>
@@ -1090,16 +1104,29 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const docScrollEl = document.getElementById('doc-scroll');
   let docFrameReady = false;
   let pendingFrameContent = null;
+  // Tracks the doc whose content currently lives in the iframe. On a
+  // genuine doc switch (this !== currentDoc) loadDoc() rebuilds the
+  // iframe so JS side-effects from the previous doc — intervals,
+  // listeners on document/window, globals, body-level overlays — don't
+  // leak across. In-doc edits (same currentDoc) keep using morphdom.
+  let iframeDoc = null;
   const log = document.getElementById('log');
   const statusEl = document.getElementById('status');
   const docSelect = document.getElementById('doc-select');
   const modelSelect = document.getElementById('model-select');
   const newChatBtn = document.getElementById('new-chat-btn');
   const newDocBtn = document.getElementById('new-doc-btn');
+  const newAssetBtn = document.getElementById('new-asset-btn');
   const themeToggleBtn = document.getElementById('theme-toggle-btn');
   const newDocOverlay = document.getElementById('new-doc-overlay');
   const newDocClose = document.getElementById('new-doc-close');
   const newDocInput = document.getElementById('new-doc-input');
+  const newAssetOverlay = document.getElementById('new-asset-overlay');
+  const newAssetChoose = document.getElementById('new-asset-choose');
+  const newAssetClose  = document.getElementById('new-asset-close');
+  const newAssetInput  = document.getElementById('new-asset-input');
+  const newAssetTitle  = document.getElementById('new-asset-title');
+  const newAssetCard   = newAssetOverlay.querySelector('.new-doc-card');
   const input = document.getElementById('input');
   const selectionBar = document.getElementById('selection-bar');
   const selectionLabel = document.getElementById('selection-label');
@@ -2370,7 +2397,21 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       currentText = await resp.text();
       // No iframe rebuild on edits — morphdom diffs the DOM in place, the
       // cleanup registry tears down removed-script resources, and unchanged
-      // scripts keep their state. The iframe is built once at boot.
+      // scripts keep their state.
+      //
+      // On a genuine doc switch we DO rebuild: morphdom-in-place is the
+      // wrong tool when crossing a doc boundary because most agent-
+      // generated scripts never register __doc.cleanup, so their
+      // setIntervals, document/window listeners, and globals survive into
+      // the next doc (the famous "snake game from intro shows up in the
+      // next doc" symptom). A full iframe reload wipes the runtime; the
+      // setContent sent immediately after gets queued in pendingFrameContent
+      // and flushed when iframeReady fires.
+      if (iframeDoc !== null && iframeDoc !== currentDoc) {
+        initIframe();
+      }
+      iframeDoc = currentDoc;
+      paintAssetBtn();
       const { frontmatter, body: bodyText } = splitFrontmatter(currentText);
       currentFm = frontmatter;
       currentBody = bodyText;
@@ -4292,6 +4333,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return Math.floor(h / 24) + 'd ago';
   }
   const newDocChoose = document.getElementById('new-doc-choose');
+  const newDocBlank = document.getElementById('new-doc-blank');
   const newDocCard = newDocOverlay.querySelector('.new-doc-card');
   function showNewDocOverlay() { newDocOverlay.hidden = false; }
   function hideNewDocOverlay() {
@@ -4302,7 +4344,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // Click anywhere on the drop area (overlay backdrop, not the buttons) opens
   // the file picker. Dismiss via Cancel / Esc / outside-the-doc-pane.
   newDocOverlay.addEventListener('click', (e) => {
-    if (e.target === newDocChoose || e.target === newDocClose) return;
+    if (e.target === newDocChoose || e.target === newDocClose ||
+        e.target === newDocBlank) return;
     if (newDocCard && newDocCard.contains(e.target) &&
         e.target !== newDocCard) return;  // clicks on hint text etc. don't picker
     newDocInput.click();
@@ -4310,6 +4353,22 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   newDocChoose.addEventListener('click', (e) => {
     e.stopPropagation();
     newDocInput.click();
+  });
+  // Start blank: construct an empty-shaped .md File and route it through
+  // the standard /upload flow. The backend derives the slug from the
+  // filename, broadcasts {type:'docs', doc:<slug>}, and the existing
+  // 'docs' handler in handleMessage auto-switches to the new doc.
+  newDocBlank.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const raw = prompt('Title for the new doc:', 'untitled');
+    if (raw === null) return;
+    const title = raw.trim() || 'untitled';
+    const slug = title.toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'untitled';
+    const body = '# ' + title + '\n';
+    const file = new File([body], slug + '.md', { type: 'text/markdown' });
+    await importFile(file);
   });
   newDocClose.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -4341,9 +4400,82 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     hideNewDocOverlay();
     await handleFrameDrop([file]);
   });
-  // Esc also closes the new-doc overlay (alongside the history panel).
+  // Esc also closes the new-doc / new-asset overlays (alongside the
+  // history panel; that one wires its own handler elsewhere).
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !newDocOverlay.hidden) hideNewDocOverlay();
+    if (e.key !== 'Escape') return;
+    if (!newDocOverlay.hidden) hideNewDocOverlay();
+    if (!newAssetOverlay.hidden) hideNewAssetOverlay();
+  });
+
+  // ---- +Asset: attach a file to the current doc --------------------------
+  // Parallel UX to +Doc: opens an overlay with a drop zone and a Choose
+  // file… button. Backend route is /upload-asset?doc=<slug>, file lands
+  // at docs/<slug>/assets/<sanitized-name>, and the agent gets a chat-
+  // side system message so it knows the asset is referenceable as
+  // `assets/<name>` from the doc body.
+  function showNewAssetOverlay() {
+    if (!currentDoc) return;
+    newAssetTitle.innerHTML =
+      'Attach a file to <code>' + escapeHtml(currentDoc) + '</code>';
+    newAssetOverlay.hidden = false;
+  }
+  function hideNewAssetOverlay() {
+    newAssetOverlay.hidden = true;
+    newAssetOverlay.classList.remove('dropping');
+  }
+  function paintAssetBtn() {
+    const enabled = !!currentDoc;
+    newAssetBtn.disabled = !enabled;
+    newAssetBtn.title = enabled
+      ? `Attach a file to "${currentDoc}"`
+      : 'Open a doc first to attach assets';
+  }
+  paintAssetBtn();
+  newAssetBtn.addEventListener('click', showNewAssetOverlay);
+  // Click on the backdrop (not on the buttons / hint text) opens the picker.
+  newAssetOverlay.addEventListener('click', (e) => {
+    if (e.target === newAssetChoose || e.target === newAssetClose) return;
+    if (newAssetCard && newAssetCard.contains(e.target) &&
+        e.target !== newAssetCard) return;
+    newAssetInput.click();
+  });
+  newAssetChoose.addEventListener('click', (e) => {
+    e.stopPropagation();
+    newAssetInput.click();
+  });
+  newAssetClose.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideNewAssetOverlay();
+  });
+  newAssetOverlay.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    newAssetOverlay.classList.add('dropping');
+  });
+  newAssetOverlay.addEventListener('dragleave', (e) => {
+    if (!newAssetOverlay.contains(e.relatedTarget)) {
+      newAssetOverlay.classList.remove('dropping');
+    }
+  });
+  // The asset overlay is explicit intent — drops here always go through
+  // /upload-asset regardless of extension. The backend's _ASSET_EXTS
+  // allowlist provides the actual gate; the UI just forwards the file.
+  newAssetOverlay.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    newAssetOverlay.classList.remove('dropping');
+    const files = Array.from(e.dataTransfer && e.dataTransfer.files || []);
+    hideNewAssetOverlay();
+    if (!files.length) return;
+    await uploadAsset(files[0]);
+  });
+  newAssetInput.addEventListener('change', async () => {
+    const file = newAssetInput.files && newAssetInput.files[0];
+    newAssetInput.value = '';  // allow re-picking the same file
+    if (!file) return;
+    hideNewAssetOverlay();
+    await uploadAsset(file);
   });
 
   async function performUndo() {
