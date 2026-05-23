@@ -1180,7 +1180,21 @@ figure.vega script[type="application/json"] { display: none; }
   function isAmInlineEditTarget(block) {
     if (!block) return false;
     if (!EDITABLE_TAGS.has(block.tagName)) return false;
-    return block.getAttribute('contenteditable') === 'plaintext-only';
+    if (block.getAttribute('contenteditable') !== 'plaintext-only') return false;
+    // Don't inline-edit blocks that contain interactive widget elements
+    // (buttons, inputs, custom contenteditables). Markdown-it can wrap a
+    // widget's body in <p> during structural-block recursive render —
+    // when the widget's JS mutates its readout/state, the wrapping <p>'s
+    // textContent changes, focusout fires, and /edit-block POSTs a
+    // signature the backend can't locate (buttons aren't in the source).
+    // The root-cause fix is in the renderer; this is a belt that catches
+    // future cases regardless.
+    if (block.querySelector(
+      'button, input, select, textarea, [contenteditable], canvas, svg'
+    )) {
+      return false;
+    }
+    return true;
   }
 
   body.addEventListener('focusin', e => {
