@@ -27,6 +27,62 @@ DEFAULT_MODEL = os.environ.get("MODEL", "claude-haiku-4-5-20251001")
 MAX_BUDGET_USD = float(os.environ.get("MAX_BUDGET_USD", "3.0"))
 
 
+# Always-on AM rules + full skill body pinned to the cached system prompt.
+#
+# The Anthropic Skills mechanism is loadable-on-demand: the agent sees a
+# ~50-token description and must invoke the Skill tool to pull the body
+# into context. That model-judgment gate is fine for skills that apply to
+# *specific* tasks, but adaptive-markdown is the agent's contract — it
+# applies to EVERY edit. Empirically, even capable models (Sonnet 4.6)
+# don't invoke the skill before editing unless explicitly told to, which
+# means the rules in SKILL.md are routinely bypassed (the agent runs git,
+# tries to write baseline.md, skips __doc.cleanup, etc.).
+#
+# Fix: read SKILL.md at runtime and append it directly to the cached
+# system prompt. Costs ~11k tokens on the cached prefix per session
+# (cache_create on first turn; cache_read on subsequent turns — pennies
+# either way). The Skill tool stays in allowed_tools as belt-and-
+# suspenders, but the body is now unconditional.
+_AM_CRITICAL_RULES = """\
+## Adaptive Markdown — always-on rules
+
+You are editing a document inside the AM viewer. Operate on the *document*, \
+not on AM's source code.
+
+### MANDATORY first action each session
+
+**Before any other tool use, invoke the `adaptive-markdown` Skill** to \
+load the full conventions (block types, ID model, `__doc.cleanup` \
+patterns, figure conventions, etc.). Check your conversation history \
+first — if the skill body is already there (you invoked it earlier this \
+session), skip; the content is cached. Otherwise invoke it before \
+reading, writing, or editing any document.
+
+The rules in that skill bind every edit you make. The safety floor below \
+is the minimum you must observe even if the skill content somehow fails \
+to load.
+
+### Safety floor (always enforced)
+
+- **Persistence model.** AM has its own snapshot pipeline \
+(`docs/<slug>/snaps/`); every successful Edit is captured automatically. \
+Never run `git`. Never reason about commits, branches, or gitignore. If a \
+change appears not to "stick", the bug is in the doc body or the viewer's \
+renderer pipeline, never in git.
+
+- **Writable scope.** Only `docs/<slug>/current.md` is writable. \
+`baseline.md` is the immutable history-0; `snaps/` is backend-managed; \
+anything outside the active doc's folder is off-limits. The pre-edit hook \
+will reject other writes — refusing earlier in chat is cleaner than \
+hitting a hook error.
+
+- **The iframe is your world.** Visual issues ("equations are broken", \
+"the widget doesn't render", "the page looks wrong") live in the doc's \
+own `<script>`/`<style>`/math source/figure spec. They do NOT live in \
+the AM viewer's source code, which is out of scope.
+"""
+
+
 def _extract_usage(message) -> dict | None:
     """Pull token counts from a ResultMessage. The SDK exposes usage as
     either a dict or an object; handle both. Returns None if no usage
@@ -205,7 +261,16 @@ class ClaudeRuntime:
             cwd=str(self.root),
             setting_sources=["project"],
             skills="all",
-            allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+            # "Skill" in allowed_tools is what actually makes the
+            # adaptive-markdown skill loadable. Without it, the SDK
+            # injects only each skill's ~50-token frontmatter description
+            # into the system prompt and gives the agent NO mechanism
+            # to load the body — i.e., the 44 KB of AM rules in
+            # .claude/skills/adaptive-markdown/SKILL.md would be
+            # unreachable. The agent must invoke the Skill tool by
+            # name to actually pull the body into context, so this
+            # tool listing is load-bearing.
+            allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"],
             sandbox=sandbox_cfg,
             permission_mode="acceptEdits",
             model=chosen,
@@ -216,10 +281,32 @@ class ClaudeRuntime:
             # across users. Within a single session this is a no-op
             # (the stable system prompt is cached either way); the
             # win is on session restarts and on shared installs.
+            #
+            # append_system_prompt pins the critical safety floor AND
+            # the full AM skill body to the cached prefix, so the agent
+            # has both unconditionally — no Skill-tool invocation
+            # required. See _AM_CRITICAL_RULES + _load_am_skill_body
+            # comments for why we inline rather than rely on the SDK's
+            # on-demand skill loading.
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
                 "exclude_dynamic_sections": True,
+                # NOTE: the SDK key is "append" (per SystemPromptPreset's
+                # TypedDict). Unknown keys are silently dropped — using
+                # the wrong name (e.g. "append_system_prompt") fails
+                # silently with zero behavior change.
+                #
+                # Why we don't inline the full SKILL.md body here:
+                # Anthropic's SDK passes the appended content via CLI
+                # command-line args to the bundled `claude.exe`. Windows'
+                # CreateProcess hard-caps the command line at ~32k chars,
+                # and SKILL.md alone is ~44 KB. So a long append blows up
+                # backend startup with `WinError 206: filename or
+                # extension is too long`. Keep `append` to the small
+                # critical-rules floor; full body loading needs a
+                # file-based path (CLAUDE.md auto-load, etc.).
+                "append": _AM_CRITICAL_RULES,
             },
             hooks={
                 "PreToolUse": pre_tool_use_hooks,
