@@ -87,13 +87,17 @@ async def run_turn(text: str):
         # doc. One [tool] line per tool_use event, one [turn] summary line.
         t0 = time.time()
         tool_count = 0
+        edit_count = 0
         cost: float | None = None
+        usage: dict | None = None
         cancelled = False
         try:
             async for event in state.runtime.run_turn(text):
                 etype = event.get("type", "")
                 if etype == "tool_use":
                     tool_count += 1
+                    if event.get("name") in ("Edit", "Write"):
+                        edit_count += 1
                     # A malformed payload shouldn't abort the turn — the audit
                     # log is a diagnostic, not load-bearing.
                     try:
@@ -110,6 +114,9 @@ async def run_turn(text: str):
                     c = event.get("cost_usd")
                     if isinstance(c, (int, float)):
                         cost = c
+                    u = event.get("usage")
+                    if isinstance(u, dict):
+                        usage = u
                 await state.broadcast(event)
         except asyncio.CancelledError:
             # Reader hit /cancel. Tell the UI, mark the turn done, and
@@ -133,9 +140,34 @@ async def run_turn(text: str):
         finally:
             dt = time.time() - t0
             cost_str = f", cost=${cost:.4f}" if cost is not None else ""
+            edits_str = f" ({edit_count} edit/write)" if edit_count else ""
+            # Token usage: in/out plus cache breakdown. On a fresh session
+            # `cache_create` on the first turn ≈ system+tools+skills size,
+            # which is the number to watch when comparing prompt growth
+            # across commits.
+            usage_str = ""
+            if usage:
+                parts = []
+                in_t = usage.get("input_tokens")
+                out_t = usage.get("output_tokens")
+                cc = usage.get("cache_creation_input_tokens")
+                cr = usage.get("cache_read_input_tokens")
+                if in_t is not None:
+                    parts.append(f"in={in_t}")
+                if out_t is not None:
+                    parts.append(f"out={out_t}")
+                if cc is not None:
+                    parts.append(f"cache_create={cc}")
+                if cr is not None:
+                    parts.append(f"cache_read={cr}")
+                if parts:
+                    usage_str = ", " + " ".join(parts)
             tag = " (cancelled)" if cancelled else ""
-            print(f"[turn] done in {dt:.1f}s, {tool_count} tool call(s){cost_str}{tag}",
-                  flush=True)
+            print(
+                f"[turn] done in {dt:.1f}s, {tool_count} tool call(s)"
+                f"{edits_str}{cost_str}{usage_str}{tag}",
+                flush=True,
+            )
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:

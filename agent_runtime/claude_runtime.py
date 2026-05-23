@@ -27,6 +27,38 @@ DEFAULT_MODEL = os.environ.get("MODEL", "claude-haiku-4-5-20251001")
 MAX_BUDGET_USD = float(os.environ.get("MAX_BUDGET_USD", "3.0"))
 
 
+def _extract_usage(message) -> dict | None:
+    """Pull token counts from a ResultMessage. The SDK exposes usage as
+    either a dict or an object; handle both. Returns None if no usage
+    fields are present, so callers can skip serializing an empty payload.
+
+    The four interesting fields:
+      input_tokens               — uncached input on this turn
+      cache_creation_input_tokens — new content being written to the cache
+      cache_read_input_tokens     — cached prefix read from the cache
+      output_tokens               — model output
+
+    For a fresh session, `cache_creation_input_tokens` on the first turn
+    approximates the system+tools+skills prompt size — useful for
+    comparing prompt growth across commits.
+    """
+    usage = getattr(message, "usage", None)
+    if usage is None:
+        return None
+    keys = (
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    )
+    out: dict[str, int] = {}
+    for k in keys:
+        v = usage.get(k) if isinstance(usage, dict) else getattr(usage, k, None)
+        if isinstance(v, int):
+            out[k] = v
+    return out or None
+
+
 def _format_result_error(message, budget_usd: float) -> str:
     """Translate a ResultMessage with subtype != 'success' into a
     human-readable error for chat. Without this, the viewer sees a
@@ -244,11 +276,15 @@ class ClaudeRuntime:
                             message, MAX_BUDGET_USD,
                         ),
                     }
-                yield {
+                event: AgentEvent = {
                     "type": "turn_done",
                     "session_id": message.session_id,
                     "cost_usd": message.total_cost_usd,
                 }
+                u = _extract_usage(message)
+                if u:
+                    event["usage"] = u
+                yield event
 
     def _block_to_event(self, block: Any) -> AgentEvent | None:
         if isinstance(block, TextBlock):
