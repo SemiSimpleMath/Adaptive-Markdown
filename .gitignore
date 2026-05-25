@@ -84,3 +84,4 @@ scripts/*
 # recurring bug class belong in the repo even though most of scripts/
 # is local. List specific allow-rules here as they're needed.
 !scripts/check_inline_scripts.py
+!scripts/check_forbidden_words.py

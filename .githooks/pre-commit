@@ -1,14 +1,22 @@
 #!/bin/sh
-# AM pre-commit: when iframe-host.html or index.html is staged, run the
-# inline-script syntax check. This catches the </script>-in-comment trap
-# (a JS comment containing literal </script> terminates the parent <script>
-# at the comment, breaking the runtime in ways that surface as confusing
-# downstream regressions). See scripts/check_inline_scripts.py.
+# AM pre-commit hook. Two checks:
+#
+#   1. Inline-script syntax check, gated on viewer HTML being staged.
+#      Catches the </script>-in-comment trap (a JS comment containing
+#      literal </script> terminates the parent <script> at the comment,
+#      breaking the runtime in confusing ways). See
+#      scripts/check_inline_scripts.py.
+#
+#   2. Forbidden-words check, runs on every commit. Rejects staged
+#      additions that contain proprietary product names — protects the
+#      public-MIT repo against accidental leaks of internal brand
+#      names from sibling projects. See
+#      scripts/check_forbidden_words.py.
 #
 # This hook is wired automatically by start.py via `git config
-# core.hooksPath .githooks` on first run. To bypass for one commit:
-# git commit --no-verify (use sparingly — this exists because the trap
-# has recurred 5+ times).
+# core.hooksPath .githooks` on first run. Don't bypass via
+# --no-verify — both checks exist because the underlying mistakes
+# have recurred under "I'll be careful" discipline alone.
 set -e
 
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
@@ -20,4 +28,9 @@ if printf '%s\n' "$staged" | grep -qE '^(iframe-host|index)\.html$'; then
         echo "Fix the issues above, or use --no-verify to bypass."
         exit 1
     fi
+fi
+
+# Always run the forbidden-words check. Silent on success.
+if ! python scripts/check_forbidden_words.py; then
+    exit 1
 fi
