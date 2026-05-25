@@ -37,9 +37,9 @@ from aiohttp import web
 
 
 ROOT = Path(__file__).resolve().parent
-# DATA_ROOT defaults to ROOT, but AM_DATA_DIR overrides it (used by the
-# desktop shell to route user content into %APPDATA%/Prism/ since the
-# install dir is read-only). We compute it locally here BEFORE importing
+# DATA_ROOT defaults to ROOT, but AM_DATA_DIR overrides it (a desktop
+# shell would use this to route user content under a per-user data
+# dir when the install dir is read-only). We compute it locally here BEFORE importing
 # am_docs so .env loading can use it; am_docs computes the same value
 # (idempotent — env var read twice, same answer) and is the canonical
 # source for downstream importers.

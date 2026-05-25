@@ -1,8 +1,8 @@
 """Regression guards for AM_DATA_DIR override.
 
-The desktop shell (Prism) routes user content into %APPDATA%/Prism/ by
-setting AM_DATA_DIR, since its install dir is read-only. The override
-needs to:
+A desktop-shell wrapper can route user content into a per-user data
+dir (e.g., under %APPDATA% on Windows) by setting AM_DATA_DIR, when
+its install dir is read-only. The override needs to:
   - default to ROOT when unset (preserves repo / dev behavior)
   - route DOCS_ROOT and COMPONENTS_ROOT under the override
   - leave ROOT (code root) untouched — index.html and friends still
@@ -77,7 +77,7 @@ def test_override_routes_docs_and_components():
 
 
 def test_backend_creates_missing_data_dir_on_import():
-    """First launch under an installed shell: %APPDATA%/Prism/ won't
+    """First launch under an installed shell: the user-data dir won't
     exist yet. backend.py mkdir's it so the .env loader and downstream
     file writes have a place to land."""
     with tempfile.TemporaryDirectory() as parent:

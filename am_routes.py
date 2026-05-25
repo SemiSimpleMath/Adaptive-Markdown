@@ -708,9 +708,9 @@ async def set_api_key(request: web.Request) -> web.Response:
             status=400,
         )
     # .env lives in DATA_ROOT (which is AM_DATA_DIR if set, otherwise the
-    # repo root). The installed desktop shell routes this to %APPDATA%/Prism/
-    # so the API key persists across upgrades and survives a read-only
-    # install dir.
+    # repo root). An installed shell will typically route this under a
+    # per-user data dir so the API key persists across upgrades and
+    # survives a read-only install location.
     env_path = DATA_ROOT / ".env"
     # Read existing .env, replace the line for this var (if present), or
     # append. Comment-prefixed and blank lines pass through untouched.

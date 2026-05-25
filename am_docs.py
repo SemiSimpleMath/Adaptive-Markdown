@@ -26,11 +26,11 @@ ROOT = Path(__file__).resolve().parent
 
 # DATA root: where user content lives — docs/, components/, .env. Defaults
 # to the CODE root for the repo / dev case (so `git clone && python start.py`
-# behaves as before). The desktop shell (Prism) overrides via AM_DATA_DIR
-# to route writes to %APPDATA%/Prism/, since Program Files is read-only
-# for the user. If you change this default, audit serve_static in
-# backend.py and the .env writer in am_routes.py — both pick the right
-# base by reading these constants.
+# behaves as before). A desktop-shell wrapper can override via AM_DATA_DIR
+# to route writes to a user-writable location (e.g., under %APPDATA% on
+# Windows) when the code root is read-only. If you change this default,
+# audit serve_static in backend.py and the .env writer in am_routes.py —
+# both pick the right base by reading these constants.
 _data_env = os.environ.get("AM_DATA_DIR", "").strip()
 DATA_ROOT = Path(_data_env).resolve() if _data_env else ROOT
 
