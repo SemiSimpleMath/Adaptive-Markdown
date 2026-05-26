@@ -63,6 +63,13 @@ components/*
 # Local scratch
 scratch folder/
 
+# Sample data files dropped at the repo root while testing CSV / XLSX
+# figure imports (iris.csv, etc.). Real data ships inside
+# docs/<slug>/assets/, so a root-level .csv/.xlsx is always scratch.
+# Use `git add -f` if you ever want to track one.
+/*.csv
+/*.xlsx
+
 # Saved "keeper" doc versions — agent outputs worth holding onto outside
 # of .history/'s autosave churn. Local-only by convention.
 keepers/
