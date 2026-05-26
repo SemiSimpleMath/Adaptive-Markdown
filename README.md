@@ -23,7 +23,7 @@ pip install -r requirements.txt
 python start.py --claude
 ```
 
-Open <http://127.0.0.1:8090>. On first launch the viewer shows a setup card — paste your [Anthropic API key](https://console.anthropic.com/settings/keys), restart, and you're talking to your document. Detailed per-OS install + Codex alternative are [below](#install).
+Open <http://127.0.0.1:8090>. On first launch the viewer shows a setup card — paste your [Anthropic API key](https://console.anthropic.com/settings/keys) and you're talking to your document right away (the card writes the key to `.env` and restarts the runtime for you — no manual restart). Detailed per-OS install + Codex alternative are [below](#install).
 
 > ▶ See it in motion on YouTube: [demo 1](https://youtu.be/H4MnFs8irm8) · [demo 2](https://youtu.be/xf6jxf-hyP4)
 
