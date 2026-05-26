@@ -3160,7 +3160,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     body.className = '';
     if (currentView === 'source') {
       body.className = 'view-source';
-      body.textContent = currentText;
+      // Tracking-id comments are system bookkeeping — invisible when rendered.
+      // Dim them here so the raw source still reads like prose, without
+      // hiding the actual bytes (they're really in the file).
+      body.innerHTML = escapeHtml(currentText).replace(
+        /^([ \t]*&lt;!-- id:b-[A-Z0-9-]+ --&gt;)[ \t]*\r?$/gm,
+        '<span style="opacity:.38">$1</span>'
+      );
     } else if (currentView === 'graph') {
       renderGraphView();
     } else if (currentView === 'latex') {
@@ -3284,6 +3290,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     ].join('\n');
   }
 
+  // System-stamped block-id comments are working-copy bookkeeping; strip them
+  // from exported artifacts so the shared file is clean. (The live view keeps
+  // them — attachTrackingIds needs them to surface data-track-id.) We strip
+  // from the RENDERED HTML, not the markdown source: markdown-it escapes a
+  // literal `<!-- id:b-... -->` shown inside a code sample to text, so only
+  // real stamped comment NODES match here — fence-safe by construction.
+  function stripIdComments(html) {
+    return html.replace(/<!--\s*id:b-[A-Z0-9-]+\s*-->/gi, '');
+  }
+
   async function exportDoc() {
     if (!currentText) {
       appendMessage('error', 'No doc loaded to export');
@@ -3295,7 +3311,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const inlinedBody = await inlineAssets(currentBody);
 
     // 2. Run the same rendering pipeline as the viewer.
-    let html = renderDoc(inlinedBody);
+    let html = stripIdComments(renderDoc(inlinedBody));
 
     // 3. Meta line mirrors what the viewer shows.
     const metaBits = [];
@@ -3326,7 +3342,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   async function previewExport() {
     if (!currentText) throw new Error('no doc loaded');
     const inlinedBody = await inlineAssets(currentBody);
-    let html = renderDoc(inlinedBody);
+    let html = stripIdComments(renderDoc(inlinedBody));
     const metaBits = [];
     const a = currentFm.authors || currentFm.author;
     if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);

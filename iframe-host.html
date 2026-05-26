@@ -1383,6 +1383,16 @@ figure.vega script[type="application/json"] { display: none; }
       window.morphdom(body, tmp, {
         childrenOnly: true,
         onBeforeElUpdated(f, t) {
+          // Never reconcile the block the reader is actively editing: a
+          // doc_changed re-render triggered by some OTHER block's edit (or by
+          // the post-turn id stamp) would otherwise revert the in-progress
+          // text and yank the caret. The editor's own blur -> /edit-block
+          // path is what persists it.
+          if (f.nodeType === 1 && f.isContentEditable &&
+              (f === document.activeElement ||
+               (document.activeElement && f.contains(document.activeElement)))) {
+            return false;
+          }
           // Music blocks: when the source hasn't changed, leave the
           // rendered notation alone instead of letting morphdom overwrite
           // it with the raw markdown source. We re-render only when the

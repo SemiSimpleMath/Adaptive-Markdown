@@ -231,8 +231,8 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 # Lazy-mint track_ids for any focused selections that lack one.
                 # The block becomes stably-identifiable from this point on.
                 doc_changed_after_mint = False
-                if doc:
-                    doc_path = DATA_ROOT / doc
+                doc_path = _doc_path_for(doc) if doc else None
+                if doc_path and doc_path.exists():
                     for s in selections:
                         if isinstance(s, dict) and not s.get("track_id"):
                             new_id = mint_track_id_for(doc_path, s)

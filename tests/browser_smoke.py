@@ -2238,9 +2238,18 @@ def scenario_pdf_import(page, base: str, r: Results) -> None:
         "Hello AM PDF smoke" in current,
         detail=f"current.md head: {current[:200]!r}",
     )
+    # current.md carries eager block-id comments (the system stamps them on
+    # every write); baseline.md is the pristine history-0. They match modulo
+    # those invisible <!-- id:b-... --> lines.
+    import re as _re
+    def _strip_ids(t):
+        return "\n".join(
+            ln for ln in t.split("\n")
+            if not _re.match(r"^<!-- id:b-[A-Z0-9-]+ -->$", ln)
+        )
     r.assert_(
-        "baseline.md matches current.md after conversion",
-        baseline == current,
+        "baseline.md matches current.md after conversion (modulo block ids)",
+        _strip_ids(baseline) == _strip_ids(current),
         detail=f"baseline_len={len(baseline)}, current_len={len(current)}",
     )
 
@@ -2297,6 +2306,11 @@ def scenario_export(page, base: str, r: Results) -> None:
         "exported HTML starts with <!DOCTYPE html>",
         out.startswith("<!DOCTYPE html>"),
         detail=out[:80],
+    )
+    r.assert_(
+        "exported HTML carries no system block-id comments (clean artifact)",
+        "<!-- id:b-" not in out,
+        detail="found a stray <!-- id:b- --> in the export",
     )
     r.assert_(
         "exported HTML includes the KaTeX CDN stylesheet",
@@ -2757,6 +2771,218 @@ def scenario_inline_edit_roundtrip(page, base: str, r: Results) -> None:
     shutil.rmtree(doc_dir, ignore_errors=True)
 
 
+def scenario_inline_edit_track_id(page, base: str, r: Results) -> None:
+    """Two paragraphs share their first 40+ chars but carry distinct tracking
+    ids. Editing the SECOND must land on the second block. The identity-first
+    locator keys off track_id; the old excerpt-prefix match would mis-hit the
+    first (identical-prefix) paragraph and corrupt the wrong block — this is
+    the regression that motivated eager block ids."""
+    print("\n[scenario] inline edit locates by track_id (prefix collision)")
+
+    import shutil
+    slug = "smoke-trackid"
+    doc_dir = ROOT / "docs" / slug
+    if doc_dir.exists():
+        shutil.rmtree(doc_dir)
+    doc_dir.mkdir(parents=True)
+    shared = "The function is continuous on the closed interval, and therefore attains its"
+    initial = (
+        "# Track-id smoke\n\n"
+        "<!-- id:b-AAAAAAAAAAAAAAAA -->\n"
+        f"{shared} maximum. (copy one)\n\n"
+        "<!-- id:b-BBBBBBBBBBBBBBBB -->\n"
+        f"{shared} minimum. (copy two)\n"
+    )
+    (doc_dir / "current.md").write_text(initial, encoding="utf-8", newline="")
+    (doc_dir / "baseline.md").write_text(initial, encoding="utf-8", newline="")
+
+    page.goto(base + f"/?doc={slug}")
+    frame = _wait_for_doc_iframe(page)
+    frame.wait_for_selector("article#body p", timeout=10000)
+    page.wait_for_timeout(300)
+
+    tagged = frame.evaluate(
+        "() => Array.from(document.querySelectorAll('article#body p'))"
+        ".map(p => p.dataset.trackId || null)"
+    )
+    r.assert_(
+        "both paragraphs carry data-track-id from the source comments",
+        tagged.count("b-AAAAAAAAAAAAAAAA") == 1
+        and tagged.count("b-BBBBBBBBBBBBBBBB") == 1,
+        detail=str(tagged),
+    )
+
+    edit_calls = []
+    page.on(
+        "request",
+        lambda req: edit_calls.append(req.url)
+        if req.method == "POST" and "/edit-block" in req.url else None,
+    )
+    # Edit the SECOND paragraph (the "(copy two)" / minimum one).
+    frame.evaluate(
+        """() => {
+            const ps = document.querySelectorAll('article#body p');
+            const target = Array.from(ps).find(p => /copy two/.test(p.textContent || ''));
+            target.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+            target.appendChild(document.createTextNode(' EDITED2'));
+            target.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+        }"""
+    )
+    page.wait_for_timeout(1500)
+    r.assert_(
+        "second-paragraph edit POSTs to /edit-block",
+        any("/edit-block" in u for u in edit_calls),
+        detail=str(edit_calls),
+    )
+    disk = (doc_dir / "current.md").read_text(encoding="utf-8")
+    edited_line = next((ln for ln in disk.split("\n") if "EDITED2" in ln), "")
+    first_line = next((ln for ln in disk.split("\n") if "copy one" in ln), "")
+    r.assert_(
+        "edit landed on the SECOND paragraph (copy two), not the prefix-twin",
+        "copy two" in edited_line,
+        detail=f"edited_line={edited_line!r}",
+    )
+    r.assert_(
+        "first paragraph (copy one) is untouched by the second's edit",
+        "EDITED2" not in first_line and "maximum. (copy one)" in disk,
+        detail=f"first_line={first_line!r}",
+    )
+
+    shutil.rmtree(doc_dir, ignore_errors=True)
+
+
+def scenario_serve_normalizes(page, base: str, r: Results) -> None:
+    """A freshly-written doc with NO ids gets stamped when the viewer fetches
+    it — serve_static is the single normalization choke point. Proves the
+    wiring + the new block classifier end-to-end in a real browser, including
+    that an inline-HTML-led paragraph is stamped (not skipped as a block)."""
+    print("\n[scenario] serve_static normalizes current.md on fetch")
+    import re as _re
+    import shutil
+    slug = "smoke-serve-norm"
+    doc_dir = ROOT / "docs" / slug
+    if doc_dir.exists():
+        shutil.rmtree(doc_dir)
+    doc_dir.mkdir(parents=True)
+    initial = (
+        "# Serve norm\n\n"
+        "First paragraph with no id yet.\n\n"
+        "<em>Inline</em>-led paragraph also has no id.\n\n"
+        "Second plain paragraph.\n"
+    )
+    (doc_dir / "current.md").write_text(initial, encoding="utf-8", newline="")
+    (doc_dir / "baseline.md").write_text(initial, encoding="utf-8", newline="")
+
+    page.goto(base + f"/?doc={slug}")
+    frame = _wait_for_doc_iframe(page)
+    frame.wait_for_selector("article#body p", timeout=10000)
+    page.wait_for_timeout(300)
+
+    all_tagged = frame.evaluate(
+        "() => Array.from(document.querySelectorAll("
+        "'article#body > p, article#body > h1')).every(el => !!el.dataset.trackId)"
+    )
+    r.assert_(
+        "every top-level heading/paragraph has data-track-id after a plain fetch",
+        all_tagged, detail="a block was missing data-track-id",
+    )
+    disk = (doc_dir / "current.md").read_text(encoding="utf-8")
+    r.assert_(
+        "serve_static wrote id comments back to current.md on disk",
+        disk.count("<!-- id:b-") >= 4,
+        detail=disk,
+    )
+    r.assert_(
+        "inline-HTML-led paragraph got stamped (classified as paragraph, not HTML block)",
+        _re.search(r"<!-- id:b-[A-Z0-9-]+ -->\n<em>Inline</em>-led", disk) is not None,
+        detail=disk,
+    )
+    # baseline.md is left pristine.
+    base_txt = (doc_dir / "baseline.md").read_text(encoding="utf-8")
+    r.assert_(
+        "baseline.md stays pristine (no id comments)",
+        "<!-- id:b-" not in base_txt,
+        detail=base_txt,
+    )
+    shutil.rmtree(doc_dir, ignore_errors=True)
+
+
+def scenario_morphdom_preserves_active_edit(page, base: str, r: Results) -> None:
+    """A doc_changed re-render triggered by editing a DIFFERENT block must not
+    clobber the block the reader is actively editing — the morphdom
+    onBeforeElUpdated guard. Faithful end-to-end: focus block A with uncommitted
+    text, then commit block B via the API, which broadcasts doc_changed and
+    forces a re-render."""
+    print("\n[scenario] morphdom preserves the actively-edited block")
+    import shutil
+    slug = "smoke-morphdom"
+    doc_dir = ROOT / "docs" / slug
+    if doc_dir.exists():
+        shutil.rmtree(doc_dir)
+    doc_dir.mkdir(parents=True)
+    initial = (
+        "# Morphdom\n\n"
+        "<!-- id:b-AAAAAAAAAAAAAAAA -->\n"
+        "Alpha paragraph that the reader is editing.\n\n"
+        "<!-- id:b-BBBBBBBBBBBBBBBB -->\n"
+        "Bravo paragraph edited via the API.\n"
+    )
+    (doc_dir / "current.md").write_text(initial, encoding="utf-8", newline="")
+    (doc_dir / "baseline.md").write_text(initial, encoding="utf-8", newline="")
+
+    page.goto(base + f"/?doc={slug}")
+    frame = _wait_for_doc_iframe(page)
+    frame.wait_for_selector("article#body p", timeout=10000)
+    page.wait_for_timeout(300)
+
+    # Focus block A for real and append uncommitted text (no blur / no commit).
+    frame.evaluate(
+        """() => {
+            const a = Array.from(document.querySelectorAll('article#body p'))
+                .find(p => /Alpha/.test(p.textContent || ''));
+            a.focus();
+            a.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+            a.appendChild(document.createTextNode(' LIVEEDIT'));
+        }"""
+    )
+    # Commit a change to block B through the API -> doc_changed -> re-render.
+    page.evaluate(
+        """async () => {
+            await fetch('/edit-block', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    doc: 'smoke-morphdom',
+                    block: { track_id: 'b-BBBBBBBBBBBBBBBB' },
+                    new_text: 'Bravo paragraph changed by API.'
+                })
+            });
+        }"""
+    )
+    page.wait_for_timeout(1800)   # doc_changed -> loadDoc -> setContent(morphdom)
+
+    survived = frame.evaluate(
+        """() => {
+            const a = Array.from(document.querySelectorAll('article#body p'))
+                .find(p => /Alpha/.test(p.textContent || ''));
+            return a ? /LIVEEDIT/.test(a.textContent || '') : false;
+        }"""
+    )
+    r.assert_(
+        "actively-edited block keeps its uncommitted text across a doc_changed re-render",
+        survived, detail="LIVEEDIT was clobbered by the morphdom re-render",
+    )
+    bravo = frame.evaluate(
+        "() => { const b = Array.from(document.querySelectorAll('article#body p'))"
+        ".find(p => /Bravo/.test(p.textContent || '')); return b ? b.textContent : ''; }"
+    )
+    r.assert_(
+        "the other block's committed change is visible after the re-render",
+        "changed by API" in bravo, detail=f"bravo={bravo!r}",
+    )
+    shutil.rmtree(doc_dir, ignore_errors=True)
+
+
 def scenario_cancel_command(page, base: str, r: Results) -> None:
     """`/cancel` typed into the chat input sends a {type:'cancel'} WS
     message instead of a chat turn. When no turn is running, the backend
@@ -3175,6 +3401,9 @@ def main() -> int:
                 run_scenario(scenario_tex_skip_preview)
                 run_scenario(scenario_inline_edit)
                 run_scenario(scenario_inline_edit_roundtrip)
+                run_scenario(scenario_inline_edit_track_id)
+                run_scenario(scenario_serve_normalizes)
+                run_scenario(scenario_morphdom_preserves_active_edit)
                 run_scenario(scenario_cancel_command)
                 run_scenario(scenario_slash_commands)
                 run_scenario(scenario_export)

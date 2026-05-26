@@ -385,7 +385,7 @@ These are human-meaningful slugs. Other parts of the doc reference them with `[R
 ## Theorem (Rolle's Theorem) {#rolle}
 ```
 
-You will encounter these in source files. They are minted automatically by the backend when a reader interacts with an unlabeled block — you don't need to mint them yourself.
+You will see one before nearly every top-level heading and paragraph. The backend stamps them **eagerly and automatically** every time `current.md` is written — including right after your turn — so blocks can be located by a stable id instead of by fuzzy text matching. **You never write, move, or edit these yourself.** Don't add `<!-- id:b-... -->` comments of your own, and don't try to tag new blocks you create — leave new content untagged and the system stamps it once your turn finishes. (Fenced code, `<script>`/`<style>` bodies, lists, and tables are intentionally left unstamped.)
 
 **The `doc_id` in frontmatter** (e.g., `doc_id: d-01HQVE7E9KMX2BNF`) is the document-level equivalent — sticky, preserves identity across renames.
 
@@ -396,10 +396,10 @@ These are non-negotiable. Violations break continuity guarantees (broken citatio
 - **Never delete an existing `<!-- id:b-... -->` comment** unless the reader explicitly asks. They are load-bearing.
 - **Never delete an existing `{#id}` anchor** on a heading, or an `id="..."` attribute on an HTML block, unless the reader explicitly asks. If a rename is necessary, update *all* incoming `[text](#id)` references in the same edit.
 - **Never delete or rename the `doc_id` in frontmatter.** Ever.
-- **On block split** (one paragraph becomes two): the existing tracking ID stays attached to the first piece; new siblings get freshly-minted IDs on next interaction — leave them untagged.
+- **On block split** (one paragraph becomes two): the existing tracking ID stays attached to the first piece; leave the new sibling untagged — the system stamps it automatically after your turn.
 - **On block merge** (two paragraphs become one): keep one tracking ID on the surviving block. The dropped IDs are recorded in `<doc>.id-aliases.json` automatically.
 - **On in-place rewrite** (translate, restyle, expand same block): the tracking comment stays where it was — at the start of the block. Don't move it.
-- **When inserting a new block**: don't pre-mint a tracking ID. Leave it untagged.
+- **When inserting a new block**: don't write a tracking ID yourself. Leave it untagged — the system stamps it after your turn.
 
 ## Editing conventions
 

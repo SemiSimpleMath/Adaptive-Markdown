@@ -90,6 +90,7 @@ from am_docs import (  # noqa: E402
     ensure_doc_ids, ensure_working_copies,
     list_all_components, list_all_docs,
 )
+from am_tracking import ensure_block_ids, ensure_block_ids_for  # noqa: E402
 from am_hooks import init_runtime, shutdown_runtime  # noqa: E402
 from am_origin import _check_static_origin  # noqa: E402
 from am_routes import (  # noqa: E402
@@ -188,6 +189,13 @@ async def serve_static(request: web.Request) -> web.Response:
                     ok = True
         if not ok:
             raise web.HTTPNotFound()
+    # Single read choke point: the viewer fetches current.md here before every
+    # render and every inline edit, so normalizing on serve guarantees the
+    # "every top-level block carries a stable id" invariant no matter which
+    # writer produced the file — without scattering calls across every write
+    # path (and missing some). Idempotent; baseline.md is left pristine.
+    if target.name == "current.md" and target.parent.parent == DOCS_ROOT:
+        ensure_block_ids_for(target)
     return web.FileResponse(target)
 
 
@@ -352,6 +360,7 @@ async def on_startup(app: web.Application):
     ensure_working_copies()  # baseline.md -> current.md on fresh clones
     ensure_doc_ids()
     ensure_history_zero()    # current.md -> baseline.md for new user docs
+    ensure_block_ids()       # stamp tracking ids on every current.md block
     ensure_skill_mirror()
     # Order matters: agent config has to be in DATA_ROOT BEFORE the runtime
     # boots, because the SDK reads .claude/{settings,skills}/ from cwd

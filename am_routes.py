@@ -43,7 +43,9 @@ from am_snapshots import (
     save_snapshot,
 )
 from am_state import state
-from am_tracking import _HEADING_LINE_RE, _find_block_span
+from am_tracking import (
+    _HEADING_LINE_RE, _find_block_span, resolve_alias, strip_block_ids,
+)
 
 
 async def list_history(request: web.Request) -> web.Response:
@@ -201,6 +203,12 @@ async def edit_block(request: web.Request) -> web.Response:
 
     source = doc_path.read_text(encoding="utf-8")
     lines = source.split("\n")
+    # Resolve a possibly-stale track_id through the alias map so a reference
+    # captured before a merge/rename still lands on the surviving block; a
+    # tombstoned id (None) drops back to content matching.
+    tid = (block.get("track_id") or "").strip()
+    if tid:
+        block = {**block, "track_id": resolve_alias(doc_path, tid) or ""}
     span = _find_block_span(lines, block)
     if span is None:
         return web.json_response(
@@ -622,10 +630,18 @@ async def save_baseline(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": f"could not snapshot old baseline: {e}"}, status=500,
             )
-    baseline.write_bytes(doc_path.read_bytes())
+    # The canonical artifact stays pristine: strip the working copy's
+    # system-stamped block ids before pinning it as the baseline. Fall back to
+    # a verbatim byte copy if the working copy somehow isn't valid UTF-8
+    # (shouldn't happen — agent + validator write UTF-8 — but don't 500).
+    try:
+        clean = strip_block_ids(doc_path.read_bytes().decode("utf-8"))
+        baseline.write_text(clean, encoding="utf-8", newline="")
+    except UnicodeDecodeError:
+        baseline.write_bytes(doc_path.read_bytes())
     slug = _doc_slug_from_path(doc_path) or doc_param
     print(
-        f"[save-baseline] docs/{slug}/baseline.md <- current.md",
+        f"[save-baseline] docs/{slug}/baseline.md <- current.md (ids stripped)",
         flush=True,
     )
     return web.json_response({"doc": slug, "ok": True})
