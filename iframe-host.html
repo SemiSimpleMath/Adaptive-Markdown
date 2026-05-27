@@ -1112,39 +1112,30 @@ figure.vega script[type="application/json"] { display: none; }
   // routing through the chat. When the agent starts a turn, edits are
   // locked. /cancel is the escape hatch if a turn gets stuck.
   //
-  // Plaintext-only: the reader changes *text*, not formatting. Bold /
-  // italic / link markup in the source is replaced on commit if the
-  // reader touches that block. Source view is the path for formatting
-  // edits and for non-prose blocks (lists, code, tables).
+  // The reader edits a block's markdown SOURCE in a textarea (never the
+  // rendered DOM), so EVERY top-level block is editable — prose, lists,
+  // tables, fenced code, and whole <figure> units alike. "Top-level block" ==
+  // "carries a tracking id" (the eager stamper puts one before each, and
+  // attachIds copies it onto the rendered element). A <figure> is one editable
+  // unit: you edit its whole source, never its rendered internals — which also
+  // sidesteps the old contenteditable-in-figure serialization bugs. The
+  // agent-skill meta section and <summary> (its own collapse affordance) stay
+  // off-limits.
   let editableMode = true;
-  const EDITABLE_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+
+  function isReaderEditable(block) {
+    // Only TRUE top-level blocks (direct children of the article) are editable
+    // — that matches the server's model (am_blocks stamps top-level only), so
+    // the optimistic insert position and the re-rendered position can't diverge
+    // for an id-comment that a doc happened to place inside a container.
+    return !!(block && block.dataset && block.dataset.trackId
+      && block.parentElement === body
+      && !block.closest('.agent-skill') && block.tagName !== 'SUMMARY');
+  }
 
   function applyEditableMode() {
-    // Walk all p/heading DESCENDANTS, not just direct body.children.
-    // Docs nest blocks inside <details>/<section>/<aside>/etc. and the
-    // reader still wants to inline-edit a paragraph that lives inside
-    // a collapsible week or inside a theorem section.
-    //
-    // Skip set:
-    //   - .agent-skill — hidden meta section, never reader-editable
-    //   - summary — the summary IS its own click affordance
-    //     (toggles collapse), can't double as edit target
-    //   - figure — agent-built widgets live here and they own their
-    //     internal text. Inline-editing inside a figure tends to
-    //     break the figure's serialization (the agent rebuilds from
-    //     the source, not from the live DOM). The toggle was also a
-    //     real bug source: every agent turn-start/end re-toggled
-    //     contenteditable on every <p>/<h> in the figure, which
-    //     caused layout micro-shifts in the figure's chrome (the
-    //     transposition-widget bug surfaced this).
-    const blocks = body.querySelectorAll('p, h1, h2, h3, h4, h5, h6');
-    for (const block of blocks) {
-      if (block.closest('.agent-skill, summary, figure')) continue;
-      // Source-edit replaces contenteditable: mark editable blocks so the
-      // pencil-on-hover affordance knows which it can open. The reader edits
-      // the block's markdown SOURCE (in a textarea), never the rendered DOM.
-      block.classList.toggle(
-        'am-editable', editableMode && EDITABLE_TAGS.has(block.tagName));
+    for (const block of body.querySelectorAll('[data-track-id]')) {
+      block.classList.toggle('am-editable', editableMode && isReaderEditable(block));
     }
   }
 
@@ -1154,138 +1145,216 @@ figure.vega script[type="application/json"] { display: none; }
   }
 
 
-  // ---- Inline source edit (pencil on hover -> edit the block's markdown) --
-  // Replaces the old contenteditable + turndown path. We never serialize the
-  // rendered DOM back to markdown: the pencil fetches the block's EXACT .md
-  // source (via the parent -> GET /block-source), swaps the rendered block
-  // for a <textarea> of that source in place, and posts the edited source
-  // back. Lossless by construction — styled spans, math, and spacing survive
-  // because there is no DOM->markdown reconstruction anywhere.
+  // ---- Inline source edit / insert / delete (hover toolbar) --------------
+  // No DOM->markdown reconstruction anywhere: the toolbar's ✎ fetches the
+  // block's EXACT .md source (parent -> GET /block-source), swaps the block
+  // for a <textarea> of that source in place, and posts it back (POST
+  // /block-source). ＋ inserts a new block below (POST /insert-block); 🗑
+  // deletes it (POST /delete-block). Lossless by construction — styled spans,
+  // math, and spacing survive because the source IS the source.
   (function initSourceEdit() {
     const style = document.createElement('style');
     style.textContent = [
-      '#am-edit-affordance{position:fixed;z-index:60;display:none;width:26px;height:26px;',
-      'line-height:24px;text-align:center;cursor:pointer;font-size:14px;padding:0;',
-      'border:1px solid var(--am-border,#d0d4d9);border-radius:6px;background:var(--am-bg,#fff);',
-      'color:var(--am-fg,#333);box-shadow:0 1px 4px rgba(0,0,0,.12);}',
-      '#am-edit-affordance:hover{background:var(--am-accent,#2a6df5);color:#fff;}',
-      '.am-editable{cursor:text;}',
+      '#am-block-tools{position:fixed;z-index:60;display:none;gap:3px;}',
+      '#am-block-tools button{width:25px;height:25px;line-height:23px;text-align:center;',
+      'cursor:pointer;font-size:13px;padding:0;border:1px solid var(--am-border,#d0d4d9);',
+      'border-radius:6px;background:var(--am-bg,#fff);color:var(--am-fg,#333);',
+      'box-shadow:0 1px 4px rgba(0,0,0,.12);}',
+      '#am-block-tools button:hover{background:var(--am-accent,#2a6df5);color:#fff;}',
+      '#am-block-tools button.am-del:hover{background:#c0392b;border-color:#c0392b;}',
       '.am-src-edit{margin:.2em 0;}',
       '.am-src-edit .am-src-hint{font-size:11.5px;color:var(--am-accent,#2a6df5);font-weight:600;margin:0 0 4px;}',
       '.am-src-edit textarea{width:100%;box-sizing:border-box;font:13.5px/1.55 ui-monospace,Consolas,monospace;',
       'color:var(--am-fg,#222);background:var(--am-bg,#fff);border:1px solid var(--am-accent,#2a6df5);',
       'border-radius:6px;padding:9px 11px;resize:none;overflow:hidden;outline:none;}',
       '.am-src-edit .am-src-err{color:#c0392b;font-size:12px;margin-top:5px;white-space:pre-wrap;}',
+      '.am-src-confirm{margin:.2em 0;padding:8px 11px;border:1px solid #c0392b;border-radius:6px;',
+      'background:var(--am-bg,#fff);font-size:13px;color:var(--am-fg,#222);display:flex;',
+      'flex-wrap:wrap;gap:10px;align-items:center;}',
+      '.am-src-confirm button{cursor:pointer;border-radius:5px;padding:3px 11px;font-size:12.5px;',
+      'border:1px solid var(--am-border,#d0d4d9);background:var(--am-bg,#fff);color:var(--am-fg,#333);}',
+      '.am-src-confirm button.am-del{border-color:#c0392b;color:#c0392b;}',
+      '.am-src-confirm .am-src-err{color:#c0392b;font-size:12px;}',
+      '#am-block-notice{position:fixed;z-index:61;display:none;right:12px;bottom:12px;',
+      'max-width:60%;padding:9px 13px;border:1px solid #c0392b;border-radius:7px;',
+      'background:var(--am-bg,#fff);color:#c0392b;font-size:12.5px;',
+      'box-shadow:0 2px 8px rgba(0,0,0,.18);}',
     ].join('');
     document.head.appendChild(style);
 
-    let hoverBlock = null, activeEdit = null, pending = null, btn = null;
+    // activeEdit.mode: 'edit' (textarea replaces block) | 'insert' (textarea
+    // after block) | 'delete' (confirm bar replaces block). Only one at a time.
+    let hoverBlock = null, activeEdit = null, pending = null, tools = null;
 
-    function isEditTarget(b) {
-      return !!(editableMode && b && EDITABLE_TAGS.has(b.tagName)
-        && !b.closest('.agent-skill, summary, figure'));
+    function editableBlock(target) {
+      if (!editableMode || !target || !target.closest) return null;
+      const b = target.closest('[data-track-id]');
+      return isReaderEditable(b) ? b : null;
     }
-    function getBtn() {
-      if (btn) return btn;
-      btn = document.createElement('button');
-      btn.type = 'button';
-      btn.id = 'am-edit-affordance';
-      btn.title = 'Edit this block’s markdown source';
-      btn.textContent = '✎';
-      btn.addEventListener('mousedown', ev => ev.preventDefault());
-      btn.addEventListener('click', ev => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (hoverBlock) startEdit(hoverBlock);
-        hideBtn();
-      });
-      document.documentElement.appendChild(btn);  // outside the morphdom'd body
-      return btn;
+    function getTools() {
+      if (tools) return tools;
+      tools = document.createElement('div');
+      tools.id = 'am-block-tools';
+      const mk = (label, title, cls, fn) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = label; b.title = title;
+        if (cls) b.className = cls;
+        b.addEventListener('mousedown', ev => ev.preventDefault());
+        b.addEventListener('click', ev => {
+          ev.preventDefault(); ev.stopPropagation();
+          const blk = hoverBlock; hideTools(); if (blk) fn(blk);
+        });
+        return b;
+      };
+      tools.appendChild(mk('✎', 'Edit this block’s markdown source', '', startEdit));
+      tools.appendChild(mk('＋', 'Insert a new block below this one', '', startInsert));
+      tools.appendChild(mk('🗑', 'Delete this block', 'am-del', startDelete));
+      document.documentElement.appendChild(tools);  // outside the morphdom'd body
+      return tools;
     }
-    function hideBtn() { if (btn) btn.style.display = 'none'; hoverBlock = null; }
-    function showBtn(b) {
-      const el = getBtn();
+    function hideTools() { if (tools) tools.style.display = 'none'; hoverBlock = null; }
+    function showTools(b) {
+      const el = getTools();
       const r = b.getBoundingClientRect();
       el.style.top = (r.top + 3) + 'px';
-      el.style.left = Math.max(2, r.right - 28) + 'px';
-      el.style.display = 'block';
+      el.style.left = Math.max(2, r.right - 86) + 'px';
+      el.style.display = 'flex';
       hoverBlock = b;
     }
     body.addEventListener('mouseover', ev => {
-      if (activeEdit) return;
-      const b = findBlock(ev.target);
-      if (isEditTarget(b)) showBtn(b);
+      if (activeEdit || pending) return;
+      const b = editableBlock(ev.target);
+      if (b) showTools(b);
     });
     document.addEventListener('mousemove', ev => {
-      if (!btn || btn.style.display === 'none' || activeEdit) return;
-      if (ev.target === btn || (hoverBlock && hoverBlock.contains(ev.target))) return;
-      hideBtn();
+      if (!tools || tools.style.display === 'none' || activeEdit) return;
+      if (tools.contains(ev.target) || (hoverBlock && hoverBlock.contains(ev.target))) return;
+      hideTools();
     });
-    document.addEventListener('scroll', hideBtn, true);
+    document.addEventListener('scroll', hideTools, true);
 
     function autosize(ta) { ta.style.height = 'auto'; ta.style.height = (ta.scrollHeight + 2) + 'px'; }
-
-    function startEdit(block) {
-      if (activeEdit) return;
-      const tid = block.dataset.trackId;
-      if (!tid) return;  // unstamped (shouldn't happen: serve normalizes on load)
-      pending = { tid: tid, block: block };
-      toParent({ type: 'request_block_source', track_id: tid });
-    }
-    function openEditor(tid, source) {
-      if (!pending || pending.tid !== tid) return;
-      const block = pending.block;
-      pending = null;
-      if (!block || !block.isConnected) return;
+    function buildEditor(source, hintText) {
       const wrap = document.createElement('div');
       wrap.className = 'am-src-edit';
       const hint = document.createElement('div');
       hint.className = 'am-src-hint';
-      hint.textContent = 'editing markdown source — Ctrl/⌘+Enter to save · Esc to cancel';
+      hint.textContent = hintText;
       const ta = document.createElement('textarea');
       ta.value = source || '';
       const err = document.createElement('div');
       err.className = 'am-src-err';
       err.style.display = 'none';
-      wrap.appendChild(hint);
-      wrap.appendChild(ta);
-      wrap.appendChild(err);
-      block.replaceWith(wrap);
-      activeEdit = { wrap: wrap, original: block, tid: tid, ta: ta, err: err, saving: false };
-      autosize(ta);
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
+      wrap.appendChild(hint); wrap.appendChild(ta); wrap.appendChild(err);
       ta.addEventListener('input', () => autosize(ta));
       ta.addEventListener('keydown', ev => {
         if (ev.key === 'Escape') { ev.preventDefault(); cancelEdit(); }
         else if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') { ev.preventDefault(); commitEdit(); }
       });
+      return { wrap: wrap, ta: ta, err: err };
     }
+    function focusTa(ta) {
+      autosize(ta); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+
+    function startEdit(block) {
+      if (activeEdit || pending) return;
+      const tid = block.dataset.trackId;
+      if (!tid) return;  // unstamped (shouldn't happen: serve normalizes on load)
+      pending = { tid: tid, block: block };
+      toParent({ type: 'request_block_source', track_id: tid });
+    }
+    function openEditor(tid, source) {       // reply to request_block_source
+      if (!pending || pending.tid !== tid) return;
+      const block = pending.block;
+      pending = null;
+      if (!block || !block.isConnected) return;
+      const e = buildEditor(source, 'editing markdown source — Ctrl/⌘+Enter to save · Esc to cancel');
+      block.replaceWith(e.wrap);
+      activeEdit = { mode: 'edit', wrap: e.wrap, original: block, tid: tid,
+                     ta: e.ta, err: e.err, saving: false };
+      focusTa(e.ta);
+    }
+    function startInsert(block) {
+      if (activeEdit || pending) return;
+      const e = buildEditor('', 'new block markdown — Ctrl/⌘+Enter to insert · Esc to cancel');
+      block.after(e.wrap);
+      activeEdit = { mode: 'insert', wrap: e.wrap, original: null,
+                     afterId: block.dataset.trackId || '', ta: e.ta, err: e.err, saving: false };
+      focusTa(e.ta);
+    }
+    function startDelete(block) {
+      if (activeEdit || pending) return;
+      const tid = block.dataset.trackId;
+      if (!tid) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'am-src-confirm';
+      const label = document.createElement('span');
+      label.textContent = 'Delete this block?';
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'am-del'; del.textContent = 'Delete';
+      const cancel = document.createElement('button');
+      cancel.type = 'button'; cancel.textContent = 'Cancel';
+      const err = document.createElement('span');
+      err.className = 'am-src-err'; err.style.display = 'none';
+      wrap.appendChild(label); wrap.appendChild(del);
+      wrap.appendChild(cancel); wrap.appendChild(err);
+      block.replaceWith(wrap);
+      activeEdit = { mode: 'delete', wrap: wrap, original: block, tid: tid,
+                     ta: null, err: err, saving: false };
+      del.addEventListener('click', commitEdit);
+      cancel.addEventListener('click', cancelEdit);
+      del.focus();
+    }
+
     function commitEdit() {
       if (!activeEdit || activeEdit.saving) return;
+      if (activeEdit.mode === 'insert' && !activeEdit.ta.value.trim()) { cancelEdit(); return; }
       activeEdit.saving = true;
       activeEdit.err.style.display = 'none';
-      toParent({ type: 'save_block_source', track_id: activeEdit.tid, source: activeEdit.ta.value });
-      // Success -> backend broadcasts doc_changed -> setContent re-render
-      // swaps this editor for the saved block (clearActiveEdit). Failure ->
-      // block_source_error keeps the editor open and shows the message.
+      // On success the backend broadcasts doc_changed -> re-render swaps the
+      // editor for the saved/new block (clearActiveEdit). On failure the parent
+      // relays block_op_error, which keeps this editor open with the message.
+      if (activeEdit.mode === 'edit') {
+        toParent({ type: 'save_block_source', track_id: activeEdit.tid, source: activeEdit.ta.value });
+      } else if (activeEdit.mode === 'insert') {
+        toParent({ type: 'insert_block', after_id: activeEdit.afterId, source: activeEdit.ta.value });
+      } else if (activeEdit.mode === 'delete') {
+        toParent({ type: 'delete_block', track_id: activeEdit.tid });
+      }
     }
     function cancelEdit() {
       if (!activeEdit) return;
       if (activeEdit.original && activeEdit.wrap.isConnected) {
-        activeEdit.wrap.replaceWith(activeEdit.original);
+        activeEdit.wrap.replaceWith(activeEdit.original);   // edit / delete: restore
+      } else if (activeEdit.wrap && activeEdit.wrap.isConnected) {
+        activeEdit.wrap.remove();                           // insert: just drop the editor
       }
       activeEdit = null;
     }
-    function showError(tid, msg) {
-      if (!activeEdit || activeEdit.tid !== tid) return;
-      activeEdit.saving = false;
-      activeEdit.err.textContent = msg || 'could not save this block';
-      activeEdit.err.style.display = 'block';
+    let notice = null, noticeTimer = null;
+    function flashNotice(msg) {
+      if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'am-block-notice';
+        document.documentElement.appendChild(notice);
+      }
+      notice.textContent = msg;
+      notice.style.display = 'block';
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => { if (notice) notice.style.display = 'none'; }, 4500);
     }
-    function clearActiveEdit() { activeEdit = null; pending = null; hideBtn(); }
+    function showError(msg) {
+      pending = null;   // a failed op clears any in-flight request (GET or POST)
+      if (!activeEdit) { flashNotice(msg || 'could not complete this edit'); return; }
+      activeEdit.saving = false;
+      activeEdit.err.textContent = msg || 'could not complete this edit';
+      activeEdit.err.style.display = activeEdit.mode === 'delete' ? 'inline' : 'block';
+    }
+    function clearActiveEdit() { activeEdit = null; pending = null; hideTools(); }
 
-    window.__amSrcEdit = { openEditor: openEditor, showError: showError, clearActiveEdit: clearActiveEdit };
+    window.__amSrcEdit = { openEditor: openEditor, showError: showError,
+                           clearActiveEdit: clearActiveEdit };
   })();
 
   // Distinguish "click to focus a block" from "click-and-drag to select
@@ -1552,8 +1621,8 @@ figure.vega script[type="application/json"] { display: none; }
       setEditable(d.on);
     } else if (d.type === 'block_source') {
       if (window.__amSrcEdit) window.__amSrcEdit.openEditor(d.track_id, d.source);
-    } else if (d.type === 'block_source_error') {
-      if (window.__amSrcEdit) window.__amSrcEdit.showError(d.track_id, d.error);
+    } else if (d.type === 'block_op_error') {
+      if (window.__amSrcEdit) window.__amSrcEdit.showError(d.error);
     } else if (d.type === 'scrollToAnchor') {
       const el = document.getElementById(d.id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });

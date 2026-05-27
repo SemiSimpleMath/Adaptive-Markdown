@@ -2615,9 +2615,9 @@ def scenario_inline_source_edit(page, base: str, r: Results) -> None:
             .find(e => /styled/.test(e.textContent || ''));
         p.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     }""")
-    frame.wait_for_selector("#am-edit-affordance", state="visible", timeout=4000)
-    r.assert_("pencil affordance appears on hover", True)
-    frame.eval_on_selector("#am-edit-affordance", "b => b.click()")
+    frame.wait_for_selector("#am-block-tools", state="visible", timeout=4000)
+    r.assert_("edit toolbar appears on hover", True)
+    frame.eval_on_selector("#am-block-tools button", "b => b.click()")  # ✎ is first
     frame.wait_for_selector(".am-src-edit textarea", timeout=5000)
 
     src = frame.eval_on_selector(".am-src-edit textarea", "t => t.value")
@@ -2651,6 +2651,133 @@ def scenario_inline_source_edit(page, base: str, r: Results) -> None:
          and "Untouched paragraph." in disk),
         detail=disk,
     )
+    shutil.rmtree(doc_dir, ignore_errors=True)
+
+
+def scenario_render_invariant(page, base: str, r: Results) -> None:
+    """THE guard against the edge cases we didn't enumerate: stamping ids must
+    not change what the viewer renders. For a doc packed with the hard block
+    types (loose list, <figure> with a blank caption, GFM table, fenced code
+    with a blank line, math, nested <section>), the FULL render pipeline must
+    produce identical HTML from the stamped source and from the same source
+    with ids stripped — modulo the inserted comment nodes."""
+    print("\n[scenario] render(stamped) == render(stripped) invariant")
+    import shutil
+    slug = "smoke-invariant"
+    doc_dir = ROOT / "docs" / slug
+    if doc_dir.exists():
+        shutil.rmtree(doc_dir)
+    doc_dir.mkdir(parents=True)
+    body = (
+        "# Heading\n\n"
+        "Intro paragraph with *emphasis* and math $x^2$.\n\n"
+        "- loose one\n\n- loose two\n- loose three\n\n"
+        "| a | b |\n| - | - |\n| 1 | 2 |\n\n"
+        "```python\nx = 1\n\ny = 2\n```\n\n"
+        '<figure class="c">\n\nA **caption** with a blank line.\n\n</figure>\n\n'
+        '<section class="theorem">\n\nInner prose and $E=mc^2$.\n\n</section>\n\n'
+        "Closing paragraph.\n"
+    )
+    (doc_dir / "current.md").write_text(body, encoding="utf-8", newline="")
+    (doc_dir / "baseline.md").write_text(body, encoding="utf-8", newline="")
+
+    page.goto(base + f"/?doc={slug}")
+    _wait_for_doc_iframe(page)
+    page.wait_for_timeout(400)
+
+    stamped = (doc_dir / "current.md").read_text(encoding="utf-8")
+    r.assert_("doc got stamped on serve (>= 7 ids)",
+              stamped.count("<!-- id:b-") >= 7, detail=stamped)
+    result = page.evaluate(
+        """(body) => {
+            const strip = t => t.split('\\n')
+                .filter(l => !/^<!-- id:b-[A-Z0-9-]+ -->$/.test(l)).join('\\n');
+            const norm = h => h.replace(/<!--[\\s\\S]*?-->/g, '')
+                .replace(/\\s+/g, ' ').trim();
+            const a = norm(window.__amRenderDoc(body));
+            const b = norm(window.__amRenderDoc(strip(body)));
+            return { ok: a === b, a: a.slice(0, 280), b: b.slice(0, 280) };
+        }""",
+        stamped,
+    )
+    r.assert_(
+        "stamping is render-neutral through the full pipeline (lists/figure/math/table)",
+        result.get("ok"),
+        detail="STAMPED: " + str(result.get("a")) + "\nSTRIPPED: " + str(result.get("b")),
+    )
+    shutil.rmtree(doc_dir, ignore_errors=True)
+
+
+def scenario_block_ops_all_types(page, base: str, r: Results) -> None:
+    """Edit-any-block + insert + delete via the hover toolbar — the user-
+    reported gaps. A loose LIST (not just prose) opens in the editor as one
+    unit; ＋ inserts a new block below; 🗑 deletes one."""
+    print("\n[scenario] block ops: edit list / insert / delete")
+    import shutil
+    slug = "smoke-blockops"
+    doc_dir = ROOT / "docs" / slug
+    if doc_dir.exists():
+        shutil.rmtree(doc_dir)
+    doc_dir.mkdir(parents=True)
+    initial = "# Block ops\n\n- alpha\n- beta\n\nA paragraph to delete.\n"
+    (doc_dir / "current.md").write_text(initial, encoding="utf-8", newline="")
+    (doc_dir / "baseline.md").write_text(initial, encoding="utf-8", newline="")
+
+    page.goto(base + f"/?doc={slug}")
+    frame = _wait_for_doc_iframe(page)
+    frame.wait_for_selector("article#body ul[data-track-id]", timeout=10000)
+    page.wait_for_timeout(300)
+
+    # (1) EDIT a LIST — a non-prose block is now editable as one unit.
+    r.assert_("the list (ul) carries a data-track-id (every block is stamped)",
+              frame.evaluate("() => !!document.querySelector('article#body ul[data-track-id]')"))
+    frame.evaluate("""() => document.querySelector('article#body ul[data-track-id]')
+        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))""")
+    frame.wait_for_selector("#am-block-tools", state="visible", timeout=4000)
+    frame.eval_on_selector("#am-block-tools button:nth-child(1)", "b => b.click()")  # edit
+    frame.wait_for_selector(".am-src-edit textarea", timeout=5000)
+    src = frame.eval_on_selector(".am-src-edit textarea", "t => t.value")
+    r.assert_("textarea shows the WHOLE list source", src == "- alpha\n- beta",
+              detail=repr(src))
+    frame.eval_on_selector(
+        ".am-src-edit textarea",
+        "t => { t.value = '- alpha\\n- beta\\n- gamma'; "
+        "t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true})); }")
+    page.wait_for_timeout(1500)
+    disk = (doc_dir / "current.md").read_text(encoding="utf-8")
+    r.assert_("list edit landed (third item added)", "- gamma" in disk, detail=disk)
+
+    # (2) INSERT a new block below the heading.
+    frame.wait_for_selector("article#body h1[data-track-id]", timeout=5000)
+    frame.evaluate("""() => document.querySelector('article#body h1[data-track-id]')
+        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))""")
+    frame.wait_for_selector("#am-block-tools", state="visible", timeout=4000)
+    frame.eval_on_selector("#am-block-tools button:nth-child(2)", "b => b.click()")  # insert
+    frame.wait_for_selector(".am-src-edit textarea", timeout=5000)
+    frame.eval_on_selector(
+        ".am-src-edit textarea",
+        "t => { t.value = 'Freshly inserted paragraph.'; "
+        "t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true})); }")
+    page.wait_for_timeout(1500)
+    disk2 = (doc_dir / "current.md").read_text(encoding="utf-8")
+    r.assert_("inserted block landed with its own id",
+              "Freshly inserted paragraph." in disk2 and disk2.count("<!-- id:b-") >= 4,
+              detail=disk2)
+
+    # (3) DELETE a block via the confirm bar.
+    frame.evaluate("""() => {
+        const p = [...document.querySelectorAll('article#body p[data-track-id]')]
+            .find(e => /paragraph to delete/.test(e.textContent || ''));
+        p.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    }""")
+    frame.wait_for_selector("#am-block-tools", state="visible", timeout=4000)
+    frame.eval_on_selector("#am-block-tools button:nth-child(3)", "b => b.click()")  # delete
+    frame.wait_for_selector(".am-src-confirm", timeout=4000)
+    frame.eval_on_selector(".am-src-confirm button.am-del", "b => b.click()")
+    page.wait_for_timeout(1500)
+    disk3 = (doc_dir / "current.md").read_text(encoding="utf-8")
+    r.assert_("deleted block is gone from source",
+              "A paragraph to delete." not in disk3, detail=disk3)
     shutil.rmtree(doc_dir, ignore_errors=True)
 
 
@@ -3072,6 +3199,8 @@ def main() -> int:
                 run_scenario(scenario_tex_skip_preview)
                 run_scenario(scenario_serve_normalizes)
                 run_scenario(scenario_inline_source_edit)
+                run_scenario(scenario_render_invariant)
+                run_scenario(scenario_block_ops_all_types)
                 run_scenario(scenario_cancel_command)
                 run_scenario(scenario_slash_commands)
                 run_scenario(scenario_export)

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from am_ids import gen_id
 from am_docs import DOC_SLUG_RE, DOCS_ROOT, FRONTMATTER_RE
+from am_blocks import block_spans, block_starts
 
 _HEADING_LINE_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s*\{([^}]+)\})?\s*$")
 _TRACK_COMMENT_RE = re.compile(r"^\s*<!--\s*id\s*:\s*(b-[A-Z0-9-]+)\s*-->\s*$", re.IGNORECASE)
@@ -278,6 +279,133 @@ def _find_block_span(
     return (idx, end, "paragraph")
 
 
+def block_source_span(text: str, track_id: str) -> tuple[int, int, int] | None:
+    """Locate a block by its tracking id and return file-line indices
+    ``(id_line, start, end)``: the line holding the block's ``<!-- id -->``
+    comment, and the ``[start, end)`` source lines of the block itself (the
+    comment excluded, trailing blank lines trimmed).
+
+    Works for EVERY top-level block type because the extent comes from
+    am_blocks (the renderer's own grammar): the block is whatever top-level
+    span begins on the first content line after the comment — a paragraph, a
+    whole loose list, a fenced block, a GFM table, or a merged <figure>.
+    Returns None if the id isn't present in the source.
+    """
+    m = FRONTMATTER_RE.match(text)
+    fm_lines = text[: m.end()].count("\n") if m else 0
+    body = text[m.end():] if m else text
+    blines = body.split("\n")
+
+    # Find the TOP-LEVEL id comment for this id — fence/raw-aware, like the
+    # stamper and strip_block_ids. A literal `<!-- id:b-... -->` line inside a
+    # fenced code sample or a <script>/<style> body (an AM-format tutorial!) is
+    # NOT a real handle and must not resolve to — and then edit/delete — the
+    # wrong block.
+    cid = None
+    in_fence = False
+    fence_marker = ""
+    raw_tag: str | None = None
+    for i, ln in enumerate(blines):
+        if in_fence:
+            fm = _FENCE_RE.match(ln)
+            if (fm and not fm.group(3).strip()
+                    and fm.group(2)[0] == fence_marker[0]
+                    and len(fm.group(2)) >= len(fence_marker)):
+                in_fence = False
+            continue
+        if raw_tag is not None:
+            raw_tag = _scan_line_raw(ln, raw_tag)
+            continue
+        fm = _FENCE_RE.match(ln)
+        if fm:
+            in_fence, fence_marker = True, fm.group(2)
+            continue
+        if re.match(r"^ {0,3}<", ln):
+            nt = _scan_line_raw(ln, None)
+            if nt is not None:
+                raw_tag = nt
+                continue
+        mm = _TRACK_COMMENT_RE.match(ln)
+        if mm and mm.group(1).upper() == track_id.upper():
+            cid = i
+            break
+    if cid is None:
+        return None
+
+    # The block is the first top-level span beginning after the comment line.
+    for s, e, _k in block_spans(body):
+        if s > cid:
+            end = e
+            while end > s and not blines[end - 1].strip():
+                end -= 1
+            return (cid + fm_lines, s + fm_lines, end + fm_lines)
+    return None
+
+
+# --- pure source mutations (the route handlers are thin wrappers) -----------
+# All take and return LF-normalized text; the caller validates / snapshots /
+# writes. Keeping them pure makes the edit/insert/delete logic unit-testable
+# without spinning up the HTTP layer.
+
+
+def replace_block_source(text: str, track_id: str, new_source: str) -> str | None:
+    """Replace a block's source span with `new_source` verbatim, then re-stamp
+    so any sub-blocks the edit introduced (a paragraph turned into a list, say)
+    get their own ids. None if the id isn't present."""
+    span = block_source_span(text, track_id)
+    if span is None:
+        return None
+    # Drop any top-level id comment pasted into the fragment (a forged handle);
+    # the system re-stamps the canonical one. Fence-aware, so an in-fence sample
+    # id the reader is legitimately editing survives.
+    new_source = strip_block_ids(new_source)
+    _id_line, start, end = span
+    lines = text.split("\n")
+    full = "\n".join(lines[:start] + new_source.split("\n") + lines[end:])
+    return ensure_block_ids_text(full)[0]
+
+
+def delete_block_source(text: str, track_id: str) -> str | None:
+    """Remove a block entirely — its id comment, its body, and one trailing
+    blank separator. None if the id isn't present."""
+    span = block_source_span(text, track_id)
+    if span is None:
+        return None
+    id_line, _start, end = span
+    lines = text.split("\n")
+    del lines[id_line:end]
+    if id_line < len(lines) and not lines[id_line].strip():
+        del lines[id_line]
+    return "\n".join(lines)
+
+
+def insert_block_source(
+    text: str, after_id: str, source: str, new_id: str,
+) -> str | None:
+    """Insert a new block carrying `new_id`. With `after_id` it lands right
+    after that block; with after_id empty it lands at the top of the body
+    (after frontmatter). Re-stamps so sub-blocks in `source` are editable.
+    None only if `after_id` is given but not found."""
+    source = strip_block_ids(source)   # forged-handle hygiene (see replace_*)
+    lines = text.split("\n")
+    if after_id:
+        span = block_source_span(text, after_id)
+        if span is None:
+            return None
+        _id_line, _start, end = span
+        new_lines = ["", f"<!-- id:{new_id} -->"] + source.split("\n")
+        lines[end:end] = new_lines
+        after = end + len(new_lines)
+        if after < len(lines) and lines[after].strip():
+            lines.insert(after, "")
+    else:
+        m = FRONTMATTER_RE.match(text)
+        fm_lines = text[: m.end()].count("\n") if m else 0
+        lines[fm_lines:fm_lines] = (
+            [f"<!-- id:{new_id} -->"] + source.split("\n") + [""])
+    return ensure_block_ids_text("\n".join(lines))[0]
+
+
 def _aliases_path(doc_path: Path) -> Path:
     return doc_path.with_suffix(doc_path.suffix + ".id-aliases.json")
 
@@ -383,126 +511,53 @@ async def detect_id_drift(doc_path: Path, before_text: str) -> None:
 # ---------------------------------------------------------------------------
 # Eager block-id normalization.
 #
-# Inline-edit and insertion locate a block by its stable <!-- id:b-... -->
-# tracking comment, not by fuzzy text matching. For that to be reliable the
-# id must already be present, so the system stamps one before every top-level
-# heading and paragraph. System-maintained — the agent never hand-authors
-# these. The block model is the shared CommonMark-aware classifier above, so
-# the stamper and the locator agree by construction.
+# Inline edit / insert / delete locate a block by its stable <!-- id:b-... -->
+# tracking comment, not by fuzzy text matching. For that to be reliable the id
+# must already be present, so the system stamps one before EVERY top-level
+# block. System-maintained — the agent never hand-authors these.
 #
-# SAFETY (load-bearing): a <!-- ... --> comment is harmless inside
-# <section>/<figure>/<aside> (every renderer ignores comments), but inside a
-# fenced code block it renders as literal text / breaks the fence, and inside
-# a <script>/<style>/<pre> body it corrupts the code and fails JS validation.
-# Those two opaque region kinds are masked wholesale (they legitimately
-# contain blank lines) and never stamped inside — including a raw tag that
-# rides behind a wrapper on the same line, e.g. `<figure><script>`.
+# Where each block begins comes from am_blocks.block_starts — the markdown-it
+# grammar the viewer renders with — so the stamper and the renderer agree by
+# construction (no second, weaker block parser to drift). The id comment sits
+# on its own line immediately before the block; because block_starts reports
+# the OUTER start of each top-level block (containers whole, structural HTML
+# merged), we never land inside a list, a fenced / raw region, or a <figure>
+# body. The invariant `render(stamp(doc)) == render(doc)` (modulo comment
+# nodes), checked in browser_smoke against the real viewer, guards this for
+# every input — including the grammar corners we didn't enumerate.
 # ---------------------------------------------------------------------------
 
 
 def ensure_block_ids_text(text: str) -> tuple[str, int]:
     """Return (normalized_text, n_added): stamp a tracking id before every
-    top-level heading and paragraph that lacks one. Idempotent and strictly
-    additive (only ever inserts `<!-- id:b-... -->` lines). Safe across YAML
-    frontmatter, fenced code, and raw <script>/<style>/<pre> blocks. Expects
+    top-level block that lacks one. Idempotent and strictly additive (only
+    ever inserts `<!-- id:b-... -->` lines). Safe across YAML frontmatter,
+    fenced code, raw <script>/<style>/<pre>, and structural HTML blocks,
+    because the block boundaries come from the renderer's own grammar. Expects
     LF-normalized input."""
     m = FRONTMATTER_RE.match(text)
     prefix = text[: m.end()] if m else ""
     body = text[m.end():] if m else text
 
-    out: list[str] = []
+    lines = body.split("\n")
     added = 0
-    in_fence = False
-    fence_marker = ""
-    raw_tag: str | None = None       # open raw <script>/<style>/<pre> tag, if any
-    at_boundary = True               # a block may begin on this line
-    last_was_track_comment = False
-
-    def stamp():
-        nonlocal added
-        if not last_was_track_comment:
-            out.append(f"<!-- id:{gen_id('b')} -->")
-            added += 1
-
-    for line in body.split("\n"):
-        # --- opaque regions: copy verbatim, never stamp inside, blank lines
-        #     inside them do NOT open a boundary ---
-        if in_fence:
-            out.append(line)
-            fm = _FENCE_RE.match(line)
-            if (fm and not fm.group(3).strip()
-                    and fm.group(2)[0] == fence_marker[0]
-                    and len(fm.group(2)) >= len(fence_marker)):
-                in_fence, at_boundary = False, True   # a block may start after
+    # Insert bottom-up so earlier indices stay valid as we mutate `lines`.
+    for s in sorted(set(block_starts(body)), reverse=True):
+        # A stamped id comment itself parses as a top-level block; never stamp
+        # before one — this is what keeps repeated passes idempotent.
+        if _TRACK_COMMENT_RE.match(lines[s]):
             continue
-        if raw_tag is not None:
-            # Inside a raw region: scan for close(s) and any reopen on this
-            # line (handles </script><script>). Never stamp inside.
-            raw_tag = _scan_line_raw(line, raw_tag)
-            out.append(line)
-            if raw_tag is None:
-                at_boundary = True
+        # Idempotency: skip if the nearest preceding non-blank line is already
+        # this block's tracking comment.
+        j = s - 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        if j >= 0 and _TRACK_COMMENT_RE.match(lines[j]):
             continue
+        lines.insert(s, f"<!-- id:{gen_id('b')} -->")
+        added += 1
 
-        if not line.strip():
-            # A blank opens a boundary but does NOT clear "previous block had
-            # an id" — `<!-- id -->\n\n## H` still means H is id'd.
-            out.append(line)
-            at_boundary = True
-            continue
-
-        # --- openers of opaque regions (checked before classification so a
-        #     `<figure><script>` body is masked regardless of the wrapper) ---
-        fm = _FENCE_RE.match(line)
-        if fm:
-            in_fence, fence_marker = True, fm.group(2)
-            out.append(line)
-            at_boundary, last_was_track_comment = False, False
-            continue
-        # Raw open — only on a top-level HTML line (<=3 spaces indent, per
-        # CommonMark) so prose like "use the `<script>` tag" can't trip it and
-        # a 4-space-indented code sample is left to the classifier.
-        if re.match(r"^ {0,3}<", line):
-            nt = _scan_line_raw(line, None)
-            if nt is not None:
-                raw_tag = nt
-                out.append(line)
-                at_boundary, last_was_track_comment = False, False
-                continue
-        if _TRACK_COMMENT_RE.match(line):
-            out.append(line)
-            at_boundary, last_was_track_comment = True, True
-            continue
-
-        # --- classification (shared with the locator) ---
-        # An ATX heading always begins its own block (it interrupts a
-        # paragraph), so it's stampable regardless of an intervening blank —
-        # this is what fixes `text\n# H` and `# H1\n## H2`.
-        if _atx_heading(line):
-            stamp()
-            out.append(line)
-            at_boundary, last_was_track_comment = True, False
-            continue
-
-        if at_boundary:
-            if _nonparagraph_block_start(line):
-                # list / quote / table / hr / block-HTML / indented code:
-                # never stamped, never recursed into.
-                out.append(line)
-                at_boundary, last_was_track_comment = False, False
-                continue
-            # A real paragraph — including one that starts with inline HTML
-            # (<em>…), which the old first-char heuristic wrongly skipped.
-            stamp()
-            out.append(line)
-            at_boundary, last_was_track_comment = False, False
-            continue
-
-        # Continuation line of the current block — copy, never stamp.
-        out.append(line)
-        last_was_track_comment = False
-
-    return prefix + "\n".join(out), added
+    return prefix + "\n".join(lines), added
 
 
 def ensure_block_ids_for(path: Path) -> int:

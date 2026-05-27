@@ -3,6 +3,10 @@
 
 aiohttp>=3.8,<4
 claude-agent-sdk>=0.1.81,<0.2
+# Block-boundary detection for the id-stamper and the inline source editor.
+# A port of the same markdown-it engine the viewer renders with, so the
+# backend agrees with the frontend on where each top-level block begins.
+markdown-it-py>=3,<4
 
 # Optional: enables server-side conversion of PDF / DOCX / PPTX drops
 # into adaptive-markdown. If absent, those uploads return 501; .md / .tex /

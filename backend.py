@@ -95,7 +95,7 @@ from am_hooks import init_runtime, shutdown_runtime  # noqa: E402
 from am_origin import _check_static_origin  # noqa: E402
 from am_routes import (  # noqa: E402
     list_history, undo_doc, restore_snapshot,
-    get_block_source, set_block_source,
+    get_block_source, set_block_source, delete_block, insert_block,
     list_pending, accept_pending, reject_pending,
     list_doc_skills, update_doc_skill, delete_doc_skill,
     add_doc_skill, reset_doc, save_baseline, set_api_key,
@@ -416,6 +416,8 @@ def make_app() -> web.Application:
     app.router.add_delete("/components/{slug}", delete_component)
     app.router.add_get("/block-source", get_block_source)
     app.router.add_post("/block-source", set_block_source)
+    app.router.add_post("/delete-block", delete_block)
+    app.router.add_post("/insert-block", insert_block)
     app.router.add_post("/add-doc-skill", add_doc_skill)
     app.router.add_get("/doc-skills", list_doc_skills)
     app.router.add_post("/update-doc-skill", update_doc_skill)

@@ -385,7 +385,7 @@ These are human-meaningful slugs. Other parts of the doc reference them with `[R
 ## Theorem (Rolle's Theorem) {#rolle}
 ```
 
-You will see one before nearly every top-level heading and paragraph. The backend stamps them **eagerly and automatically** every time `current.md` is written — including right after your turn — so blocks can be located by a stable id instead of by fuzzy text matching. **You never write, move, or edit these yourself.** Don't add `<!-- id:b-... -->` comments of your own, and don't try to tag new blocks you create — leave new content untagged and the system stamps it once your turn finishes. (Fenced code, `<script>`/`<style>` bodies, lists, and tables are intentionally left unstamped.)
+You will see one before nearly every top-level block (paragraphs, headings, lists, tables, fenced code, and whole `<figure>` / `<section>` units). The backend stamps them **eagerly and automatically** every time `current.md` is written — including right after your turn — so blocks can be located by a stable id instead of by fuzzy text matching. **You never write, move, or edit these yourself.** Don't add `<!-- id:b-... -->` comments of your own, and don't try to tag new blocks you create — leave new content untagged and the system stamps it once your turn finishes. (The ID always sits *before* a block; it is never placed inside a fenced code block, a `<script>`/`<style>` body, or a figure's interior.)
 
 **The `doc_id` in frontmatter** (e.g., `doc_id: d-01HQVE7E9KMX2BNF`) is the document-level equivalent — sticky, preserves identity across renames.
 

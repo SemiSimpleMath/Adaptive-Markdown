@@ -2115,6 +2115,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       requestBlockSource(data.track_id);
     } else if (data.type === 'save_block_source') {
       saveBlockSource(data.track_id, data.source);
+    } else if (data.type === 'delete_block') {
+      deleteBlockSrc(data.track_id);
+    } else if (data.type === 'insert_block') {
+      insertBlockSrc(data.after_id, data.source);
     }
   });
 
@@ -2130,13 +2134,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (!resp.ok) {
         let err = `block-source: ${resp.status}`;
         try { const j = await resp.json(); if (j.error) err = j.error; } catch (_) {}
-        sendToFrame({ type: 'block_source_error', track_id: trackId, error: err });
+        sendToFrame({ type: 'block_op_error', error: err });
         return;
       }
       const j = await resp.json();
       sendToFrame({ type: 'block_source', track_id: trackId, source: j.source || '' });
     } catch (e) {
-      sendToFrame({ type: 'block_source_error', track_id: trackId, error: String(e.message || e) });
+      sendToFrame({ type: 'block_op_error', error: String(e.message || e) });
     }
   }
 
@@ -2162,10 +2166,58 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
               .join('; ');
           }
         } catch (_) {}
-        sendToFrame({ type: 'block_source_error', track_id: trackId, error: err });
+        sendToFrame({ type: 'block_op_error', error: err });
       }
     } catch (e) {
-      sendToFrame({ type: 'block_source_error', track_id: trackId, error: String(e.message || e) });
+      sendToFrame({ type: 'block_op_error', error: String(e.message || e) });
+    }
+  }
+
+  // Extract a human error (message + validator details) from a failed
+  // block-op response, for the iframe to surface in its editor / confirm bar.
+  async function _opError(resp, label) {
+    let err = label + ': ' + resp.status;
+    try {
+      const j = await resp.json();
+      if (j.error) err = j.error;
+      if (Array.isArray(j.details) && j.details.length) {
+        err += ' — ' + j.details
+          .map(d => `[${d.kind || '?'} line ${d.line}] ${d.message}`).join('; ');
+      }
+    } catch (_) {}
+    return err;
+  }
+
+  // Delete a block (POST /delete-block). Success -> backend broadcasts
+  // doc_changed -> re-render drops it. Failure -> relay so the iframe's
+  // confirm bar shows the message.
+  async function deleteBlockSrc(trackId) {
+    if (!currentDoc || !trackId) return;
+    try {
+      const resp = await fetch('/delete-block', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc: currentDoc, id: trackId }),
+      });
+      if (!resp.ok) sendToFrame({ type: 'block_op_error', error: await _opError(resp, 'delete-block') });
+    } catch (e) {
+      sendToFrame({ type: 'block_op_error', error: String(e.message || e) });
+    }
+  }
+
+  // Insert a new block after `afterId` (empty -> top of the body). Success ->
+  // doc_changed -> re-render shows the new block. Failure -> relay.
+  async function insertBlockSrc(afterId, source) {
+    if (!currentDoc) return;
+    try {
+      const resp = await fetch('/insert-block', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc: currentDoc, after_id: afterId || '', source: source || '' }),
+      });
+      if (!resp.ok) sendToFrame({ type: 'block_op_error', error: await _opError(resp, 'insert-block') });
+    } catch (e) {
+      sendToFrame({ type: 'block_op_error', error: String(e.message || e) });
     }
   }
 
