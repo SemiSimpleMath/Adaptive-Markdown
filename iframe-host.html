@@ -188,7 +188,6 @@ figure.vega script[type="application/json"] { display: none; }
 <script src="https://cdn.jsdelivr.net/npm/morphdom@2.7.4/dist/morphdom-umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
 
 <script>
 (function(){
@@ -379,10 +378,10 @@ figure.vega script[type="application/json"] { display: none; }
   // Wrap each `$...$` / `$$...$$` math source in a span carrying the
   // original markdown delimiters as `data-source`. KaTeX still renders
   // inside the wrapper (auto-render walks text nodes, doesn't care about
-  // the surrounding span); the wrapper's data-source attribute survives,
-  // and turndown's custom rule (see getTurndown) reads it back out so
-  // inline-edit round-trip preserves math instead of clobbering it with
-  // raw `<span class="katex">...` markup.
+  // the surrounding span); the data-source attribute lets selection
+  // signatures (sourceEquivalentText / blockInfo) recover the original
+  // `$...$` instead of the rendered KaTeX glyph soup, so click-to-focus
+  // matches the source.
   function protectMathSource(root) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
@@ -975,50 +974,6 @@ figure.vega script[type="application/json"] { display: none; }
     }
   }
 
-  // ---- turndown: HTML -> markdown for round-trip inline edits -----------
-  // Without this, inline edit replaces the entire block's markdown source
-  // with the plain-text content of the block — fine for simple prose, but
-  // any `**bold**`, `_italic_`, `[link]`, `` `code` `` in the block gets
-  // clobbered into plain text on the next blur. turndown converts the
-  // edited HTML back into markdown, so inline emphasis survives.
-  //
-  // Custom rule for `.am-math-keep` reads the `data-source` attribute set
-  // by protectMathSource so `$x^2$` and friends round-trip intact instead
-  // of becoming raw KaTeX HTML in the source.
-  let _turndown = null;
-  function getTurndown() {
-    if (_turndown !== null) return _turndown;
-    if (!window.TurndownService) { _turndown = false; return null; }
-    const td = new window.TurndownService({
-      headingStyle: 'atx',
-      bulletListMarker: '-',
-      codeBlockStyle: 'fenced',
-      emDelimiter: '_',
-      strongDelimiter: '**',
-      linkStyle: 'inlined',
-    });
-    td.addRule('am-math-keep', {
-      filter: function (node) {
-        return node.nodeType === 1
-          && node.classList && node.classList.contains('am-math-keep');
-      },
-      replacement: function (content, node) {
-        return node.getAttribute('data-source') || content;
-      },
-    });
-    _turndown = td;
-    return td;
-  }
-
-  function blockToMarkdown(block) {
-    const td = getTurndown();
-    if (!td) return block.innerText;
-    try {
-      return td.turndown(block.innerHTML).trim();
-    } catch (e) {
-      return block.innerText;
-    }
-  }
 
   // ---- Block / selection / insertion -------------------------------------
   // Predicate for "selectable block". A reader-meaningful unit the agent
@@ -1185,11 +1140,11 @@ figure.vega script[type="application/json"] { display: none; }
     const blocks = body.querySelectorAll('p, h1, h2, h3, h4, h5, h6');
     for (const block of blocks) {
       if (block.closest('.agent-skill, summary, figure')) continue;
-      if (editableMode && EDITABLE_TAGS.has(block.tagName)) {
-        block.setAttribute('contenteditable', 'plaintext-only');
-      } else {
-        block.removeAttribute('contenteditable');
-      }
+      // Source-edit replaces contenteditable: mark editable blocks so the
+      // pencil-on-hover affordance knows which it can open. The reader edits
+      // the block's markdown SOURCE (in a textarea), never the rendered DOM.
+      block.classList.toggle(
+        'am-editable', editableMode && EDITABLE_TAGS.has(block.tagName));
     }
   }
 
@@ -1198,73 +1153,140 @@ figure.vega script[type="application/json"] { display: none; }
     applyEditableMode();
   }
 
-  // Snapshot the block's original blockInfo signature when it gains focus.
-  // The signature (label / excerpt) is derived from the block's text, so
-  // capturing AFTER the edit makes the backend unable to find the source
-  // block. We stash the pre-edit signature on the element via a WeakMap.
-  const _editFocusInfo = new WeakMap();
 
-  // Tight contract for inline-edit eligibility — must match the
-  // attribute applyEditableMode sets AND be a tag we registered. Widgets
-  // can legitimately use `contenteditable=true` or `contenteditable=""`
-  // on their own custom editor elements (a JSON editor, a label
-  // rename, etc.); those should NOT route through AM's block-edit
-  // pipeline. Without this narrowing, focusin on a widget's editor
-  // would capture state and focusout would POST /edit-block — which
-  // the backend rejects because the widget element isn't a paragraph
-  // or heading in the source markdown, producing the user-facing
-  // "could not locate or refusing to inline-edit this block" error.
-  function isAmInlineEditTarget(block) {
-    if (!block) return false;
-    if (!EDITABLE_TAGS.has(block.tagName)) return false;
-    if (block.getAttribute('contenteditable') !== 'plaintext-only') return false;
-    // Don't inline-edit blocks that contain interactive widget elements
-    // (buttons, inputs, custom contenteditables). Markdown-it can wrap a
-    // widget's body in <p> during structural-block recursive render —
-    // when the widget's JS mutates its readout/state, the wrapping <p>'s
-    // textContent changes, focusout fires, and /edit-block POSTs a
-    // signature the backend can't locate (buttons aren't in the source).
-    // The root-cause fix is in the renderer; this is a belt that catches
-    // future cases regardless.
-    if (block.querySelector(
-      'button, input, select, textarea, [contenteditable], canvas, svg'
-    )) {
-      return false;
+  // ---- Inline source edit (pencil on hover -> edit the block's markdown) --
+  // Replaces the old contenteditable + turndown path. We never serialize the
+  // rendered DOM back to markdown: the pencil fetches the block's EXACT .md
+  // source (via the parent -> GET /block-source), swaps the rendered block
+  // for a <textarea> of that source in place, and posts the edited source
+  // back. Lossless by construction — styled spans, math, and spacing survive
+  // because there is no DOM->markdown reconstruction anywhere.
+  (function initSourceEdit() {
+    const style = document.createElement('style');
+    style.textContent = [
+      '#am-edit-affordance{position:fixed;z-index:60;display:none;width:26px;height:26px;',
+      'line-height:24px;text-align:center;cursor:pointer;font-size:14px;padding:0;',
+      'border:1px solid var(--am-border,#d0d4d9);border-radius:6px;background:var(--am-bg,#fff);',
+      'color:var(--am-fg,#333);box-shadow:0 1px 4px rgba(0,0,0,.12);}',
+      '#am-edit-affordance:hover{background:var(--am-accent,#2a6df5);color:#fff;}',
+      '.am-editable{cursor:text;}',
+      '.am-src-edit{margin:.2em 0;}',
+      '.am-src-edit .am-src-hint{font-size:11.5px;color:var(--am-accent,#2a6df5);font-weight:600;margin:0 0 4px;}',
+      '.am-src-edit textarea{width:100%;box-sizing:border-box;font:13.5px/1.55 ui-monospace,Consolas,monospace;',
+      'color:var(--am-fg,#222);background:var(--am-bg,#fff);border:1px solid var(--am-accent,#2a6df5);',
+      'border-radius:6px;padding:9px 11px;resize:none;overflow:hidden;outline:none;}',
+      '.am-src-edit .am-src-err{color:#c0392b;font-size:12px;margin-top:5px;white-space:pre-wrap;}',
+    ].join('');
+    document.head.appendChild(style);
+
+    let hoverBlock = null, activeEdit = null, pending = null, btn = null;
+
+    function isEditTarget(b) {
+      return !!(editableMode && b && EDITABLE_TAGS.has(b.tagName)
+        && !b.closest('.agent-skill, summary, figure'));
     }
-    return true;
-  }
+    function getBtn() {
+      if (btn) return btn;
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.id = 'am-edit-affordance';
+      btn.title = 'Edit this block’s markdown source';
+      btn.textContent = '✎';
+      btn.addEventListener('mousedown', ev => ev.preventDefault());
+      btn.addEventListener('click', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (hoverBlock) startEdit(hoverBlock);
+        hideBtn();
+      });
+      document.documentElement.appendChild(btn);  // outside the morphdom'd body
+      return btn;
+    }
+    function hideBtn() { if (btn) btn.style.display = 'none'; hoverBlock = null; }
+    function showBtn(b) {
+      const el = getBtn();
+      const r = b.getBoundingClientRect();
+      el.style.top = (r.top + 3) + 'px';
+      el.style.left = Math.max(2, r.right - 28) + 'px';
+      el.style.display = 'block';
+      hoverBlock = b;
+    }
+    body.addEventListener('mouseover', ev => {
+      if (activeEdit) return;
+      const b = findBlock(ev.target);
+      if (isEditTarget(b)) showBtn(b);
+    });
+    document.addEventListener('mousemove', ev => {
+      if (!btn || btn.style.display === 'none' || activeEdit) return;
+      if (ev.target === btn || (hoverBlock && hoverBlock.contains(ev.target))) return;
+      hideBtn();
+    });
+    document.addEventListener('scroll', hideBtn, true);
 
-  body.addEventListener('focusin', e => {
-    const block = findBlock(e.target);
-    if (!isAmInlineEditTarget(block)) return;
-    if (!_editFocusInfo.has(block)) {
-      _editFocusInfo.set(block, {
-        origMarkdown: blockToMarkdown(block),
-        sig: blockInfo(block),
+    function autosize(ta) { ta.style.height = 'auto'; ta.style.height = (ta.scrollHeight + 2) + 'px'; }
+
+    function startEdit(block) {
+      if (activeEdit) return;
+      const tid = block.dataset.trackId;
+      if (!tid) return;  // unstamped (shouldn't happen: serve normalizes on load)
+      pending = { tid: tid, block: block };
+      toParent({ type: 'request_block_source', track_id: tid });
+    }
+    function openEditor(tid, source) {
+      if (!pending || pending.tid !== tid) return;
+      const block = pending.block;
+      pending = null;
+      if (!block || !block.isConnected) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'am-src-edit';
+      const hint = document.createElement('div');
+      hint.className = 'am-src-hint';
+      hint.textContent = 'editing markdown source — Ctrl/⌘+Enter to save · Esc to cancel';
+      const ta = document.createElement('textarea');
+      ta.value = source || '';
+      const err = document.createElement('div');
+      err.className = 'am-src-err';
+      err.style.display = 'none';
+      wrap.appendChild(hint);
+      wrap.appendChild(ta);
+      wrap.appendChild(err);
+      block.replaceWith(wrap);
+      activeEdit = { wrap: wrap, original: block, tid: tid, ta: ta, err: err, saving: false };
+      autosize(ta);
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.addEventListener('input', () => autosize(ta));
+      ta.addEventListener('keydown', ev => {
+        if (ev.key === 'Escape') { ev.preventDefault(); cancelEdit(); }
+        else if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') { ev.preventDefault(); commitEdit(); }
       });
     }
-  });
+    function commitEdit() {
+      if (!activeEdit || activeEdit.saving) return;
+      activeEdit.saving = true;
+      activeEdit.err.style.display = 'none';
+      toParent({ type: 'save_block_source', track_id: activeEdit.tid, source: activeEdit.ta.value });
+      // Success -> backend broadcasts doc_changed -> setContent re-render
+      // swaps this editor for the saved block (clearActiveEdit). Failure ->
+      // block_source_error keeps the editor open and shows the message.
+    }
+    function cancelEdit() {
+      if (!activeEdit) return;
+      if (activeEdit.original && activeEdit.wrap.isConnected) {
+        activeEdit.wrap.replaceWith(activeEdit.original);
+      }
+      activeEdit = null;
+    }
+    function showError(tid, msg) {
+      if (!activeEdit || activeEdit.tid !== tid) return;
+      activeEdit.saving = false;
+      activeEdit.err.textContent = msg || 'could not save this block';
+      activeEdit.err.style.display = 'block';
+    }
+    function clearActiveEdit() { activeEdit = null; pending = null; hideBtn(); }
 
-  body.addEventListener('focusout', e => {
-    const block = findBlock(e.target);
-    if (!block) return;
-    const info = _editFocusInfo.get(block);
-    if (!info) return;
-    const next = blockToMarkdown(block);
-    _editFocusInfo.delete(block);
-    if (next.trim() === info.origMarkdown.trim()) return;
-    // Drop the new markdown + the pre-edit signature to the parent. The
-    // parent POSTs to /edit-block, the backend writes through snapshot +
-    // validate. turndown gives us bold / italic / inline-code / links /
-    // math (via am-math-keep) preserved across the edit; whatever the
-    // browser puts in the DOM that turndown can't handle falls through
-    // as its underlying text.
-    toParent({
-      type: 'block_edit',
-      block: info.sig,
-      new_text: next,
-    });
-  });
+    window.__amSrcEdit = { openEditor: openEditor, showError: showError, clearActiveEdit: clearActiveEdit };
+  })();
 
   // Distinguish "click to focus a block" from "click-and-drag to select
   // text" by checking the selection state at click time. By the time the
@@ -1374,6 +1396,10 @@ figure.vega script[type="application/json"] { display: none; }
     const se = document.scrollingElement || document.documentElement;
     const sy = se.scrollTop;
     clearInsertionMarker();
+    // A re-render supersedes any open inline source editor (save success or an
+    // external change) — drop our handle; morphdom swaps the editor node for
+    // the freshly-rendered block.
+    if (window.__amSrcEdit) window.__amSrcEdit.clearActiveEdit();
     const oldScripts = new Map();
     body.querySelectorAll('script').forEach(s => oldScripts.set(scriptKey(s), s));
     const tmp = document.createElement('article');
@@ -1383,16 +1409,6 @@ figure.vega script[type="application/json"] { display: none; }
       window.morphdom(body, tmp, {
         childrenOnly: true,
         onBeforeElUpdated(f, t) {
-          // Never reconcile the block the reader is actively editing: a
-          // doc_changed re-render triggered by some OTHER block's edit (or by
-          // the post-turn id stamp) would otherwise revert the in-progress
-          // text and yank the caret. The editor's own blur -> /edit-block
-          // path is what persists it.
-          if (f.nodeType === 1 && f.isContentEditable &&
-              (f === document.activeElement ||
-               (document.activeElement && f.contains(document.activeElement)))) {
-            return false;
-          }
           // Music blocks: when the source hasn't changed, leave the
           // rendered notation alone instead of letting morphdom overwrite
           // it with the raw markdown source. We re-render only when the
@@ -1534,6 +1550,10 @@ figure.vega script[type="application/json"] { display: none; }
       clearInsertionMarker();
     } else if (d.type === 'setEditable') {
       setEditable(d.on);
+    } else if (d.type === 'block_source') {
+      if (window.__amSrcEdit) window.__amSrcEdit.openEditor(d.track_id, d.source);
+    } else if (d.type === 'block_source_error') {
+      if (window.__amSrcEdit) window.__amSrcEdit.showError(d.track_id, d.error);
     } else if (d.type === 'scrollToAnchor') {
       const el = document.getElementById(d.id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });

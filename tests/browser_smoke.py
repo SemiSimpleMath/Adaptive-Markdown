@@ -1164,10 +1164,15 @@ def scenario_pending_review(page, base: str, r: Results) -> None:
         ".some(b => /Review/.test(b.textContent || ''))",
         timeout=3000,
     )
+    # current.md carries serve-stamped block ids; compare content modulo them.
+    import re as _re
+    def _no_ids(t):
+        return "\n".join(ln for ln in t.split("\n")
+                         if not _re.match(r"^<!-- id:b-[A-Z0-9-]+ -->$", ln))
     after_accept_current = (doc_dir / "current.md").read_text(encoding="utf-8")
     r.assert_(
-        "current.md unchanged after Accept (bytes already landed)",
-        after_accept_current == current_body,
+        "current.md content unchanged after Accept (modulo block ids)",
+        _no_ids(after_accept_current) == _no_ids(current_body),
         detail=after_accept_current[:200],
     )
     r.assert_(
@@ -1214,8 +1219,8 @@ def scenario_pending_review(page, base: str, r: Results) -> None:
     )
     after_reject_current = (doc_dir / "current.md").read_text(encoding="utf-8")
     r.assert_(
-        "current.md restored to old_text after Reject",
-        after_reject_current == old_body,
+        "current.md restored to old_text after Reject (modulo block ids)",
+        _no_ids(after_reject_current) == _no_ids(old_body),
         detail=after_reject_current[:200],
     )
     r.assert_(
@@ -2381,140 +2386,6 @@ def scenario_export(page, base: str, r: Results) -> None:
     )
 
 
-def scenario_inline_edit(page, base: str, r: Results) -> None:
-    """Reader edits a paragraph in the doc view directly. Verify:
-    - paragraphs and headings get contenteditable when agent is idle
-    - lists/code/HTML-blocks don't
-    - blur dispatches POST /edit-block
-    - backend writes through to current.md
-    - validator rejection / non-supported-block-type rejection returns 422
-    """
-    print("\n[scenario] inline edit (plaintext-only)")
-
-    # Use a throwaway doc so we can verify on-disk writes without
-    # contaminating the intro example.
-    import shutil
-    slug = "smoke-inline-edit"
-    doc_dir = ROOT / "docs" / slug
-    if doc_dir.exists():
-        shutil.rmtree(doc_dir)
-    doc_dir.mkdir(parents=True)
-    initial = (
-        "# Inline edit smoke\n\n"
-        "First paragraph for editing.\n\n"
-        "Second paragraph stays put.\n\n"
-        "- list item one\n"
-        "- list item two\n"
-    )
-    (doc_dir / "current.md").write_text(initial, encoding="utf-8", newline="")
-    (doc_dir / "baseline.md").write_text(initial, encoding="utf-8", newline="")
-
-    page.goto(base + f"/?doc={slug}")
-    frame = _wait_for_doc_iframe(page)
-    frame.wait_for_selector("article#body p", timeout=10000)
-    page.wait_for_timeout(300)
-
-    # Paragraphs are contenteditable when idle.
-    p_attr = frame.evaluate(
-        "() => document.querySelector('article#body p').getAttribute('contenteditable')"
-    )
-    r.assert_(
-        "Paragraphs have contenteditable=plaintext-only when agent is idle",
-        p_attr == "plaintext-only",
-        detail=f"contenteditable={p_attr!r}",
-    )
-
-    # Headings too.
-    h1_attr = frame.evaluate(
-        "() => document.querySelector('article#body h1').getAttribute('contenteditable')"
-    )
-    r.assert_(
-        "Headings have contenteditable=plaintext-only when agent is idle",
-        h1_attr == "plaintext-only",
-        detail=f"contenteditable={h1_attr!r}",
-    )
-
-    # Lists do NOT (MVP scope: paragraphs + headings only).
-    ul_attr = frame.evaluate(
-        "() => document.querySelector('article#body ul') && "
-        "document.querySelector('article#body ul').getAttribute('contenteditable')"
-    )
-    r.assert_(
-        "Lists are NOT contenteditable (MVP scope: prose only)",
-        ul_attr in (None, ""),
-        detail=f"contenteditable={ul_attr!r}",
-    )
-
-    # Edit a paragraph: change innerText and dispatch focus+blur.
-    edit_calls = []
-    page.on(
-        "request",
-        lambda req: edit_calls.append(req.url)
-        if req.method == "POST" and "/edit-block" in req.url
-        else None,
-    )
-    frame.evaluate(
-        """() => {
-            const ps = document.querySelectorAll('article#body p');
-            const p = ps[0];
-            p.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-            p.innerText = 'First paragraph (edited inline).';
-            p.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-        }"""
-    )
-    # Wait for /edit-block POST + the resulting doc_changed broadcast +
-    # the frontend reload to surface the new text.
-    page.wait_for_function(
-        "() => Array.from(document.querySelectorAll('iframe')).length > 0",
-        timeout=2000,
-    )
-    page.wait_for_timeout(1500)
-    r.assert_(
-        "blur on an edited <p> POSTs to /edit-block",
-        any("/edit-block" in u for u in edit_calls),
-        detail=f"edit calls observed: {edit_calls}",
-    )
-
-    # The backend should have written the change to disk.
-    disk = (doc_dir / "current.md").read_text(encoding="utf-8")
-    r.assert_(
-        "current.md on disk reflects the edited paragraph text",
-        "First paragraph (edited inline)." in disk,
-        detail=disk[:200],
-    )
-    r.assert_(
-        "untouched second paragraph survives the edit",
-        "Second paragraph stays put." in disk,
-        detail=disk[:200],
-    )
-
-    # Direct API check: /edit-block refuses to edit a list block (kind not
-    # supported). We POST a list signature; backend returns 422.
-    list_reject = page.evaluate(
-        """async (slug) => {
-            const r = await fetch('/edit-block', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    doc: slug,
-                    block: { label: '', excerpt: 'list item one' },
-                    new_text: 'replacement',
-                }),
-            });
-            return { status: r.status, body: await r.json() };
-        }""",
-        slug,
-    )
-    r.assert_(
-        "/edit-block rejects list-block edits with 422",
-        list_reject.get("status") == 422,
-        detail=str(list_reject)[:300],
-    )
-
-    # Cleanup
-    shutil.rmtree(doc_dir, ignore_errors=True)
-
-
 def scenario_slash_commands(page, base: str, r: Results) -> None:
     """The slash-command vocabulary beyond /cancel: /help, /reset, /undo,
     /new, /model, and the unknown-command path. Each one is tested in
@@ -2649,208 +2520,6 @@ def scenario_slash_commands(page, base: str, r: Results) -> None:
     )
 
 
-def scenario_inline_edit_roundtrip(page, base: str, r: Results) -> None:
-    """Richer inline edit: turndown converts the edited HTML back to
-    markdown so bold / italic / inline-code / links / math survive a
-    round-trip through the contenteditable. Previously the focusout
-    handler used innerText, which clobbered all source markup in any
-    block the reader touched."""
-    print("\n[scenario] inline edit roundtrip (bold + math preserved)")
-
-    import shutil
-    slug = "smoke-roundtrip"
-    doc_dir = ROOT / "docs" / slug
-    if doc_dir.exists():
-        shutil.rmtree(doc_dir)
-    doc_dir.mkdir(parents=True)
-    initial = (
-        "# Roundtrip smoke\n\n"
-        "This has **bold** and _italic_ words.\n\n"
-        "Let $f(x) = x^2$ be a function.\n\n"
-        "Untouched.\n"
-    )
-    (doc_dir / "current.md").write_text(initial, encoding="utf-8", newline="")
-    (doc_dir / "baseline.md").write_text(initial, encoding="utf-8", newline="")
-
-    page.goto(base + f"/?doc={slug}")
-    frame = _wait_for_doc_iframe(page)
-    frame.wait_for_selector("article#body p", timeout=10000)
-    frame.wait_for_function(
-        "() => document.querySelector('.am-math-keep') !== null",
-        timeout=5000,
-    )
-    page.wait_for_timeout(400)
-
-    # Sanity: turndown is loaded.
-    td_loaded = frame.evaluate("() => typeof window.TurndownService === 'function'")
-    r.assert_("turndown library loaded in iframe", td_loaded)
-
-    # Math is wrapped in the keep span with the correct data-source.
-    math_wrapped = frame.evaluate(
-        "() => { const s = document.querySelector('.am-math-keep'); "
-        "return s ? s.getAttribute('data-source') : null; }"
-    )
-    r.assert_(
-        "math span carries data-source=$f(x) = x^2$",
-        math_wrapped == "$f(x) = x^2$",
-        detail=f"data-source={math_wrapped!r}",
-    )
-
-    # Edit the bold paragraph: append " (edited)" to the text. Bold should
-    # remain in the source.
-    edit_calls = []
-    page.on(
-        "request",
-        lambda req: edit_calls.append(req.url)
-        if req.method == "POST" and "/edit-block" in req.url
-        else None,
-    )
-    frame.evaluate(
-        """() => {
-            const ps = document.querySelectorAll('article#body p');
-            const target = Array.from(ps).find(p => /bold/.test(p.textContent || ''));
-            target.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-            // Append a plain text node after the existing inline content.
-            target.appendChild(document.createTextNode(' (edited)'));
-            target.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-        }"""
-    )
-    page.wait_for_timeout(1500)
-    r.assert_(
-        "bold-paragraph edit POSTs to /edit-block",
-        any("/edit-block" in u for u in edit_calls),
-        detail=str(edit_calls),
-    )
-    disk1 = (doc_dir / "current.md").read_text(encoding="utf-8")
-    r.assert_(
-        "**bold** survives the inline edit (turndown round-trip preserves emphasis)",
-        "**bold**" in disk1,
-        detail=disk1,
-    )
-    r.assert_(
-        "edit text actually appended (' (edited)' present in source)",
-        "(edited)" in disk1,
-        detail=disk1,
-    )
-    r.assert_(
-        "_italic_ also survives in the same edit",
-        ("_italic_" in disk1) or ("*italic*" in disk1),
-        detail=disk1,
-    )
-
-    # Edit the math paragraph: append " too". Math should survive intact.
-    frame.evaluate(
-        """() => {
-            const ps = document.querySelectorAll('article#body p');
-            const target = Array.from(ps).find(p => /be a function/.test(p.textContent || ''));
-            target.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-            target.appendChild(document.createTextNode(' Math survives.'));
-            target.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-        }"""
-    )
-    page.wait_for_timeout(1500)
-    disk2 = (doc_dir / "current.md").read_text(encoding="utf-8")
-    r.assert_(
-        "$f(x) = x^2$ survives the inline edit (math-keep round-trip)",
-        "$f(x) = x^2$" in disk2,
-        detail=disk2,
-    )
-    r.assert_(
-        "appended text 'Math survives.' lands in source",
-        "Math survives." in disk2,
-        detail=disk2,
-    )
-
-    # The untouched paragraph must still be there byte-for-byte.
-    r.assert_(
-        "untouched paragraph survives both edits",
-        "Untouched." in disk2,
-        detail=disk2,
-    )
-
-    shutil.rmtree(doc_dir, ignore_errors=True)
-
-
-def scenario_inline_edit_track_id(page, base: str, r: Results) -> None:
-    """Two paragraphs share their first 40+ chars but carry distinct tracking
-    ids. Editing the SECOND must land on the second block. The identity-first
-    locator keys off track_id; the old excerpt-prefix match would mis-hit the
-    first (identical-prefix) paragraph and corrupt the wrong block — this is
-    the regression that motivated eager block ids."""
-    print("\n[scenario] inline edit locates by track_id (prefix collision)")
-
-    import shutil
-    slug = "smoke-trackid"
-    doc_dir = ROOT / "docs" / slug
-    if doc_dir.exists():
-        shutil.rmtree(doc_dir)
-    doc_dir.mkdir(parents=True)
-    shared = "The function is continuous on the closed interval, and therefore attains its"
-    initial = (
-        "# Track-id smoke\n\n"
-        "<!-- id:b-AAAAAAAAAAAAAAAA -->\n"
-        f"{shared} maximum. (copy one)\n\n"
-        "<!-- id:b-BBBBBBBBBBBBBBBB -->\n"
-        f"{shared} minimum. (copy two)\n"
-    )
-    (doc_dir / "current.md").write_text(initial, encoding="utf-8", newline="")
-    (doc_dir / "baseline.md").write_text(initial, encoding="utf-8", newline="")
-
-    page.goto(base + f"/?doc={slug}")
-    frame = _wait_for_doc_iframe(page)
-    frame.wait_for_selector("article#body p", timeout=10000)
-    page.wait_for_timeout(300)
-
-    tagged = frame.evaluate(
-        "() => Array.from(document.querySelectorAll('article#body p'))"
-        ".map(p => p.dataset.trackId || null)"
-    )
-    r.assert_(
-        "both paragraphs carry data-track-id from the source comments",
-        tagged.count("b-AAAAAAAAAAAAAAAA") == 1
-        and tagged.count("b-BBBBBBBBBBBBBBBB") == 1,
-        detail=str(tagged),
-    )
-
-    edit_calls = []
-    page.on(
-        "request",
-        lambda req: edit_calls.append(req.url)
-        if req.method == "POST" and "/edit-block" in req.url else None,
-    )
-    # Edit the SECOND paragraph (the "(copy two)" / minimum one).
-    frame.evaluate(
-        """() => {
-            const ps = document.querySelectorAll('article#body p');
-            const target = Array.from(ps).find(p => /copy two/.test(p.textContent || ''));
-            target.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-            target.appendChild(document.createTextNode(' EDITED2'));
-            target.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-        }"""
-    )
-    page.wait_for_timeout(1500)
-    r.assert_(
-        "second-paragraph edit POSTs to /edit-block",
-        any("/edit-block" in u for u in edit_calls),
-        detail=str(edit_calls),
-    )
-    disk = (doc_dir / "current.md").read_text(encoding="utf-8")
-    edited_line = next((ln for ln in disk.split("\n") if "EDITED2" in ln), "")
-    first_line = next((ln for ln in disk.split("\n") if "copy one" in ln), "")
-    r.assert_(
-        "edit landed on the SECOND paragraph (copy two), not the prefix-twin",
-        "copy two" in edited_line,
-        detail=f"edited_line={edited_line!r}",
-    )
-    r.assert_(
-        "first paragraph (copy one) is untouched by the second's edit",
-        "EDITED2" not in first_line and "maximum. (copy one)" in disk,
-        detail=f"first_line={first_line!r}",
-    )
-
-    shutil.rmtree(doc_dir, ignore_errors=True)
-
-
 def scenario_serve_normalizes(page, base: str, r: Results) -> None:
     """A freshly-written doc with NO ids gets stamped when the viewer fetches
     it — serve_static is the single normalization choke point. Proves the
@@ -2907,78 +2576,80 @@ def scenario_serve_normalizes(page, base: str, r: Results) -> None:
     shutil.rmtree(doc_dir, ignore_errors=True)
 
 
-def scenario_morphdom_preserves_active_edit(page, base: str, r: Results) -> None:
-    """A doc_changed re-render triggered by editing a DIFFERENT block must not
-    clobber the block the reader is actively editing — the morphdom
-    onBeforeElUpdated guard. Faithful end-to-end: focus block A with uncommitted
-    text, then commit block B via the API, which broadcasts doc_changed and
-    forces a re-render."""
-    print("\n[scenario] morphdom preserves the actively-edited block")
+def scenario_inline_source_edit(page, base: str, r: Results) -> None:
+    """Pencil-on-hover inline SOURCE editor: hover a block -> pencil -> the
+    block becomes a <textarea> of its EXACT markdown -> edit -> save -> it
+    re-renders. Lossless end to end (a styled <span> + math survive), because
+    the reader edits source, never the rendered DOM."""
+    print("\n[scenario] inline source edit (pencil -> textarea -> save)")
     import shutil
-    slug = "smoke-morphdom"
+    slug = "smoke-srcedit"
     doc_dir = ROOT / "docs" / slug
     if doc_dir.exists():
         shutil.rmtree(doc_dir)
     doc_dir.mkdir(parents=True)
     initial = (
-        "# Morphdom\n\n"
-        "<!-- id:b-AAAAAAAAAAAAAAAA -->\n"
-        "Alpha paragraph that the reader is editing.\n\n"
-        "<!-- id:b-BBBBBBBBBBBBBBBB -->\n"
-        "Bravo paragraph edited via the API.\n"
+        "# Src edit\n\n"
+        'Edit me: a <span style="color:red">styled</span> word and math $E=mc^2$.\n\n'
+        "Untouched paragraph.\n"
     )
     (doc_dir / "current.md").write_text(initial, encoding="utf-8", newline="")
     (doc_dir / "baseline.md").write_text(initial, encoding="utf-8", newline="")
 
     page.goto(base + f"/?doc={slug}")
     frame = _wait_for_doc_iframe(page)
-    frame.wait_for_selector("article#body p", timeout=10000)
+    frame.wait_for_selector("article#body p[data-track-id]", timeout=10000)
     page.wait_for_timeout(300)
 
-    # Focus block A for real and append uncommitted text (no blur / no commit).
-    frame.evaluate(
-        """() => {
-            const a = Array.from(document.querySelectorAll('article#body p'))
-                .find(p => /Alpha/.test(p.textContent || ''));
-            a.focus();
-            a.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-            a.appendChild(document.createTextNode(' LIVEEDIT'));
-        }"""
-    )
-    # Commit a change to block B through the API -> doc_changed -> re-render.
-    page.evaluate(
-        """async () => {
-            await fetch('/edit-block', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    doc: 'smoke-morphdom',
-                    block: { track_id: 'b-BBBBBBBBBBBBBBBB' },
-                    new_text: 'Bravo paragraph changed by API.'
-                })
-            });
-        }"""
-    )
-    page.wait_for_timeout(1800)   # doc_changed -> loadDoc -> setContent(morphdom)
+    tid = frame.evaluate("""() => {
+        const p = [...document.querySelectorAll('article#body p[data-track-id]')]
+            .find(e => /styled/.test(e.textContent || ''));
+        return p ? p.dataset.trackId : null;
+    }""")
+    r.assert_("styled-span paragraph carries a data-track-id (serve-normalized)",
+              bool(tid), detail=str(tid))
 
-    survived = frame.evaluate(
-        """() => {
-            const a = Array.from(document.querySelectorAll('article#body p'))
-                .find(p => /Alpha/.test(p.textContent || ''));
-            return a ? /LIVEEDIT/.test(a.textContent || '') : false;
-        }"""
-    )
+    # Hover -> pencil appears -> click it -> request source -> editor opens.
+    frame.evaluate("""() => {
+        const p = [...document.querySelectorAll('article#body p[data-track-id]')]
+            .find(e => /styled/.test(e.textContent || ''));
+        p.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    }""")
+    frame.wait_for_selector("#am-edit-affordance", state="visible", timeout=4000)
+    r.assert_("pencil affordance appears on hover", True)
+    frame.eval_on_selector("#am-edit-affordance", "b => b.click()")
+    frame.wait_for_selector(".am-src-edit textarea", timeout=5000)
+
+    src = frame.eval_on_selector(".am-src-edit textarea", "t => t.value")
     r.assert_(
-        "actively-edited block keeps its uncommitted text across a doc_changed re-render",
-        survived, detail="LIVEEDIT was clobbered by the morphdom re-render",
+        "textarea shows the EXACT block source (styled span + math intact)",
+        '<span style="color:red">styled</span>' in src and "$E=mc^2$" in src,
+        detail=repr(src),
     )
-    bravo = frame.evaluate(
-        "() => { const b = Array.from(document.querySelectorAll('article#body p'))"
-        ".find(p => /Bravo/.test(p.textContent || '')); return b ? b.textContent : ''; }"
-    )
+
+    # Edit the word inside the span, save with Ctrl+Enter.
+    frame.eval_on_selector(".am-src-edit textarea",
+                           "t => { t.value = t.value.replace('>styled<', '>restyled<'); }")
+    frame.eval_on_selector(
+        ".am-src-edit textarea",
+        "t => t.dispatchEvent(new KeyboardEvent('keydown', "
+        "{key:'Enter', ctrlKey:true, bubbles:true}))")
+    page.wait_for_timeout(1600)  # save -> doc_changed -> re-render
+
+    after = frame.evaluate("""() => {
+        const p = [...document.querySelectorAll('article#body p')]
+            .find(e => /restyled/.test(e.textContent || ''));
+        return p ? !!p.querySelector('span[style]') : false;
+    }""")
+    r.assert_("edited block re-rendered with the <span> styling preserved", after)
+
+    disk = (doc_dir / "current.md").read_text(encoding="utf-8")
     r.assert_(
-        "the other block's committed change is visible after the re-render",
-        "changed by API" in bravo, detail=f"bravo={bravo!r}",
+        "current.md has the edited source byte-exact (span + math, no nbsp)",
+        ('<span style="color:red">restyled</span>' in disk
+         and "$E=mc^2$" in disk and " " not in disk
+         and "Untouched paragraph." in disk),
+        detail=disk,
     )
     shutil.rmtree(doc_dir, ignore_errors=True)
 
@@ -3399,11 +3070,8 @@ def main() -> int:
                 run_scenario(scenario_asset_drop)
                 run_scenario(scenario_pdf_import)
                 run_scenario(scenario_tex_skip_preview)
-                run_scenario(scenario_inline_edit)
-                run_scenario(scenario_inline_edit_roundtrip)
-                run_scenario(scenario_inline_edit_track_id)
                 run_scenario(scenario_serve_normalizes)
-                run_scenario(scenario_morphdom_preserves_active_edit)
+                run_scenario(scenario_inline_source_edit)
                 run_scenario(scenario_cancel_command)
                 run_scenario(scenario_slash_commands)
                 run_scenario(scenario_export)

@@ -44,7 +44,7 @@ from am_snapshots import (
 )
 from am_state import state
 from am_tracking import (
-    _HEADING_LINE_RE, _find_block_span, resolve_alias, strip_block_ids,
+    _find_block_span, resolve_alias, strip_block_ids,
 )
 
 
@@ -169,95 +169,86 @@ async def restore_snapshot(request: web.Request) -> web.Response:
     return web.json_response({"doc": slug, "snap_id": snap_id, "ok": True})
 
 
-async def edit_block(request: web.Request) -> web.Response:
-    """POST /edit-block — replace a single block's source with plain text.
+def _locate_block_by_id(doc_path, lines, track_id):
+    """Resolve a (possibly stale) track_id through the alias map and return the
+    block's (start, end, kind) span — or None if it can't be located or isn't a
+    source-editable kind (heading / paragraph in v1)."""
+    tid = (track_id or "").strip()
+    if not tid:
+        return None
+    resolved = resolve_alias(doc_path, tid) or ""
+    if not resolved:
+        return None
+    return _find_block_span(lines, {"track_id": resolved})
 
-    Body JSON: { doc: <slug>, block: <signature>, new_text: <plain text> }
-    where signature is the blockInfo the iframe posts for selections
-    (track_id / anchor_id / label / excerpt).
 
-    MVP scope: paragraphs and headings only. Lists, code, tables, raw HTML
-    blocks return 422 — the reader edits those via the Source view because
-    plaintext replacement would corrupt the source structure.
-    """
+async def get_block_source(request: web.Request) -> web.Response:
+    """GET /block-source?doc=<slug>&id=<track_id> — return the block's EXACT
+    markdown source. The inline source-editor fetches this, shows it in a
+    textarea, and posts the edited text back. No DOM serialization anywhere —
+    the source IS the source, so styled spans / math / spacing round-trip
+    losslessly."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    track_id = (request.query.get("id") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    lines = doc_path.read_text(encoding="utf-8").split("\n")
+    span = _locate_block_by_id(doc_path, lines, track_id)
+    if span is None:
+        return web.json_response(
+            {"error": "could not locate this block (supported: paragraphs and "
+                      "headings; use Source view for other block types)"},
+            status=422,
+        )
+    start, end, kind = span
+    return web.json_response(
+        {"ok": True, "kind": kind, "source": "\n".join(lines[start:end])})
+
+
+async def set_block_source(request: web.Request) -> web.Response:
+    """POST /block-source { doc, id, source } — replace the block's source span
+    with `source` VERBATIM (the reader edited the raw markdown — `## `/`{#id}`/
+    inline HTML and all), then validate + snapshot + broadcast. Lossless by
+    construction: we never reconstruct markdown from the rendered DOM."""
     _require_localhost_origin(request)
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-
     slug = (data.get("doc") or "").strip()
-    block = data.get("block") or {}
-    new_text = data.get("new_text", "")
+    track_id = (data.get("id") or "").strip()
+    new_source = data.get("source", "")
     if not slug or not _DOC_SLUG_RE.match(slug):
         return web.json_response({"error": "bad doc slug"}, status=400)
-    if not isinstance(block, dict):
-        return web.json_response({"error": "block must be object"}, status=400)
-    if not isinstance(new_text, str):
-        return web.json_response({"error": "new_text must be string"}, status=400)
-    new_text = new_text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
-
+    if not isinstance(new_source, str):
+        return web.json_response({"error": "source must be string"}, status=400)
+    new_source = new_source.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
     doc_path = DOCS_ROOT / slug / "current.md"
     if not doc_path.exists():
         return web.json_response({"error": "doc not found"}, status=404)
-
-    source = doc_path.read_text(encoding="utf-8")
-    lines = source.split("\n")
-    # Resolve a possibly-stale track_id through the alias map so a reference
-    # captured before a merge/rename still lands on the surviving block; a
-    # tombstoned id (None) drops back to content matching.
-    tid = (block.get("track_id") or "").strip()
-    if tid:
-        block = {**block, "track_id": resolve_alias(doc_path, tid) or ""}
-    span = _find_block_span(lines, block)
+    lines = doc_path.read_text(encoding="utf-8").split("\n")
+    span = _locate_block_by_id(doc_path, lines, track_id)
     if span is None:
-        return web.json_response(
-            {"error": "could not locate or refusing to inline-edit this block "
-                      "(supported: paragraphs and headings). Use the Source "
-                      "view for lists, code, tables, and HTML blocks."},
-            status=422,
-        )
+        return web.json_response({"error": "could not locate this block"}, status=422)
     start, end, kind = span
-
-    # Heading edit: keep the original `## ` prefix + optional `{#anchor}`
-    # suffix; replace only the visible text.
-    if kind == "heading":
-        m = _HEADING_LINE_RE.match(lines[start])
-        if m:
-            hashes = m.group(1)
-            anchor = m.group(3)
-            anchor_suffix = f" {{{anchor}}}" if anchor else ""
-            new_first_line = (
-                f"{hashes} {new_text.splitlines()[0] if new_text else ''}"
-                f"{anchor_suffix}"
-            )
-            new_lines = lines[:start] + [new_first_line] + lines[end:]
-        else:
-            new_lines = lines[:start] + [new_text] + lines[end:]
-    else:
-        new_lines = lines[:start] + [new_text] + lines[end:]
-    new_source = "\n".join(new_lines)
-
-    errors = validators.validate_doc(new_source) if new_source.strip() else []
+    full = "\n".join(lines[:start] + new_source.split("\n") + lines[end:])
+    errors = validators.validate_doc(full) if full.strip() else []
     if errors:
         return web.json_response(
             {"error": "validation failed",
-             "details": [
-                 {"kind": e.get("kind"), "line": e.get("line"),
-                  "message": e.get("message")}
-                 for e in errors[:5]
-             ]},
+             "details": [{"kind": e.get("kind"), "line": e.get("line"),
+                          "message": e.get("message")} for e in errors[:5]]},
             status=422,
         )
-
     _snapshot_if_changed(doc_path)
     with doc_path.open("w", encoding="utf-8", newline="") as f:
-        f.write(new_source)
-    print(
-        f"[edit-block] docs/{slug}/current.md ({kind}, "
-        f"start={start} end={end} → {len(new_text)} chars)",
-        flush=True,
-    )
+        f.write(full)
+    print(f"[block-source] docs/{slug}/current.md ({kind}, "
+          f"start={start} end={end} -> {len(new_source)} chars)", flush=True)
     await state.broadcast({"type": "doc_changed", "doc": slug})
     return web.json_response({"ok": True, "kind": kind})
 

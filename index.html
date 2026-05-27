@@ -2111,28 +2111,48 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     } else if (data.type === 'dragenter') {
       // mirror drop overlay onto parent so the dashed border shows
       document.body.classList.add('dropping');
-    } else if (data.type === 'block_edit') {
-      handleBlockEdit(data.block, data.new_text);
+    } else if (data.type === 'request_block_source') {
+      requestBlockSource(data.track_id);
+    } else if (data.type === 'save_block_source') {
+      saveBlockSource(data.track_id, data.source);
     }
   });
 
-  // Commit a reader's inline edit by POSTing to /edit-block. The backend
-  // runs the validator and snapshots; on success it broadcasts doc_changed
-  // and the viewer reloads. On failure we surface the error in chat — the
-  // visual state will revert on the next doc reload triggered by anything
-  // else, but for now the iframe shows the user-edited text until then.
-  async function handleBlockEdit(block, newText) {
-    if (!currentDoc) return;
+  // Inline source edit. The iframe's pencil affordance asks us for a block's
+  // exact markdown (GET /block-source); the reader edits that source in a
+  // textarea; we POST it back verbatim. No DOM->markdown reconstruction — the
+  // source IS the source, so styled spans / math / spacing round-trip exactly.
+  async function requestBlockSource(trackId) {
+    if (!currentDoc || !trackId) return;
     try {
-      const resp = await fetch('/edit-block', {
+      const resp = await fetch('/block-source?doc=' + encodeURIComponent(currentDoc)
+        + '&id=' + encodeURIComponent(trackId));
+      if (!resp.ok) {
+        let err = `block-source: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) err = j.error; } catch (_) {}
+        sendToFrame({ type: 'block_source_error', track_id: trackId, error: err });
+        return;
+      }
+      const j = await resp.json();
+      sendToFrame({ type: 'block_source', track_id: trackId, source: j.source || '' });
+    } catch (e) {
+      sendToFrame({ type: 'block_source_error', track_id: trackId, error: String(e.message || e) });
+    }
+  }
+
+  // Save edited block markdown. On success the backend broadcasts doc_changed
+  // -> loadDoc re-renders, which swaps the inline editor for the saved block.
+  // On validation failure we relay the error back so the editor stays open.
+  async function saveBlockSource(trackId, source) {
+    if (!currentDoc || !trackId) return;
+    try {
+      const resp = await fetch('/block-source', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          doc: currentDoc, block: block || {}, new_text: newText || '',
-        }),
+        body: JSON.stringify({ doc: currentDoc, id: trackId, source: source || '' }),
       });
       if (!resp.ok) {
-        let err = `edit-block: ${resp.status}`;
+        let err = `block-source: ${resp.status}`;
         try {
           const j = await resp.json();
           if (j.error) err = j.error;
@@ -2142,13 +2162,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
               .join('; ');
           }
         } catch (_) {}
-        appendMessage('error', err);
-        // Revert by reloading the source.
-        if (currentDoc) loadDoc(docUrl(currentDoc));
+        sendToFrame({ type: 'block_source_error', track_id: trackId, error: err });
       }
     } catch (e) {
-      appendMessage('error', 'edit-block failed: ' + (e.message || e));
-      if (currentDoc) loadDoc(docUrl(currentDoc));
+      sendToFrame({ type: 'block_source_error', track_id: trackId, error: String(e.message || e) });
     }
   }
 
