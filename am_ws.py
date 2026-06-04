@@ -36,6 +36,7 @@ from am_docs import (
 )
 from am_hooks import _summarize_tool, reset_runtime_session
 from am_origin import _require_localhost_origin
+from am_preamble import build_doc_context
 from am_state import state
 from am_tracking import mint_track_id_for
 
@@ -271,6 +272,18 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 # Haiku / Sonnet stay on the inline path since their
                 # per-token cost is low enough that the latency win of
                 # skipping the Read tool roundtrip dominates.
+                #
+                # Cross-turn amortization on the inline path: even though
+                # the current user message isn't cached, the PRIOR turns'
+                # user messages are (sliding window into history). So if a
+                # doc is byte-identical to the copy we inlined earlier this
+                # conversation, that copy is already in cached context and
+                # re-sending it buys nothing. build_doc_context (called
+                # below) does the change-detection: on a no-change turn
+                # (queries, chat, turns that only edited a DIFFERENT doc)
+                # it returns a short pointer instead of the full body — the
+                # dominant per-turn cost, gone for every turn that doesn't
+                # actually change the doc.
                 _model = (state.current_model or "").lower()
                 _is_opus = "opus" in _model
                 # -1 (not 0) so the `len(doc_text) <= INLINE_DOC_CAP`
@@ -312,52 +325,35 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         safe_path.relative_to(DATA_ROOT).as_posix()
                         if safe_path is not None else f"docs/{doc}/current.md"
                     )
-                    if doc_text is not None and len(doc_text) <= INLINE_DOC_CAP:
-                        lines = doc_text.count("\n") + 1
+                    doc_lines, sig_to_store, doc_inlined = build_doc_context(
+                        doc, rel_for_agent, doc_text,
+                        INLINE_DOC_CAP, state.inlined_doc_sig.get(doc),
+                    )
+                    preamble.extend(doc_lines)
+                    if sig_to_store is not None:
+                        state.inlined_doc_sig[doc] = sig_to_store
+                    # Per-doc agent skill: any section in the body with
+                    # class="agent-skill" is meta authored for you, not for
+                    # the reader (the viewer hides it via CSS). Surface it
+                    # explicitly so the agent doesn't gloss over it as "just
+                    # a block in the doc." Only when the doc is actually in
+                    # context (inlined this turn or already cached) — i.e.
+                    # build_doc_context reported inlined=True.
+                    if doc_inlined and doc_text and (
+                        'class="agent-skill"' in doc_text
+                        or "class='agent-skill'" in doc_text
+                    ):
                         preamble.append(
-                            f'The reader is viewing "{doc}" — file path '
-                            f'`{rel_for_agent}` ({lines} lines, '
-                            f"{len(doc_text)} bytes). When you need to edit, "
-                            "this is the file. The current contents are "
-                            "inlined below — do NOT call Read on this file "
-                            "unless YOU have edited it since this preamble "
-                            "(your own edits invalidate the inlined copy):\n\n"
-                            f"=== doc:{rel_for_agent} ===\n{doc_text}\n=== end doc ==="
-                        )
-                        doc_inlined = True
-                        # Per-doc agent skill: any section in the body with
-                        # class="agent-skill" is meta authored for you, not
-                        # for the reader (the viewer hides it via CSS).
-                        # Surface it explicitly so you don't gloss over it
-                        # as "just a block in the doc."
-                        if 'class="agent-skill"' in doc_text \
-                                or "class='agent-skill'" in doc_text:
-                            preamble.append(
-                                "This doc carries one or more "
-                                "`<section class=\"agent-skill\">…</section>` "
-                                "blocks in its body. Those sections are the "
-                                "doc's working contract — voice, formatting, "
-                                "structural conventions specific to this doc. "
-                                "They override generic guidance in the global "
-                                "adaptive-markdown skill when they conflict. "
-                                "Treat them as authoritative; preserve them "
-                                "across edits unless the reader explicitly "
-                                "asks you to change them."
-                            )
-                    elif doc_text is not None:
-                        preamble.append(
-                            f'The reader is viewing "{doc}" — file path '
-                            f"`{rel_for_agent}` ({len(doc_text)} bytes — "
-                            "too large to inline). When you need to edit, "
-                            "this is the file. Use `Read` with `offset`/"
-                            "`limit` to load specific ranges rather than "
-                            "the whole file."
-                        )
-                    else:
-                        preamble.append(
-                            f'The reader is viewing "{doc}" — file path '
-                            f"`{rel_for_agent}`. When you need to edit, "
-                            "this is the file."
+                            "This doc carries one or more "
+                            "`<section class=\"agent-skill\">…</section>` "
+                            "blocks in its body. Those sections are the "
+                            "doc's working contract — voice, formatting, "
+                            "structural conventions specific to this doc. "
+                            "They override generic guidance in the global "
+                            "adaptive-markdown skill when they conflict. "
+                            "Treat them as authoritative; preserve them "
+                            "across edits unless the reader explicitly "
+                            "asks you to change them."
                         )
                 if len(selections) == 1:
                     s = selections[0]

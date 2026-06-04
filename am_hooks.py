@@ -428,6 +428,13 @@ async def post_tool_use_hook(input_data, tool_use_id, context):
 
 
 async def init_runtime(model: str | None = None):
+    # A fresh runtime is a fresh conversation with empty history, so any
+    # record of what we previously inlined is stale — the prior copies are
+    # gone from context. Clear the per-doc inline signatures so the first
+    # turn re-inlines each doc in full. This is the universal new-session
+    # chokepoint: reset_runtime_session, /new, /clear, and model switches
+    # all route through here.
+    state.inlined_doc_sig.clear()
     # The runtime's `root` becomes the agent's cwd. Agents reach docs at
     # `docs/<slug>/current.md` (relative path; we tell them so in
     # am_ws's preamble), so cwd needs to point at the data root, not the

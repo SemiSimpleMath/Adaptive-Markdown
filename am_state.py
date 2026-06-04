@@ -34,6 +34,15 @@ class State:
         # so the PreToolUse Bash hook can pin the sandbox cwd to the
         # right doc folder. Cleared when the turn ends.
         self.current_doc_slug: str | None = None
+        # Per-conversation record of the sha256 of each doc's content as
+        # last inlined into the chat preamble. Lets the WS handler skip
+        # re-injecting a doc that's byte-identical to the copy already in
+        # the (cached) conversation history — the dominant per-turn token
+        # cost on the Haiku/Sonnet inline path. Cleared on every runtime
+        # init (= new conversation = empty history) so a matching sig
+        # always implies the content is genuinely present earlier in
+        # context. Keyed by doc slug.
+        self.inlined_doc_sig: dict[str, str] = {}
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg)
