@@ -13,6 +13,10 @@ Run:
     python tests/browser_smoke.py
     python tests/browser_smoke.py --port 8093  # override default port
 
+Any python works as the launcher: if it can't import the dep set (playwright,
+aiohttp, claude_agent_sdk, markdown_it), the harness re-execs itself under
+one that can — see tests/harness_env.py. Pin one with AM_PYTHON.
+
 The script starts the backend in a subprocess on the chosen port, runs the
 scenarios, and tears down. Exit code 0 if every assertion passes; 1 if any
 fails. Each scenario prints a single PASS/FAIL line so the output is easy
@@ -30,6 +34,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PORT = 8093
+
+sys.path.insert(0, str(ROOT / "tests"))
+import harness_env  # noqa: E402  (needs the sys.path tweak above)
 
 
 # ---- subprocess + readiness ---------------------------------------------
@@ -3191,6 +3198,7 @@ def scenario_drop_preview_dialog(page, base: str, r: Results) -> None:
 # ---- driver -------------------------------------------------------------
 
 def main() -> int:
+    harness_env.bootstrap()  # right interpreter + UTF-8 console, or re-exec
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--headed", action="store_true",

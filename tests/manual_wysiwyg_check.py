@@ -5,6 +5,9 @@ network flakiness to the smoke suite). Run it by hand when touching the editor:
 
     python tests/manual_wysiwyg_check.py
 
+Any python works as the launcher: if it can't import the dep set, the harness
+re-execs itself under one that can — see tests/harness_env.py (AM_PYTHON pins).
+
 Spawns its own backend on a free port, then verifies, against the shipped docs:
   - the editor mounts on ?edit (auto-starts in the Edit view),
   - KaTeX math renders (intro),
@@ -27,6 +30,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "tests"))
+import harness_env  # noqa: E402  (needs the sys.path tweak above)
 
 
 def pick_free_port() -> int:
@@ -245,10 +251,10 @@ def run(base: str) -> int:
 
 
 def main() -> int:
+    harness_env.bootstrap()  # right interpreter + UTF-8 console, or re-exec
     port = pick_free_port()
-    env = os.environ.copy()
+    env = os.environ.copy()  # bootstrap set PYTHONUTF8, scrubbed PYTHONPATH
     env["PORT"] = str(port)
-    env["PYTHONUTF8"] = "1"
     print(f"[harness] starting backend on :{port}")
     proc = subprocess.Popen(
         [sys.executable, str(ROOT / "start.py"), "--claude", f"--port={port}"],
