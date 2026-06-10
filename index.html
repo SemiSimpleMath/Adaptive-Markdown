@@ -3508,6 +3508,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       saveEditView();
     }
   });
+  // Warn before navigating away with unsaved editor changes.
+  window.addEventListener('beforeunload', (e) => {
+    if (_editorDirty && currentView === 'edit') { e.preventDefault(); e.returnValue = ''; }
+  });
 
   function renderCurrentView() {
     if (currentView !== 'edit') destroyMilkdown();
