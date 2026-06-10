@@ -9,7 +9,9 @@ Any python works as the launcher: if it can't import the dep set, the harness
 re-execs itself under one that can — see tests/harness_env.py (AM_PYTHON pins).
 
 Spawns its own backend on a free port, then verifies, against the shipped docs:
-  - the editor mounts on ?edit (auto-starts in the Edit view),
+  - ?edit is flag-only: fresh navigation lands on the Doc view, the editor
+    mounts via the View dropdown, and a mid-edit reload returns to Edit
+    (per-tab sessionStorage),
   - KaTeX math renders (intro),
   - heading markers ({#id}) are lifted out of the editable text into
     data-am-marker pills, survive heading edits, and round-trip byte-exact,
@@ -82,7 +84,10 @@ def _open_editor(page, base, slug):
     _reset(page, slug)
     page.select_option("#doc-select", slug)
     page.wait_for_timeout(1000)
-    # ?edit auto-starts the editor; ensure it (re)mounts for this doc.
+    # ?edit is flag-only (fresh navigation lands on the Doc view); enter the
+    # editor through the View ▾ dropdown the way a user does.
+    page.click("button.view-tab-dropdown:has-text('View')")
+    page.click(".view-dropdown-menu .overflow-item:has-text('Edit (beta)')")
     page.wait_for_selector("#milkdown-mount .ProseMirror", timeout=45000)
     page.wait_for_function(
         "() => document.getElementById('edit-status')?.textContent === 'ready'", timeout=20000)
@@ -98,8 +103,17 @@ def run(base: str) -> int:
         page.on("pageerror", lambda e: print(f"    [pageerror] {str(e)[:200]}"))
 
         print("[scenario] editor mount + math + save round-trip (intro)")
+        # ?edit is a feature flag, not a view switch: a fresh navigation must
+        # land on the Doc view (regression: time-notes bookmark booted into
+        # the editor, losing collapsible details + hidden skill sections).
+        page.goto(f"{base}/?edit")
+        page.wait_for_function("() => document.getElementById('doc-select')?.value", timeout=15000)
+        page.wait_for_timeout(800)
+        r.check("fresh ?edit navigation lands on the Doc view",
+                page.evaluate("() => !document.querySelector('#milkdown-mount .ProseMirror')"
+                              " && document.getElementById('doc-frame') !== null"))
         _open_editor(page, base, "intro")
-        r.check("editor mounts on ?edit",
+        r.check("Edit entry in View dropdown mounts the editor",
                 page.evaluate("() => !!document.querySelector('#milkdown-mount .ProseMirror')"))
         # Exactly one editor: a superseded mount racing the CDN load used to
         # mount a SECOND ProseMirror into the new mount div.
@@ -202,6 +216,12 @@ def run(base: str) -> int:
                 untouched0 == untouched1,
                 f"before={len(untouched0)} after={len(untouched1)}")
         _reset(page, "intro")
+        # Mid-edit refresh returns to the editor (per-tab sessionStorage),
+        # even though a fresh navigation lands on Doc.
+        page.reload()
+        page.wait_for_selector("#milkdown-mount .ProseMirror", timeout=45000)
+        r.check("reload while editing returns to the Edit view",
+                page.evaluate("() => !!document.querySelector('#milkdown-mount .ProseMirror')"))
 
         print("[scenario] embed cards + card-source edit (plot-test)")
         _open_editor(page, base, "plot-test")

@@ -1191,7 +1191,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentBody = '';            // raw body after frontmatter strip
   // ?edit starts in (and reloads back into) the WYSIWYG editor, so a refresh
   // doesn't drop you back to the Doc view with the old inline toolbar.
-  let currentView = new URLSearchParams(location.search).has('edit') ? 'edit' : 'doc';
+  // ?edit is a feature FLAG (it unlocks the experimental Edit view in the
+  // View dropdown), not a view switch: a fresh navigation always lands on
+  // the Doc view. The chosen view persists per-tab (sessionStorage, written
+  // in renderCurrentView), so a mid-edit refresh returns to the editor.
+  let currentView = 'doc';
+  try {
+    if (new URLSearchParams(location.search).has('edit')
+        && sessionStorage.getItem('am-view') === 'edit') currentView = 'edit';
+  } catch (e) { /* storage disabled → Doc view */ }
   // Pending-changes substrate (phase 4): the most recent pending.json
   // contents for the current doc, refreshed when the doc loads and when
   // pending_changed broadcasts. Empty array means no Review tab.
@@ -3742,6 +3750,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   });
 
   function renderCurrentView() {
+    // Per-tab view persistence. Only 'edit' is restored on load — the other
+    // views are transient or data-dependent (Review can vanish, Graph needs
+    // math), and pre-WYSIWYG behavior was always "fresh load → Doc".
+    try { sessionStorage.setItem('am-view', currentView); } catch (e) { /* best-effort */ }
     if (currentView !== 'edit') destroyMilkdown();
     if (currentView === 'doc') {
       // Render markdown to HTML in the parent, then ship to the iframe.
