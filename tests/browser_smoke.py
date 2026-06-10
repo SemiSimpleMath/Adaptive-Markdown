@@ -424,6 +424,17 @@ def scenario_iframe_runtime(page, base: str, r: Results) -> None:
             html,
         )
 
+    # The page's own initial doc setContent may still be in flight at this
+    # point (runtime-ready precedes content). If it lands between our
+    # synthetic pushes it wipes the tagged node and the marker check fails
+    # intermittently (marker=None). Wait for the real doc to land first —
+    # after that, nothing else in this scenario setContents.
+    frame.wait_for_function(
+        "() => document.getElementById('body') && "
+        "document.getElementById('body').children.length > 0",
+        timeout=10000,
+    )
+
     # ---- DOM stability: morphdom keeps unchanged nodes in place ----------
     push('<p id="keep">unchanged</p><p id="change">first</p>')
     frame.wait_for_function(
