@@ -563,6 +563,11 @@ body {
 .am-embed-label { font-weight: 600; color: var(--accent, #2a4d7a); }
 .am-embed-cap { color: var(--muted, #555); margin-top: 3px; font-style: italic; }
 .am-embed-chip { display: inline-block; border: 1px dashed var(--border, #c9d2dc); border-radius: 5px; background: var(--surface, #f2f4f7); padding: 0 6px; margin: 1px 0; font: 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); }
+/* Full-text card for self-contained content chunks: the text is doc content,
+   so it reads at body size; only the wrapper label is chrome. */
+.am-text-card { border-left: 3px solid var(--border, #c9d2dc); }
+.am-text-card .am-embed-label { font: 500 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); }
+.am-text-card .am-text-body { white-space: pre-wrap; margin-top: 3px; font-size: .95rem; color: var(--text); }
 #milkdown-mount .am-anchor-dim { opacity: .3; font-size: .78em; font-weight: 400; }
 /* Heading-marker pill: the {#id} lives in a node attr (data-am-marker), so this
    is pure uneditable chrome — generated content never enters textContent or the
@@ -3344,18 +3349,83 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // or close) get an unobtrusive chip. Display only — the node's verbatim
   // value (node.attrs.value) is untouched, so serialization round-trips
   // byte-exact and nothing executes in the editor.
+  // Self-contained content chunk: one element whose tag is glued to its text
+  // (no blank lines), e.g. <div class="x">\nbillable entry text\n</div>.
+  // CommonMark keeps these opaque, so they render as a card with the FULL
+  // text and an in-place text editor — the wrapper round-trips verbatim.
+  // Keyed on SHAPE only, never on a class name (trigger ≠ category).
+  const AM_TEXT_CHUNK_RE =
+    /^(<([A-Za-z][\w-]*)(?:\s[^<>]*)?>)(\r?\n)([\s\S]*?)(\r?\n[ \t]*)(<\/\2>)([ \t]*)$/;
   function buildEmbedCard(node, view, getPos) {
     const v0 = (node && node.attrs && node.attrs.value) || '';
     const tagM = v0.match(/^\s*<\/?([a-zA-Z][\w-]*)/);
     const tag = tagM ? tagM[1].toLowerCase() : 'html';
     const heavy = /<(script|canvas|svg|style|iframe|figure|video|audio|table)\b/i.test(v0);
-    const dom = document.createElement(heavy ? 'div' : 'span');
+    const textM = heavy ? null : AM_TEXT_CHUNK_RE.exec(v0);
+    const dom = document.createElement(heavy || textM ? 'div' : 'span');
     dom.contentEditable = 'false';
     dom.setAttribute('data-am-embed', tag);
-    if (!heavy) {            // bare structural wrapper tag -> quiet chip, no edit
+    if (!heavy && !textM) {  // bare structural wrapper tag -> quiet chip, no edit
       dom.className = 'am-embed-chip';
       dom.textContent = v0.replace(/\s+/g, ' ').slice(0, 48);
       dom.setAttribute('data-am-src', v0.replace(/\s+/g, ' ').trim().slice(0, 300));
+      return { dom: dom };
+    }
+    if (textM) {
+      dom.className = 'am-embed-card am-text-card';
+      function renderText() {
+        const m = AM_TEXT_CHUNK_RE.exec(node.attrs.value || '') || textM;
+        dom.innerHTML = '';
+        dom.setAttribute('data-am-src',
+          (node.attrs.value || '').replace(/\s+/g, ' ').trim().slice(0, 300));
+        const cls = (/class="([^"]*)"/.exec(m[1]) || [, ''])[1];
+        const label = document.createElement('div');
+        label.className = 'am-embed-label';
+        label.textContent = m[2] + (cls ? '.' + cls.trim().split(/\s+/).join('.') : '');
+        dom.appendChild(label);
+        const body = document.createElement('div');
+        body.className = 'am-text-body';
+        body.textContent = m[4];
+        dom.appendChild(body);
+        if (view && getPos) {
+          const acts = document.createElement('div');
+          acts.className = 'am-embed-actions';
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'am-embed-btn';
+          btn.textContent = 'Edit text';
+          btn.addEventListener('click', () => {
+            dom.innerHTML = '';
+            const wrap = document.createElement('div');
+            wrap.className = 'am-embed-edit';
+            const ta = document.createElement('textarea');
+            ta.value = m[4];
+            const apply = document.createElement('button');
+            apply.type = 'button'; apply.className = 'am-embed-btn'; apply.textContent = 'Apply';
+            const cancel = document.createElement('button');
+            cancel.type = 'button'; cancel.className = 'am-embed-btn'; cancel.textContent = 'Cancel';
+            apply.addEventListener('click', () => {
+              const pos = getPos();
+              if (typeof pos === 'number') {
+                // Wrapper + its exact newline framing re-emitted verbatim;
+                // only the inner text changes.
+                const next = m[1] + m[3] + ta.value + m[5] + m[6] + (m[7] || '');
+                const tr = view.state.tr;
+                if (tr.setNodeAttribute) tr.setNodeAttribute(pos, 'value', next);
+                else tr.setNodeMarkup(pos, undefined, { ...node.attrs, value: next });
+                view.dispatch(tr);  // attr change re-creates this nodeView
+              }
+            });
+            cancel.addEventListener('click', renderText);
+            wrap.appendChild(ta); wrap.appendChild(apply); wrap.appendChild(cancel);
+            dom.appendChild(wrap);
+            ta.focus();
+          });
+          acts.appendChild(btn);
+          dom.appendChild(acts);
+        }
+      }
+      renderText();
       return { dom: dom };
     }
     dom.className = 'am-embed-card';

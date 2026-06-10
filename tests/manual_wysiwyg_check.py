@@ -288,6 +288,32 @@ def run(base: str) -> int:
         r.check("collapse toggles are display-only (editor not dirty)",
                 page.evaluate("() => document.getElementById('edit-status')"
                               ".textContent") == "ready")
+        # Self-contained content chunks render as FULL-text cards (shape-keyed,
+        # not class-keyed) with in-place text editing.
+        card_text = page.evaluate(
+            "() => { const c = [...document.querySelectorAll('#milkdown-mount"
+            " .am-text-card')].find(x => (x.textContent||'').includes('Self-contained'));"
+            "return c ? c.textContent : null; }")
+        r.check("self-contained chunk renders as a full-text card",
+                bool(card_text) and "not break its enclosing week" in card_text,
+                f"card={str(card_text)[:80]}")
+        page.evaluate(
+            "() => { const c = [...document.querySelectorAll('#milkdown-mount"
+            " .am-text-card')].find(x => (x.textContent||'').includes('Self-contained'));"
+            "[...c.querySelectorAll('.am-embed-btn')]"
+            ".find(b => b.textContent === 'Edit text').click(); }")
+        page.wait_for_selector(".am-text-card textarea", timeout=5000)
+        ta_val = page.evaluate("() => document.querySelector('.am-text-card textarea').value")
+        r.check("text editor shows inner text without wrapper tags",
+                "Self-contained" in ta_val and "<div" not in ta_val,
+                f"ta={ta_val[:60]}")
+        page.evaluate("() => { const t = document.querySelector('.am-text-card textarea');"
+                      " t.value = t.value + ' NARR9'; }")
+        page.evaluate("() => { const c = document.querySelector('.am-text-card textarea')"
+                      ".closest('.am-text-card');"
+                      "[...c.querySelectorAll('.am-embed-btn')]"
+                      ".find(b => b.textContent === 'Apply').click(); }")
+        page.wait_for_timeout(400)
         # Wrapper/summary lines must survive the first (normalizing) save
         # byte-exact — this is the corruption guard for the serialize path.
         wrap_re = re.compile(r"^[ \t]*</?(?:details|div|aside|section|summary)\b.*$", re.M)
@@ -300,6 +326,10 @@ def run(base: str) -> int:
         r.check("wrapper/summary lines byte-exact through first save",
                 wrap_re.findall(base0) == wrap_re.findall(cur_a),
                 f"base={wrap_re.findall(base0)} cur={wrap_re.findall(cur_a)}")
+        r.check("text-card edit lands inside its wrapper on disk",
+                bool(re.search(
+                    r'<div class="narrative">\r?\nSelf-contained'
+                    r'[\s\S]*?NARR9\r?\n</div>', cur_a)))
         # Normalize-once idempotence: remount on the saved doc, save again,
         # bytes must be identical (modulo re-stamped tracking ids).
         page.click(".view-tab:has-text('Doc')")
