@@ -3245,13 +3245,22 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         import(base + '/preset/commonmark'),
         import(base + '/preset/gfm'),
         import(base + '/utils'),
-      ]).then(([core, cm, gfm, utils]) => ({ core, cm, gfm, utils }));
+        import('https://esm.sh/@milkdown/plugin-math@7'),
+      ]).then(([core, cm, gfm, utils, mathMod]) => ({ core, cm, gfm, utils, mathMod }));
     }
     return _milkdownMod;
   }
   function stripTrackingIds(md) {
     return (md || '').replace(
       /^[ \t]*<!-- id:b-[A-Z0-9-]+ -->[ \t]*\r?\n/gm, '');
+  }
+  function ensureKatexCss() {
+    if (document.getElementById('am-katex-css')) return;
+    const l = document.createElement('link');
+    l.id = 'am-katex-css';
+    l.rel = 'stylesheet';
+    l.href = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css';
+    document.head.appendChild(l);
   }
   // Phase 2: render an html-block node as an opaque CARD instead of raw
   // source. Content-bearing embeds (figure/script/svg/…) get a labelled card
@@ -3315,9 +3324,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     try { mod = await loadMilkdown(); }
     catch (e) { editStatus('failed to load editor: ' + (e.message || e)); return; }
     if (currentView !== 'edit') return;   // user navigated away while loading
-    const { core, cm, gfm, utils } = mod;
+    const { core, cm, gfm, utils, mathMod } = mod;
+    ensureKatexCss();
     try {
-      milkdownEditor = await core.Editor.make()
+      let make = core.Editor.make()
         .config((ctx) => {
           ctx.set(core.rootCtx, document.getElementById('milkdown-mount'));
           ctx.set(core.defaultValueCtx, stripTrackingIds(currentBody));
@@ -3331,8 +3341,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           }));
         })
         .use(cm.commonmark)
-        .use(gfm.gfm)
-        .create();
+        .use(gfm.gfm);
+      if (mathMod && mathMod.math) make = make.use(mathMod.math);  // $...$ via KaTeX
+      milkdownEditor = await make.create();
       milkdownEditor.__getMd = () => milkdownEditor.action(utils.getMarkdown());
       editStatus('ready');
     } catch (e) {
