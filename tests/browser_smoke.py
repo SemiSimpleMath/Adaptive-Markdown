@@ -2025,6 +2025,76 @@ def scenario_insertion_point(page, base: str, r: Results) -> None:
     )
 
 
+def scenario_nested_selection_dedup(page, base: str, r: Results) -> None:
+    """Regression: clicking a no-id block nested in a wrapper (a
+    <div class="narrative"> around a single long paragraph, like the
+    time-notes docs) must outline ONLY the clicked block — not the wrapper
+    that shares its truncated-text key. Guards applySelection's containment
+    de-dup."""
+    print("\n[scenario] nested selection de-dup (wrapper + child share a key)")
+
+    page.goto(base + "/")
+    frame = _wait_for_doc_iframe(page)
+    frame.wait_for_function(
+        "() => typeof window.morphdom === 'function' && "
+        "typeof window.__doc === 'object'",
+        timeout=8000,
+    )
+
+    # A wrapper div whose only child is a long paragraph: div.textContent ==
+    # p.textContent, so their keyOf (truncated textContent, no ids) collides.
+    long_text = (
+        "Determine assumptions, variables and specific methodologies for data "
+        "analysis and interpretation framework across multiple overlapping "
+        "datasets and validation passes, with careful attention to discrepancy "
+        "patterns and rounding effects throughout the engagement."
+    )
+    page.evaluate(
+        "(txt) => { document.getElementById('doc-frame').contentWindow"
+        ".postMessage({ type: 'setContent', meta: '', html: ["
+        "  '<h2>Week heading</h2>',"
+        "  '<div class=\"narrative\"><p>' + txt + '</p></div>',"
+        "  '<p>an unrelated trailing paragraph</p>',"
+        "].join('') }, '*'); }",
+        long_text,
+    )
+    frame.wait_for_function(
+        "() => document.querySelector('div.narrative > p')", timeout=2000,
+    )
+
+    # Click the inner paragraph; only it should end up outlined.
+    frame.dispatch_event("div.narrative > p", "click", {"bubbles": True})
+    page.wait_for_timeout(150)
+
+    state = frame.evaluate(
+        "() => {"
+        " const sel = Array.from(document.querySelectorAll('.selected-block'));"
+        " return {"
+        "   count: sel.length,"
+        "   pSel: document.querySelector('div.narrative > p')"
+        "         ?.classList.contains('selected-block') || false,"
+        "   divSel: document.querySelector('div.narrative')"
+        "           ?.classList.contains('selected-block') || false,"
+        "   tags: sel.map(e => e.tagName)"
+        " }; }"
+    )
+    r.assert_(
+        "nested click outlines exactly one block",
+        bool(state) and state.get("count") == 1,
+        detail=str(state),
+    )
+    r.assert_(
+        "the clicked paragraph is the selected block",
+        bool(state and state.get("pSel")),
+        detail=str(state),
+    )
+    r.assert_(
+        "the wrapping div is NOT also selected (containment de-dup)",
+        bool(state) and state.get("divSel") is False,
+        detail=str(state),
+    )
+
+
 def scenario_asset_drop(page, base: str, r: Results) -> None:
     """POST /upload-asset with a fake PNG, verify it lands at
     docs/<slug>/assets/, is served back from /docs/<slug>/assets/<name>,
@@ -3194,6 +3264,7 @@ def main() -> int:
                 run_scenario(scenario_pending_cleared_on_restore)
                 run_scenario(scenario_text_selection)
                 run_scenario(scenario_insertion_point)
+                run_scenario(scenario_nested_selection_dedup)
                 run_scenario(scenario_asset_drop)
                 run_scenario(scenario_pdf_import)
                 run_scenario(scenario_tex_skip_preview)

@@ -46,7 +46,7 @@ from am_state import state
 from am_ids import gen_id
 from am_tracking import (
     block_source_span, delete_block_source, insert_block_source,
-    replace_block_source, resolve_alias, strip_block_ids,
+    replace_block_source, resolve_alias, strip_block_ids, writer_hard_breaks,
 )
 
 
@@ -260,8 +260,11 @@ async def set_block_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "doc not found"}, status=404)
     text = doc_path.read_text(encoding="utf-8")
     rid = _resolve_id(doc_path, data.get("id"))
-    full = (replace_block_source(text, rid, _norm_lf(new_source).rstrip("\n"))
-            if rid else None)
+    # Writer-friendly: a reader's typed line breaks become portable markdown
+    # hard breaks (prose only — lists/code/HTML pass through). See
+    # writer_hard_breaks.
+    src = writer_hard_breaks(_norm_lf(new_source).rstrip("\n"))
+    full = replace_block_source(text, rid, src) if rid else None
     if full is None:
         return web.json_response({"error": "could not locate this block"}, status=422)
     return await _commit_doc(doc_path, slug, full, "block-source")
@@ -316,8 +319,9 @@ async def insert_block(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "could not locate the anchor block"}, status=422)
     new_id = gen_id("b")
-    full = insert_block_source(
-        text, after_id, _norm_lf(source).rstrip("\n"), new_id)
+    # Writer-friendly hard breaks for prose inserts (see writer_hard_breaks).
+    src = writer_hard_breaks(_norm_lf(source).rstrip("\n"))
+    full = insert_block_source(text, after_id, src, new_id)
     if full is None:
         return web.json_response(
             {"error": "could not locate the anchor block"}, status=422)

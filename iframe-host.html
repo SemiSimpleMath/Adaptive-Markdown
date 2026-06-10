@@ -1067,10 +1067,22 @@ figure.vega script[type="application/json"] { display: none; }
       'h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, table, pre, hr, '
       + 'figure, aside, section, details, article, div'
     );
+    // Collect key-matches first. No-id blocks key off truncated textContent,
+    // which COLLIDES between a wrapper and the child it contains: a narrative
+    // <div> whose only/first paragraph fills the first 200 chars shares its
+    // child's key, as does any ancestor that lines up. Painting every match
+    // outlines the whole nesting chain — the reported "selects many things,
+    // including the parent heading". Keep only the deepest match per chain:
+    // never outline an element that contains another matched element.
+    const matched = [];
+    for (const el of all) {
+      if (isSelectable(el) && selectedKeys.has(keyOf(el))) matched.push(el);
+    }
     for (const el of all) {
       if (!isSelectable(el)) continue;
-      if (selectedKeys.has(keyOf(el))) el.classList.add('selected-block');
-      else el.classList.remove('selected-block');
+      const deepest = matched.indexOf(el) !== -1
+        && !matched.some(o => o !== el && el.contains(o));
+      el.classList.toggle('selected-block', deepest);
     }
   }
 
@@ -1179,6 +1191,11 @@ figure.vega script[type="application/json"] { display: none; }
       'max-width:60%;padding:9px 13px;border:1px solid #c0392b;border-radius:7px;',
       'background:var(--am-bg,#fff);color:#c0392b;font-size:12.5px;',
       'box-shadow:0 2px 8px rgba(0,0,0,.18);}',
+      'article#body .insertion-marker{position:relative;}',
+      'article#body .insertion-marker::after{content:"Enter to type here";',
+      'position:absolute;left:0;top:-9px;padding:0 6px;white-space:nowrap;',
+      'font:600 10.5px ui-monospace,Consolas,monospace;letter-spacing:.02em;',
+      'color:var(--am-accent,#2a6df5);background:var(--am-bg,#fff);}',
     ].join('');
     document.head.appendChild(style);
 
@@ -1212,8 +1229,15 @@ figure.vega script[type="application/json"] { display: none; }
       document.documentElement.appendChild(tools);  // outside the morphdom'd body
       return tools;
     }
-    function hideTools() { if (tools) tools.style.display = 'none'; hoverBlock = null; }
+    let hideTimer = null;
+    function cancelHide() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }
+    function hideTools() { cancelHide(); if (tools) tools.style.display = 'none'; hoverBlock = null; }
+    // Hover-intent: don't yank the toolbar the instant the pointer leaves the
+    // block. A short grace period lets the reader travel from the block to the
+    // ✎ ＋ 🗑 buttons without it vanishing mid-reach (the #1 reported friction).
+    function scheduleHide() { if (!hideTimer) hideTimer = setTimeout(hideTools, 260); }
     function showTools(b) {
+      cancelHide();
       const el = getTools();
       const r = b.getBoundingClientRect();
       el.style.top = (r.top + 3) + 'px';
@@ -1228,10 +1252,24 @@ figure.vega script[type="application/json"] { display: none; }
     });
     document.addEventListener('mousemove', ev => {
       if (!tools || tools.style.display === 'none' || activeEdit) return;
-      if (tools.contains(ev.target) || (hoverBlock && hoverBlock.contains(ev.target))) return;
-      hideTools();
+      if (tools.contains(ev.target) || (hoverBlock && hoverBlock.contains(ev.target))) {
+        cancelHide(); return;
+      }
+      scheduleHide();
     });
     document.addEventListener('scroll', hideTools, true);
+    // Enter on an active insertion marker opens the inline editor at the gap.
+    // Ignored while typing in a field / contenteditable, mid-edit, or when the
+    // agent holds the lock — so it never hijacks Enter anywhere it matters.
+    document.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter' || ev.shiftKey || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (activeEdit || pending || !editableMode) return;
+      if (!insertionMarker || !insertionMarker.isConnected) return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable)) return;
+      ev.preventDefault();
+      startInsertAtMarker();
+    });
 
     function autosize(ta) { ta.style.height = 'auto'; ta.style.height = (ta.scrollHeight + 2) + 'px'; }
     function buildEditor(source, hintText) {
@@ -1269,7 +1307,7 @@ figure.vega script[type="application/json"] { display: none; }
       const block = pending.block;
       pending = null;
       if (!block || !block.isConnected) return;
-      const e = buildEditor(source, 'editing markdown source — Ctrl/⌘+Enter to save · Esc to cancel');
+      const e = buildEditor(source, 'edit — line breaks & blank lines are kept · Ctrl/⌘+Enter saves · Esc cancels');
       block.replaceWith(e.wrap);
       activeEdit = { mode: 'edit', wrap: e.wrap, original: block, tid: tid,
                      ta: e.ta, err: e.err, saving: false };
@@ -1277,10 +1315,26 @@ figure.vega script[type="application/json"] { display: none; }
     }
     function startInsert(block) {
       if (activeEdit || pending) return;
-      const e = buildEditor('', 'new block markdown — Ctrl/⌘+Enter to insert · Esc to cancel');
+      const e = buildEditor('', 'new block — type normally, line breaks kept · Ctrl/⌘+Enter inserts · Esc cancels');
       block.after(e.wrap);
       activeEdit = { mode: 'insert', wrap: e.wrap, original: null,
                      afterId: block.dataset.trackId || '', ta: e.ta, err: e.err, saving: false };
+      focusTa(e.ta);
+    }
+    // Click a gap → blue insertion line → press Enter → type right here.
+    // Opens the insert editor exactly where the marker sits, anchored to the
+    // block above the gap (empty afterId ⇒ top of body). Folds "where" and
+    // "what" into one gesture; no toolbar to hunt for.
+    function startInsertAtMarker() {
+      if (activeEdit || pending || !editableMode) return;
+      if (!insertionMarker || !insertionMarker.isConnected) return;
+      const beforeEl = insertionMarker.previousElementSibling;
+      const afterId = (beforeEl && beforeEl.getAttribute('data-track-id')) || '';
+      const e = buildEditor('', 'new block — type normally, line breaks kept · Ctrl/⌘+Enter inserts · Esc cancels');
+      insertionMarker.replaceWith(e.wrap);   // editor lands exactly at the blue line
+      insertionMarker = null;
+      activeEdit = { mode: 'insert', wrap: e.wrap, original: null,
+                     afterId: afterId, ta: e.ta, err: e.err, saving: false };
       focusTa(e.ta);
     }
     function startDelete(block) {

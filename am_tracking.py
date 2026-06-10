@@ -348,6 +348,45 @@ def block_source_span(text: str, track_id: str) -> tuple[int, int, int] | None:
 # without spinning up the HTTP layer.
 
 
+def _looks_like_prose(source: str) -> bool:
+    """True iff every non-blank line of `source` is plain paragraph text — no
+    headings, lists, blockquotes, tables, fenced/indented code, or block-level
+    HTML. Gates writer_hard_breaks so a list / code / figure the reader is
+    editing or inserting is never mangled (those carry meaning in their line
+    structure and must pass through byte-for-byte)."""
+    for ln in source.split("\n"):
+        if not ln.strip():
+            continue
+        if (_atx_heading(ln) or _nonparagraph_block_start(ln)
+                or _SETEXT_RE.match(ln)):
+            return False
+    return True
+
+
+def writer_hard_breaks(source: str) -> str:
+    """Make the inline editor behave like a writing surface: a single typed
+    newline inside a paragraph becomes a portable markdown hard break (two
+    trailing spaces — which render as <br> in every CommonMark viewer, not
+    just AM's), while blank lines stay paragraph breaks. Runs of spaces still
+    collapse per HTML; only line breaks are preserved.
+
+    No-op unless the whole fragment is plain prose (see _looks_like_prose),
+    so lists / tables / fenced code / HTML blocks the reader edits or inserts
+    are returned verbatim. Idempotent: a line that already ends in a hard
+    break stays a single hard break."""
+    if not _looks_like_prose(source):
+        return source
+    lines = source.split("\n")
+    out = []
+    for i, ln in enumerate(lines):
+        nxt = lines[i + 1] if i + 1 < len(lines) else None
+        if ln.strip() and nxt is not None and nxt.strip():
+            out.append(ln.rstrip() + "  ")   # markdown hard break
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
 def replace_block_source(text: str, track_id: str, new_source: str) -> str | None:
     """Replace a block's source span with `new_source` verbatim, then re-stamp
     so any sub-blocks the edit introduced (a paragraph turned into a list, say)
