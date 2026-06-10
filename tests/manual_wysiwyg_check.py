@@ -8,6 +8,8 @@ network flakiness to the smoke suite). Run it by hand when touching the editor:
 Spawns its own backend on a free port, then verifies, against the shipped docs:
   - the editor mounts on ?edit (auto-starts in the Edit view),
   - KaTeX math renders (intro),
+  - heading markers ({#id}) are lifted out of the editable text into
+    data-am-marker pills, survive heading edits, and round-trip byte-exact,
   - a whole-doc save round-trips (math preserved on disk),
   - embed figures render as cards, not raw <figure> source (plot-test),
   - editing a card's source (Edit source -> Apply -> Save) lands in current.md.
@@ -17,6 +19,7 @@ Resets intro + plot-test to baseline on the way out. Exit code 0 = all passed.
 from __future__ import annotations
 
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -103,6 +106,34 @@ def run(base: str) -> int:
         r.check("caret CSS (white-space: pre-wrap) applied",
                 page.evaluate("() => getComputedStyle(document.querySelector('#milkdown-mount .ProseMirror')).whiteSpace")
                 in ("pre-wrap", "break-spaces"))
+        # Heading markers ({#id}) live in node attrs, not the editable text:
+        # invisible to the caret, rendered as a CSS pill, byte-exact on save.
+        hdr_re = re.compile(r"^#{1,6} .*\{#[\w-]+\}\s*$")
+        cur0 = page.evaluate(
+            "async () => (await fetch('/docs/intro/current.md', {cache:'no-store'})).text()")
+        marked0 = [l for l in cur0.splitlines() if hdr_re.match(l)]
+        r.check("intro has marked headings (precondition)", len(marked0) > 0)
+        editor_text = page.evaluate(
+            "() => document.querySelector('#milkdown-mount .ProseMirror').textContent") or ""
+        r.check("markers absent from editable text", "{#" not in editor_text)
+        n_pills = page.evaluate(
+            "() => document.querySelectorAll('#milkdown-mount .ProseMirror"
+            " :is(h1,h2,h3,h4,h5,h6)[data-am-marker]').length")
+        r.check("each marked heading carries its data-am-marker pill",
+                n_pills == len(marked0), f"pills={n_pills} expected={len(marked0)}")
+        # Type into a marked heading: the anchor must survive the edit (i.e.
+        # the amMarker attr must survive other plugins' setNodeMarkup calls).
+        mk = page.evaluate(
+            "() => { const h = document.querySelector('#milkdown-mount [data-am-marker]');"
+            "if (!h) return null; const r = h.getBoundingClientRect();"
+            "return { v: h.getAttribute('data-am-marker'),"
+            "  x: r.left + 30, y: r.top + r.height / 2 }; }")
+        r.check("found a marked heading to edit", bool(mk))
+        if mk:
+            page.mouse.click(mk["x"], mk["y"])
+            page.wait_for_timeout(150)
+            page.keyboard.type("Zq")
+            page.wait_for_timeout(150)
         # Regression: the block-focus handlers on #body used to preventDefault +
         # removeAllRanges on editor clicks, so the caret could only be placed at
         # line ends. Click mid-text and require a collapsed selection inside it.
@@ -151,9 +182,19 @@ def run(base: str) -> int:
         status = page.eval_on_selector("#edit-status", "el => el.textContent")
         r.check("whole-doc save succeeds", "saved" in status, status)
         cur = page.evaluate("async () => (await fetch('/docs/intro/current.md', {cache:'no-store'})).text()")
-        import re
         r.check("math round-trips on disk", bool(re.search(r"\$[^$\n]+\$", cur)))
         r.check("re-stamped tracking ids on save", "<!-- id:b-" in cur)
+        marked1 = [l for l in cur.splitlines() if hdr_re.match(l)]
+        zq = [l for l in marked1 if "Zq" in l]
+        r.check("edited heading keeps its anchor",
+                bool(mk) and len(zq) == 1 and zq[0].rstrip().endswith(mk["v"]),
+                f"zq={zq[:1]}")
+        untouched0 = sorted(l for l in marked0
+                            if not (mk and l.rstrip().endswith(mk["v"])))
+        untouched1 = sorted(l for l in marked1 if "Zq" not in l)
+        r.check("untouched heading markers byte-exact on disk",
+                untouched0 == untouched1,
+                f"before={len(untouched0)} after={len(untouched1)}")
         _reset(page, "intro")
 
         print("[scenario] embed cards + card-source edit (plot-test)")

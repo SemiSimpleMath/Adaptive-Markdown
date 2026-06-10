@@ -564,6 +564,17 @@ body {
 .am-embed-cap { color: var(--muted, #555); margin-top: 3px; font-style: italic; }
 .am-embed-chip { display: inline-block; border: 1px dashed var(--border, #c9d2dc); border-radius: 5px; background: var(--surface, #f2f4f7); padding: 0 6px; margin: 1px 0; font: 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); }
 #milkdown-mount .am-anchor-dim { opacity: .3; font-size: .78em; font-weight: 400; }
+/* Heading-marker pill: the {#id} lives in a node attr (data-am-marker), so this
+   is pure uneditable chrome — generated content never enters textContent or the
+   caret's reach. */
+#milkdown-mount .ProseMirror :is(h1,h2,h3,h4,h5,h6)[data-am-marker]::after {
+  content: attr(data-am-marker);
+  font: 400 .62em ui-monospace, Consolas, monospace;
+  color: var(--muted, #888); background: var(--surface, #f2f4f7);
+  border: 1px solid var(--border, #c9d2dc); border-radius: 999px;
+  padding: .12em .55em; margin-left: .55em;
+  vertical-align: middle; white-space: nowrap; opacity: .75;
+}
 .am-embed-actions { margin-top: 8px; }
 .am-embed-btn { font-size: 12px; padding: 2px 9px; margin-right: 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; }
 .am-embed-btn:hover { background: var(--accent); color: var(--accent-text, #fff); border-color: var(--accent); }
@@ -3397,12 +3408,20 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       label = (cap ? cap.textContent.trim().slice(0, 80) : '') || excerpt.slice(0, 80);
     } else {
       const text = el.textContent || '';
+      let marker = '';
       if (/^H[1-6]$/.test(el.tagName)) {
-        const m = text.match(/\{#([\w-]+)\}\s*$/);
+        // Markers live in node attrs (data-am-marker), not the text plane;
+        // the text regex covers the fallback mode (marker still inline).
+        marker = el.getAttribute('data-am-marker') || '';
+        let m = marker.match(/^\{#([\w-]+)/);
+        if (!m) m = text.match(/\{#([\w-]+)\}\s*$/);
         if (m) anchorId = m[1];
       }
       label = text.replace(/\s*\{#[\w-]+\}\s*$/, '').split('\n')[0].trim().slice(0, 80);
-      excerpt = text.replace(/\s+/g, ' ').trim().slice(0, 2000);
+      // Keep the excerpt faithful to the source line: re-attach the marker
+      // the schema extension lifted out of the heading text.
+      excerpt = (text.replace(/\s+/g, ' ').trim()
+        + (marker && text.indexOf(marker) < 0 ? ' ' + marker : '')).slice(0, 2000);
     }
     if (!label && !excerpt) return null;
     return { id: anchorId, track_id: null, anchor_id: anchorId,
@@ -3478,9 +3497,84 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const el = document.getElementById('edit-status');
     if (el) el.textContent = msg;
   }
-  // Dim Pandoc-style heading anchors ({#id}) so they read as quiet metadata,
-  // not noise. Display-only ProseMirror decoration -- the {#id} stays in the
-  // document text and round-trips byte-exact.
+  // Lift Pandoc-style heading markers ({#id .class k=v}) OUT of the editable
+  // text plane: parse strips the trailing marker into a node attr (verbatim,
+  // minus surrounding whitespace), serialize appends it back, and toDOM
+  // exposes it as data-am-marker so CSS renders an uneditable pill. The caret
+  // can never enter or corrupt it, and author-controlled anchors survive
+  // heading edits. Same design language as embed cards: source in attrs,
+  // chrome on the surface. Requires [#.] after the brace so set notation like
+  // "## Pairs {1,2}" is never mistaken for a marker.
+  const AM_HEADING_MARKER_RE = /[ \t]*\{[#.][^{}\n]*\}[ \t]*$/;
+  function makeHeadingMarkerExt(cm) {
+    if (!(cm && cm.headingSchema
+          && typeof cm.headingSchema.extendSchema === 'function')) return null;
+    try {
+      return cm.headingSchema.extendSchema((prev) => (ctx) => {
+        const base = prev(ctx);
+        return {
+          ...base,
+          attrs: { ...(base.attrs || {}), amMarker: { default: null } },
+          // Clipboard copy/paste inside the editor goes through the DOM:
+          // carry the marker along or an internal paste would drop it.
+          parseDOM: (base.parseDOM || []).map((rule) => ({
+            ...rule,
+            getAttrs: (dom) => {
+              const got = rule.getAttrs ? rule.getAttrs(dom) : null;
+              if (got === false) return false;
+              const mk = dom.getAttribute && dom.getAttribute('data-am-marker');
+              return { ...(got || {}), amMarker: mk || null };
+            },
+          })),
+          toDOM: (node) => {
+            const spec = base.toDOM ? base.toDOM(node) : ['h' + node.attrs.level, 0];
+            if (node.attrs.amMarker && Array.isArray(spec)) {
+              if (spec.length > 1 && spec[1] && typeof spec[1] === 'object'
+                  && !Array.isArray(spec[1])) {
+                spec[1]['data-am-marker'] = node.attrs.amMarker;
+              } else {
+                spec.splice(1, 0, { 'data-am-marker': node.attrs.amMarker });
+              }
+            }
+            return spec;
+          },
+          parseMarkdown: {
+            match: base.parseMarkdown.match,
+            runner: (state, node, type) => {
+              let marker = null;
+              const kids = node.children || [];
+              const last = kids[kids.length - 1];
+              if (last && last.type === 'text' && typeof last.value === 'string') {
+                const m = AM_HEADING_MARKER_RE.exec(last.value);
+                if (m) {
+                  marker = m[0].trim();
+                  const head = last.value.slice(0, m.index);
+                  if (head) last.value = head;
+                  else kids.pop();
+                }
+              }
+              state.openNode(type, { level: node.depth, amMarker: marker });
+              state.next(kids);
+              state.closeNode();
+            },
+          },
+          toMarkdown: {
+            match: base.toMarkdown.match,
+            runner: (state, node) => {
+              state.openNode('heading', undefined, { depth: node.attrs.level });
+              state.next(node.content);
+              if (node.attrs.amMarker)
+                state.addNode('text', undefined, ' ' + node.attrs.amMarker);
+              state.closeNode();
+            },
+          },
+        };
+      });
+    } catch (e) { return null; }
+  }
+  // FALLBACK ONLY (CDN API drift: headingSchema.extendSchema unavailable):
+  // dim the in-text {#id} markers so they read as quiet metadata. The primary
+  // path lifts markers out of the text plane entirely — makeHeadingMarkerExt.
   function makeAnchorDimPlugin(utils, pstate, pview) {
     if (!(utils && utils.$prose && pstate && pstate.Plugin && pview)) return null;
     return utils.$prose(() => new pstate.Plugin({
@@ -3577,8 +3671,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         .use(cm.commonmark)
         .use(gfm.gfm);
       if (mathMod && mathMod.math) make = make.use(mathMod.math);  // $...$ via KaTeX
-      const anchorDim = makeAnchorDimPlugin(utils, pstate, pview);
-      if (anchorDim) make = make.use(anchorDim);
+      const headingMarker = makeHeadingMarkerExt(cm);
+      if (headingMarker) make = make.use(headingMarker);
+      else {
+        const anchorDim = makeAnchorDimPlugin(utils, pstate, pview);
+        if (anchorDim) make = make.use(anchorDim);
+      }
       const focusSel = makeFocusSelPlugin(utils, pstate, pview);
       if (focusSel) make = make.use(focusSel.plugin);
       const dirtyPlugin = makeDirtyPlugin(utils, pstate);
