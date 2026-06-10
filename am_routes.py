@@ -45,7 +45,7 @@ from am_snapshots import (
 from am_state import state
 from am_ids import gen_id
 from am_tracking import (
-    block_source_span, delete_block_source, insert_block_source,
+    block_source_span, combine_doc, delete_block_source, insert_block_source,
     replace_block_source, resolve_alias, strip_block_ids, writer_hard_breaks,
 )
 
@@ -268,6 +268,32 @@ async def set_block_source(request: web.Request) -> web.Response:
     if full is None:
         return web.json_response({"error": "could not locate this block"}, status=422)
     return await _commit_doc(doc_path, slug, full, "block-source")
+
+
+async def save_doc(request: web.Request) -> web.Response:
+    """POST /save-doc { doc, body } — replace the WHOLE body of current.md.
+
+    The WYSIWYG editor serialized the entire doc back to markdown; frontmatter
+    is preserved verbatim from disk and tracking ids are re-stamped (the editor
+    strips them on load). Validated / snapshotted / broadcast through the shared
+    commit path, exactly like a block edit."""
+    _require_localhost_origin(request)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    slug = (data.get("doc") or "").strip()
+    body = data.get("body", "")
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    if not isinstance(body, str):
+        return web.json_response({"error": "body must be string"}, status=400)
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    existing = doc_path.read_text(encoding="utf-8")
+    full = combine_doc(existing, body)
+    return await _commit_doc(doc_path, slug, full, "save-doc")
 
 
 async def delete_block(request: web.Request) -> web.Response:

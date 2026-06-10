@@ -387,6 +387,25 @@ def writer_hard_breaks(source: str) -> str:
     return "\n".join(out)
 
 
+def combine_doc(existing_text: str, new_body: str) -> str:
+    """Reattach a doc's verbatim YAML frontmatter to a freshly-serialized whole
+    body (from the WYSIWYG editor, which only ever edits the body) and re-stamp
+    tracking ids.
+
+    The editor strips the system `<!-- id:b-... -->` comments on load and the
+    backend re-mints them here on save, so the editor never has to preserve
+    them — safe because stamping is render-invariant (`render(stamp)==render`).
+    Frontmatter bytes are preserved exactly; exactly one blank line separates
+    frontmatter from body."""
+    m = FRONTMATTER_RE.match(existing_text)
+    fm = existing_text[: m.end()].rstrip("\n") if m else ""
+    body = new_body.replace("\r\n", "\n").replace("\r", "\n").lstrip("\n")
+    full = (fm + "\n\n" + body) if fm else body
+    if not full.endswith("\n"):
+        full += "\n"
+    return ensure_block_ids_text(full)[0]
+
+
 def replace_block_source(text: str, track_id: str, new_source: str) -> str | None:
     """Replace a block's source span with `new_source` verbatim, then re-stamp
     so any sub-blocks the edit introduced (a paragraph turned into a list, say)

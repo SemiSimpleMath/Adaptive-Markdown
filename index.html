@@ -529,6 +529,16 @@ body {
   background: var(--bg); color: var(--accent);
   border-bottom-color: var(--accent); font-weight: 600;
 }
+.edit-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.edit-status { font-size: 0.82rem; color: var(--muted, #888); }
+.edit-note { font-size: 0.76rem; color: var(--muted, #888); margin-left: auto; }
+#milkdown-mount .milkdown { outline: none; }
+#milkdown-mount .ProseMirror { outline: none; min-height: 320px; line-height: 1.6; }
+#milkdown-mount .ProseMirror:focus { outline: none; }
+#milkdown-mount .ProseMirror :is(h1,h2,h3,h4,h5,h6) { line-height: 1.25; }
+#milkdown-mount .ProseMirror pre { background: var(--pre-bg, #f5f5f5); padding: .7em; border-radius: 6px; overflow: auto; }
+#milkdown-mount .ProseMirror code { font-family: ui-monospace, Consolas, monospace; }
+
 .view-source {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.85rem;
@@ -1169,6 +1179,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const VIEW_ALT_UNIVERSAL = [
     { id: 'source', label: 'Source' },
   ];
+  // Phase 1 WYSIWYG editor (Milkdown), gated behind the ?edit URL flag.
+  // Off by default — the dropdown item only appears when the flag is set.
+  const WYSIWYG_ENABLED = new URLSearchParams(location.search).has('edit');
+  const VIEW_EDIT = WYSIWYG_ENABLED ? [{ id: 'edit', label: 'Edit (beta)' }] : [];
   const VIEW_MATH_TOOLS = [
     { id: 'graph', label: 'Graph' },
     { id: 'latex', label: 'LaTeX' },
@@ -1266,6 +1280,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // Graph + LaTeX appear only when the doc has math content. Active
     // highlight when the currently-selected view is one of its items.
     const altItems = [
+      ...VIEW_EDIT,
       ...VIEW_ALT_UNIVERSAL,
       ...(hasMath ? VIEW_MATH_TOOLS : []),
     ];
@@ -3206,7 +3221,97 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     input.focus();
   }
 
+  // ---- Phase 1 WYSIWYG editor (Milkdown) ---------------------------------
+  // Behind ?edit. Mounts Milkdown with the doc BODY (tracking-id comments
+  // stripped — the backend re-stamps them on save), serializes back to
+  // markdown, and POSTs the whole body to /save-doc. Lazy-loaded from CDN on
+  // first use. See ADR-001 (internal) for the full plan.
+  let _milkdownMod = null;
+  let milkdownEditor = null;
+  function loadMilkdown() {
+    if (!_milkdownMod) {
+      const base = 'https://esm.sh/@milkdown/kit@7';
+      _milkdownMod = Promise.all([
+        import(base + '/core'),
+        import(base + '/preset/commonmark'),
+        import(base + '/preset/gfm'),
+        import(base + '/utils'),
+      ]).then(([core, cm, gfm, utils]) => ({ core, cm, gfm, utils }));
+    }
+    return _milkdownMod;
+  }
+  function stripTrackingIds(md) {
+    return (md || '').replace(
+      /^[ \t]*<!-- id:b-[A-Z0-9-]+ -->[ \t]*\r?\n/gm, '');
+  }
+  async function destroyMilkdown() {
+    if (milkdownEditor) {
+      const ed = milkdownEditor; milkdownEditor = null;
+      try { await ed.destroy(); } catch (e) { /* already gone */ }
+    }
+  }
+  function editStatus(msg) {
+    const el = document.getElementById('edit-status');
+    if (el) el.textContent = msg;
+  }
+  async function renderEditView() {
+    await destroyMilkdown();
+    body.className = 'view-edit';
+    body.innerHTML =
+      '<div class="edit-toolbar">'
+      + '<button id="edit-save" class="btn">Save</button>'
+      + '<span id="edit-status" class="edit-status"></span>'
+      + '<span class="edit-note">Experimental WYSIWYG (Phase 1). Edits the '
+      + 'body; frontmatter and tracking-ids are handled on save.</span>'
+      + '</div><div id="milkdown-mount"></div>';
+    document.getElementById('edit-save').addEventListener('click', saveEditView);
+    editStatus('loading editor…');
+    let mod;
+    try { mod = await loadMilkdown(); }
+    catch (e) { editStatus('failed to load editor: ' + (e.message || e)); return; }
+    if (currentView !== 'edit') return;   // user navigated away while loading
+    const { core, cm, gfm, utils } = mod;
+    try {
+      milkdownEditor = await core.Editor.make()
+        .config((ctx) => {
+          ctx.set(core.rootCtx, document.getElementById('milkdown-mount'));
+          ctx.set(core.defaultValueCtx, stripTrackingIds(currentBody));
+        })
+        .use(cm.commonmark)
+        .use(gfm.gfm)
+        .create();
+      milkdownEditor.__getMd = () => milkdownEditor.action(utils.getMarkdown());
+      editStatus('ready');
+    } catch (e) {
+      editStatus('editor init failed: ' + (e.message || e));
+    }
+  }
+  async function saveEditView() {
+    if (!milkdownEditor || !currentDoc) return;
+    editStatus('saving…');
+    let md;
+    try { md = milkdownEditor.__getMd(); }
+    catch (e) { editStatus('serialize failed: ' + (e.message || e)); return; }
+    try {
+      const resp = await fetch('/save-doc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc: currentDoc, body: md }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        editStatus('save failed: ' + (j.error || resp.status)
+          + (j.details ? ' — ' + JSON.stringify(j.details).slice(0, 200) : ''));
+        return;
+      }
+      editStatus('saved ✓');
+    } catch (e) {
+      editStatus('save error: ' + (e.message || e));
+    }
+  }
+
   function renderCurrentView() {
+    if (currentView !== 'edit') destroyMilkdown();
     if (currentView === 'doc') {
       // Render markdown to HTML in the parent, then ship to the iframe.
       // The iframe owns scripts, KaTeX, click-to-focus, hover, drag-drop, etc.
@@ -3248,6 +3353,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       renderSkillsView();
     } else if (currentView === 'components') {
       renderComponentsView();
+    } else if (currentView === 'edit') {
+      renderEditView();
     }
   }
 
