@@ -4073,21 +4073,28 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     if (!opts || opts.skipChip !== true) updateSelectionChip();
   }
 
+  // Block-focus delegation is for the alt views. In the Edit view the WYSIWYG
+  // editor owns #body — preventDefault/removeAllRanges here would wipe the
+  // caret ProseMirror just placed (mid-text clicks stop working).
   body.addEventListener('mouseover', (e) => {
+    if (currentView === 'edit') return;
     const block = findBlockOrParagraph(e.target);
     if (block && !selectedEls.has(block)) block.classList.add('hover-block');
   });
   body.addEventListener('mouseout', (e) => {
+    if (currentView === 'edit') return;
     const block = findBlockOrParagraph(e.target);
     if (block) block.classList.remove('hover-block');
   });
   body.addEventListener('mousedown', (e) => {
+    if (currentView === 'edit') return;
     if (e.shiftKey || e.metaKey || e.ctrlKey) {
       const block = findBlockOrParagraph(e.target);
       if (block) e.preventDefault();
     }
   });
   body.addEventListener('click', (e) => {
+    if (currentView === 'edit') return;
     const block = findBlockOrParagraph(e.target);
     const additive = e.shiftKey || e.metaKey || e.ctrlKey;
     // Don't intercept clicks on links.

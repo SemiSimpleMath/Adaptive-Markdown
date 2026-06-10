@@ -97,6 +97,28 @@ def run(base: str) -> int:
         r.check("caret CSS (white-space: pre-wrap) applied",
                 page.evaluate("() => getComputedStyle(document.querySelector('#milkdown-mount .ProseMirror')).whiteSpace")
                 in ("pre-wrap", "break-spaces"))
+        # Regression: the block-focus handlers on #body used to preventDefault +
+        # removeAllRanges on editor clicks, so the caret could only be placed at
+        # line ends. Click mid-text and require a collapsed selection inside it.
+        pt = page.evaluate(
+            "() => { const p = [...document.querySelectorAll('#milkdown-mount .ProseMirror p')]"
+            ".find(x => (x.textContent||'').length > 80); if (!p) return null;"
+            "const r = p.getBoundingClientRect();"
+            "return { x: r.left + Math.min(260, r.width * 0.45), y: r.top + 10 }; }")
+        if pt:
+            page.mouse.click(pt["x"], pt["y"])
+            page.wait_for_timeout(200)
+            sel = page.evaluate(
+                "() => { const s = document.getSelection();"
+                "if (!s || !s.anchorNode) return null;"
+                "const el = s.anchorNode.nodeType === 3 ? s.anchorNode.parentElement : s.anchorNode;"
+                "return { collapsed: s.isCollapsed, offset: s.anchorOffset,"
+                "  inEditor: !!(el && el.closest('#milkdown-mount .ProseMirror')) }; }")
+            r.check("mid-text click places the caret",
+                    sel and sel["inEditor"] and sel["collapsed"] and sel["offset"] > 0,
+                    f"sel={sel}")
+        else:
+            r.check("mid-text click places the caret", False, "no long paragraph found")
         page.click("#edit-save")
         page.wait_for_function("() => /saved|failed|error/.test(document.getElementById('edit-status')?.textContent||'')", timeout=15000)
         status = page.eval_on_selector("#edit-status", "el => el.textContent")
