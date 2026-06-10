@@ -3308,12 +3308,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     if (!heavy) {            // bare structural wrapper tag -> quiet chip, no edit
       dom.className = 'am-embed-chip';
       dom.textContent = v0.replace(/\s+/g, ' ').slice(0, 48);
+      dom.setAttribute('data-am-src', v0.replace(/\s+/g, ' ').trim().slice(0, 300));
       return { dom: dom };
     }
     dom.className = 'am-embed-card';
     function renderCard() {
       dom.innerHTML = '';
       const v = node.attrs.value || '';
+      // Source excerpt for Ctrl+click agent-focus selections (the card's
+      // visible text is chrome, not content).
+      dom.setAttribute('data-am-src', v.replace(/\s+/g, ' ').trim().slice(0, 300));
       const tg = (v.match(/^\s*<\/?([a-zA-Z][\w-]*)/) || [, 'html'])[1].toLowerCase();
       const hasScript = /<script\b/i.test(v);
       const kind = tg === 'figure' ? (hasScript ? 'Interactive figure' : 'Figure')
@@ -3374,6 +3378,102 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       try { await ed.destroy(); } catch (e) { /* already gone */ }
     }
   }
+  // Ctrl/Cmd+click agent focus in the editor — the Edit-view analogue of
+  // click-to-focus in the Doc view. The editor strips tracking ids on load,
+  // so the selection carries label + excerpt only (the agent and the backend
+  // both match ID-less blocks by content); headings contribute their {#anchor}.
+  function editorBlockInfo(target) {
+    const root = document.querySelector('#milkdown-mount .ProseMirror');
+    if (!root || !(target instanceof Element) || !root.contains(target)) return null;
+    let el = target;
+    while (el && el.parentElement && el.parentElement !== root) el = el.parentElement;
+    if (!el || el.parentElement !== root) return null;
+    let anchorId = null, label, excerpt;
+    const embed = el.matches('[data-am-embed]') ? el : el.querySelector('[data-am-embed]');
+    if (embed) {
+      excerpt = embed.getAttribute('data-am-src')
+        || embed.textContent.replace(/\s+/g, ' ').trim().slice(0, 300);
+      const cap = embed.querySelector('.am-embed-cap');
+      label = (cap ? cap.textContent.trim().slice(0, 80) : '') || excerpt.slice(0, 80);
+    } else {
+      const text = el.textContent || '';
+      if (/^H[1-6]$/.test(el.tagName)) {
+        const m = text.match(/\{#([\w-]+)\}\s*$/);
+        if (m) anchorId = m[1];
+      }
+      label = text.replace(/\s*\{#[\w-]+\}\s*$/, '').split('\n')[0].trim().slice(0, 80);
+      excerpt = text.replace(/\s+/g, ' ').trim().slice(0, 2000);
+    }
+    if (!label && !excerpt) return null;
+    return { id: anchorId, track_id: null, anchor_id: anchorId,
+             label: label, excerpt: excerpt, element: el };
+  }
+  // Outlines for Ctrl+click focus selections. A class set from outside gets
+  // reverted by ProseMirror's mutation observer, so the outline must be a
+  // node decoration PM itself renders. Ranges map through edits.
+  function makeFocusSelPlugin(utils, pstate, pview) {
+    if (!(utils && utils.$prose && pstate && pstate.Plugin && pstate.PluginKey && pview)) return null;
+    // The key is returned alongside the plugin and pinned to the editor
+    // instance after create — concurrent re-mounts (doc switch + reset racing)
+    // would desync a module-level key from the editor that actually won.
+    const key = new pstate.PluginKey('am-focus-sel');
+    const plugin = utils.$prose(() => new pstate.Plugin({
+      key: key,
+      state: {
+        init: () => ({ ranges: [] }),
+        apply: (tr, prev) => {
+          let ranges = prev.ranges;
+          if (tr.docChanged) {
+            ranges = ranges
+              .map(r => ({ from: tr.mapping.map(r.from, 1), to: tr.mapping.map(r.to, -1) }))
+              .filter(r => r.to > r.from);
+          }
+          const meta = tr.getMeta(key);
+          if (meta && meta.clear) ranges = [];
+          else if (meta && meta.toggle) {
+            const i = ranges.findIndex(r => r.from === meta.toggle.from && r.to === meta.toggle.to);
+            ranges = i >= 0 ? ranges.filter((_, j) => j !== i) : ranges.concat(meta.toggle);
+          }
+          return ranges === prev.ranges ? prev : { ranges };
+        },
+      },
+      props: {
+        decorations: function (state) {
+          const st = key.getState(state);
+          if (!st || !st.ranges.length) return null;
+          return pview.DecorationSet.create(state.doc,
+            st.ranges.map(r => pview.Decoration.node(r.from, r.to, { class: 'selected-block' })));
+        },
+      },
+    }));
+    return { plugin: plugin, key: key };
+  }
+  function getEditorView() {
+    try { return milkdownEditor ? milkdownEditor.__getView() : null; } catch (e) { return null; }
+  }
+  function toggleEditorFocusOutline(el) {
+    const view = getEditorView();
+    const key = milkdownEditor && milkdownEditor.__focusSelKey;
+    if (!view || !key || !el) return;
+    try {
+      const pos = view.posAtDOM(el, 0);
+      const $p = view.state.doc.resolve(pos);
+      let from, to;
+      if ($p.depth >= 1) { from = $p.before(1); to = $p.after(1); }
+      else {
+        const n = view.state.doc.nodeAt(pos);
+        if (!n) return;
+        from = pos; to = pos + n.nodeSize;
+      }
+      view.dispatch(view.state.tr.setMeta(key, { toggle: { from: from, to: to } }));
+    } catch (err) { /* outline is best-effort; the chip is the source of truth */ }
+  }
+  function clearEditorFocusOutlines() {
+    const view = getEditorView();
+    const key = milkdownEditor && milkdownEditor.__focusSelKey;
+    if (!view || !key) return;
+    try { view.dispatch(view.state.tr.setMeta(key, { clear: true })); } catch (err) {}
+  }
   function editStatus(msg) {
     const el = document.getElementById('edit-status');
     if (el) el.textContent = msg;
@@ -3421,22 +3521,43 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       },
     }));
   }
+  let _editMountSeq = 0;   // a newer mount supersedes any still awaiting the CDN
   async function renderEditView() {
+    const seq = ++_editMountSeq;
     await destroyMilkdown();
     body.className = 'view-edit';
     body.innerHTML =
       '<div class="edit-toolbar">'
       + '<button id="edit-save" class="btn">Save</button>'
       + '<span id="edit-status" class="edit-status"></span>'
-      + '<span class="edit-note">Experimental WYSIWYG (Phase 1). Edits the '
-      + 'body; frontmatter and tracking-ids are handled on save.</span>'
+      + '<span class="edit-note">Experimental WYSIWYG. Ctrl+click a block to '
+      + 'focus the agent on it; frontmatter and tracking-ids are handled on save.</span>'
       + '</div><div id="milkdown-mount"></div>';
     document.getElementById('edit-save').addEventListener('click', saveEditView);
+    // Capture phase: ProseMirror must never see the Ctrl/Cmd+click (it would
+    // node-select or move the caret); toggle the agent-focus selection instead.
+    document.getElementById('milkdown-mount').addEventListener('mousedown', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+      const info = editorBlockInfo(e.target);
+      if (!info) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleFrameSelection(info, true);
+      toggleEditorFocusOutline(info.element);
+    }, true);
+    // …and swallow the paired click, so card buttons don't also fire.
+    document.getElementById('milkdown-mount').addEventListener('click', (e) => {
+      if ((e.ctrlKey || e.metaKey) && editorBlockInfo(e.target)) {
+        e.preventDefault(); e.stopPropagation();
+      }
+    }, true);
     editStatus('loading editor…');
     let mod;
     try { mod = await loadMilkdown(); }
     catch (e) { editStatus('failed to load editor: ' + (e.message || e)); return; }
-    if (currentView !== 'edit') return;   // user navigated away while loading
+    // User navigated away, or a re-mount (doc switch, reset) superseded this
+    // one — proceeding would mount a SECOND editor into the new mount div.
+    if (currentView !== 'edit' || seq !== _editMountSeq) return;
     const { core, cm, gfm, utils, mathMod, pstate, pview } = mod;
     ensureKatexCss();
     try {
@@ -3458,12 +3579,21 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (mathMod && mathMod.math) make = make.use(mathMod.math);  // $...$ via KaTeX
       const anchorDim = makeAnchorDimPlugin(utils, pstate, pview);
       if (anchorDim) make = make.use(anchorDim);
+      const focusSel = makeFocusSelPlugin(utils, pstate, pview);
+      if (focusSel) make = make.use(focusSel.plugin);
       const dirtyPlugin = makeDirtyPlugin(utils, pstate);
       if (dirtyPlugin) make = make.use(dirtyPlugin);
       _editorDirty = false;
       _suppressDirty = true;   // ignore mount-time settling transactions
-      milkdownEditor = await make.create();
+      const ed = await make.create();
+      if (currentView !== 'edit' || seq !== _editMountSeq) {
+        try { await ed.destroy(); } catch (e2) { /* superseded mid-create */ }
+        return;
+      }
+      milkdownEditor = ed;
       milkdownEditor.__getMd = () => milkdownEditor.action(utils.getMarkdown());
+      milkdownEditor.__getView = () => milkdownEditor.action((ctx) => ctx.get(core.editorViewCtx));
+      milkdownEditor.__focusSelKey = focusSel ? focusSel.key : null;
       editStatus('ready');
       setTimeout(() => { _suppressDirty = false; }, 250);
     } catch (e) {
@@ -4121,6 +4251,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   selectionClear.addEventListener('click', () => {
     clearInsertion({ updateChip: false });
     setSelections([]);
+    if (currentView === 'edit') clearEditorFocusOutlines();
   });
 
   // Save-as-component button on the selection bar. Visible whenever 1+

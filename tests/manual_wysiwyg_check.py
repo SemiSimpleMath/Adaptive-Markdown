@@ -92,6 +92,12 @@ def run(base: str) -> int:
         _open_editor(page, base, "intro")
         r.check("editor mounts on ?edit",
                 page.evaluate("() => !!document.querySelector('#milkdown-mount .ProseMirror')"))
+        # Exactly one editor: a superseded mount racing the CDN load used to
+        # mount a SECOND ProseMirror into the new mount div.
+        n_editors = page.evaluate(
+            "() => document.querySelectorAll('#milkdown-mount .ProseMirror').length")
+        r.check("exactly one editor instance after doc switch + reset",
+                n_editors == 1, f"editors={n_editors}")
         r.check("KaTeX math renders",
                 page.evaluate("() => document.querySelectorAll('#milkdown-mount .katex').length") > 0)
         r.check("caret CSS (white-space: pre-wrap) applied",
@@ -117,6 +123,27 @@ def run(base: str) -> int:
             r.check("mid-text click places the caret",
                     sel and sel["inEditor"] and sel["collapsed"] and sel["offset"] > 0,
                     f"sel={sel}")
+            # Ctrl+click = agent-focus selection (chip + outline); repeat toggles off.
+            page.keyboard.down("Control")
+            page.mouse.click(pt["x"], pt["y"])
+            page.keyboard.up("Control")
+            page.wait_for_timeout(200)
+            bar = page.evaluate(
+                "() => ({ vis: document.getElementById('selection-bar')"
+                ".classList.contains('visible'),"
+                " label: document.getElementById('selection-label').textContent })")
+            r.check("ctrl+click selects block for agent focus",
+                    bar and bar["vis"] and bar["label"], f"bar={bar}")
+            outlined = page.evaluate(
+                "() => document.querySelectorAll('#milkdown-mount .selected-block').length")
+            r.check("selected block outlined in editor", outlined == 1, f"outlined={outlined}")
+            page.keyboard.down("Control")
+            page.mouse.click(pt["x"], pt["y"])
+            page.keyboard.up("Control")
+            page.wait_for_timeout(200)
+            r.check("second ctrl+click deselects",
+                    not page.evaluate("() => document.getElementById('selection-bar')"
+                                      ".classList.contains('visible')"))
         else:
             r.check("mid-text click places the caret", False, "no long paragraph found")
         page.click("#edit-save")
@@ -135,6 +162,30 @@ def run(base: str) -> int:
         r.check("figures render as embed cards", ncards > 0, f"cards={ncards}")
         r.check("no raw <figure> source shown",
                 not page.evaluate("() => (document.querySelector('#milkdown-mount').textContent||'').includes('</figure>')"))
+        # Ctrl+click on an embed card selects it with a SOURCE excerpt
+        # (data-am-src), not the card's chrome text.
+        cpt = page.evaluate(
+            "() => { const c = document.querySelector('#milkdown-mount .am-embed-card');"
+            "if (!c) return null; const r = c.getBoundingClientRect();"
+            "return { x: r.left + r.width / 2, y: r.top + 8 }; }")
+        if cpt:
+            page.keyboard.down("Control")
+            page.mouse.click(cpt["x"], cpt["y"])
+            page.keyboard.up("Control")
+            page.wait_for_timeout(200)
+            csel = page.evaluate(
+                "() => ({ vis: document.getElementById('selection-bar')"
+                ".classList.contains('visible'),"
+                " src: document.querySelector('#milkdown-mount .am-embed-card')"
+                ".getAttribute('data-am-src') || '' })")
+            r.check("ctrl+click selects embed card (source excerpt available)",
+                    csel and csel["vis"] and csel["src"].startswith("<figure"),
+                    f"csel={csel}")
+            page.evaluate("() => document.getElementById('selection-clear').click()")
+            page.wait_for_timeout(200)
+        else:
+            r.check("ctrl+click selects embed card (source excerpt available)",
+                    False, "no embed card found")
         page.evaluate("() => document.querySelector('.am-embed-card .am-embed-btn').click()")
         page.wait_for_selector(".am-embed-edit textarea", timeout=5000)
         page.evaluate("() => { const t=document.querySelector('.am-embed-edit textarea'); t.value = t.value + '<!--WYSIWYG_CHECK_MARK-->'; }")
