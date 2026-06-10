@@ -3261,6 +3261,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let _milkdownMod = null;
   let milkdownEditor = null;
   let _editorSelfSave = false;  // suppress the doc_changed reload after our own save
+  let _editorDirty = false;     // unsaved changes in the editor
+  let _suppressDirty = false;   // ignore the settling transactions right after mount
   function loadMilkdown() {
     if (!_milkdownMod) {
       const base = 'https://esm.sh/@milkdown/kit@7';
@@ -3401,6 +3403,24 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       },
     }));
   }
+  function markEditorDirty() {
+    if (_suppressDirty || _editorDirty) return;
+    _editorDirty = true;
+    editStatus('● unsaved changes');
+  }
+  // Flag the editor dirty on any real document change (not selection-only).
+  function makeDirtyPlugin(utils, pstate) {
+    if (!(utils && utils.$prose && pstate && pstate.Plugin)) return null;
+    return utils.$prose(() => new pstate.Plugin({
+      view: function () {
+        return {
+          update: function (view, prev) {
+            if (!prev.doc.eq(view.state.doc)) markEditorDirty();
+          },
+        };
+      },
+    }));
+  }
   async function renderEditView() {
     await destroyMilkdown();
     body.className = 'view-edit';
@@ -3438,9 +3458,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (mathMod && mathMod.math) make = make.use(mathMod.math);  // $...$ via KaTeX
       const anchorDim = makeAnchorDimPlugin(utils, pstate, pview);
       if (anchorDim) make = make.use(anchorDim);
+      const dirtyPlugin = makeDirtyPlugin(utils, pstate);
+      if (dirtyPlugin) make = make.use(dirtyPlugin);
+      _editorDirty = false;
+      _suppressDirty = true;   // ignore mount-time settling transactions
       milkdownEditor = await make.create();
       milkdownEditor.__getMd = () => milkdownEditor.action(utils.getMarkdown());
       editStatus('ready');
+      setTimeout(() => { _suppressDirty = false; }, 250);
     } catch (e) {
       editStatus('editor init failed: ' + (e.message || e));
     }
@@ -3466,6 +3491,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           + (j.details ? ' — ' + JSON.stringify(j.details).slice(0, 200) : ''));
         return;
       }
+      _editorDirty = false;
       editStatus('saved ✓');
     } catch (e) {
       _editorSelfSave = false;
