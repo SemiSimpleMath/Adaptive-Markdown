@@ -564,6 +564,10 @@ body {
 .am-embed-cap { color: var(--muted, #555); margin-top: 3px; font-style: italic; }
 .am-embed-chip { display: inline-block; border: 1px dashed var(--border, #c9d2dc); border-radius: 5px; background: var(--surface, #f2f4f7); padding: 0 6px; margin: 1px 0; font: 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); }
 #milkdown-mount .am-anchor-dim { opacity: .3; font-size: .78em; font-weight: 400; }
+.am-embed-actions { margin-top: 8px; }
+.am-embed-btn { font-size: 12px; padding: 2px 9px; margin-right: 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; }
+.am-embed-btn:hover { background: var(--accent); color: var(--accent-text, #fff); border-color: var(--accent); }
+.am-embed-edit textarea { width: 100%; min-height: 110px; box-sizing: border-box; margin-bottom: 6px; font: 12px/1.45 ui-monospace, Consolas, monospace; color: var(--text); background: var(--bg); border: 1px solid var(--accent); border-radius: 6px; padding: 8px; }
 
 .view-source {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -3291,34 +3295,75 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // or close) get an unobtrusive chip. Display only — the node's verbatim
   // value (node.attrs.value) is untouched, so serialization round-trips
   // byte-exact and nothing executes in the editor.
-  function buildEmbedCard(value) {
-    const v = value || '';
-    const tagM = v.match(/^\s*<\/?([a-zA-Z][\w-]*)/);
+  function buildEmbedCard(node, view, getPos) {
+    const v0 = (node && node.attrs && node.attrs.value) || '';
+    const tagM = v0.match(/^\s*<\/?([a-zA-Z][\w-]*)/);
     const tag = tagM ? tagM[1].toLowerCase() : 'html';
-    const heavy = /<(script|canvas|svg|style|iframe|figure|video|audio|table)\b/i.test(v);
+    const heavy = /<(script|canvas|svg|style|iframe|figure|video|audio|table)\b/i.test(v0);
     const dom = document.createElement(heavy ? 'div' : 'span');
     dom.contentEditable = 'false';
     dom.setAttribute('data-am-embed', tag);
-    if (!heavy) {
+    if (!heavy) {            // bare structural wrapper tag -> quiet chip, no edit
       dom.className = 'am-embed-chip';
-      dom.textContent = v.replace(/\s+/g, ' ').slice(0, 48);
+      dom.textContent = v0.replace(/\s+/g, ' ').slice(0, 48);
       return { dom: dom };
     }
     dom.className = 'am-embed-card';
-    const hasScript = /<script\b/i.test(v);
-    const kind = tag === 'figure' ? (hasScript ? 'Interactive figure' : 'Figure')
-      : (tag.charAt(0).toUpperCase() + tag.slice(1));
-    const label = document.createElement('div');
-    label.className = 'am-embed-label';
-    label.textContent = '⬚ ' + kind + (hasScript ? '  ·  runs in View mode' : '');
-    dom.appendChild(label);
-    const capM = v.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i);
-    if (capM) {
-      const cap = document.createElement('div');
-      cap.className = 'am-embed-cap';
-      cap.textContent = capM[1].replace(/<[^>]+>/g, '').trim();
-      dom.appendChild(cap);
+    function renderCard() {
+      dom.innerHTML = '';
+      const v = node.attrs.value || '';
+      const tg = (v.match(/^\s*<\/?([a-zA-Z][\w-]*)/) || [, 'html'])[1].toLowerCase();
+      const hasScript = /<script\b/i.test(v);
+      const kind = tg === 'figure' ? (hasScript ? 'Interactive figure' : 'Figure')
+        : (tg.charAt(0).toUpperCase() + tg.slice(1));
+      const label = document.createElement('div');
+      label.className = 'am-embed-label';
+      label.textContent = '⬚ ' + kind + (hasScript ? '  ·  runs in View mode' : '');
+      dom.appendChild(label);
+      const capM = v.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i);
+      if (capM) {
+        const cap = document.createElement('div');
+        cap.className = 'am-embed-cap';
+        cap.textContent = capM[1].replace(/<[^>]+>/g, '').trim();
+        dom.appendChild(cap);
+      }
+      if (view && getPos) {
+        const acts = document.createElement('div');
+        acts.className = 'am-embed-actions';
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'am-embed-btn';
+        editBtn.textContent = 'Edit source';
+        editBtn.addEventListener('click', startEdit);
+        acts.appendChild(editBtn);
+        dom.appendChild(acts);
+      }
     }
+    function startEdit() {
+      dom.innerHTML = '';
+      const wrap = document.createElement('div');
+      wrap.className = 'am-embed-edit';
+      const ta = document.createElement('textarea');
+      ta.value = node.attrs.value || '';
+      const apply = document.createElement('button');
+      apply.type = 'button'; apply.className = 'am-embed-btn'; apply.textContent = 'Apply';
+      const cancel = document.createElement('button');
+      cancel.type = 'button'; cancel.className = 'am-embed-btn'; cancel.textContent = 'Cancel';
+      apply.addEventListener('click', () => {
+        const pos = getPos();
+        if (typeof pos === 'number') {
+          const tr = view.state.tr;
+          if (tr.setNodeAttribute) tr.setNodeAttribute(pos, 'value', ta.value);
+          else tr.setNodeMarkup(pos, undefined, { ...node.attrs, value: ta.value });
+          view.dispatch(tr);   // node attr change re-creates this nodeView
+        }
+      });
+      cancel.addEventListener('click', renderCard);
+      wrap.appendChild(ta); wrap.appendChild(apply); wrap.appendChild(cancel);
+      dom.appendChild(wrap);
+      ta.focus();
+    }
+    renderCard();
     return { dom: dom };
   }
   async function destroyMilkdown() {
@@ -3384,7 +3429,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
             ...prev,
             nodeViews: {
               ...((prev && prev.nodeViews) || {}),
-              html: (node) => buildEmbedCard(node.attrs.value),
+              html: (node, view, getPos) => buildEmbedCard(node, view, getPos),
             },
           }));
         })
