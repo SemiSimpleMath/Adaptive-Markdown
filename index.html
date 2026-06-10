@@ -563,6 +563,7 @@ body {
 .am-embed-label { font-weight: 600; color: var(--accent, #2a4d7a); }
 .am-embed-cap { color: var(--muted, #555); margin-top: 3px; font-style: italic; }
 .am-embed-chip { display: inline-block; border: 1px dashed var(--border, #c9d2dc); border-radius: 5px; background: var(--surface, #f2f4f7); padding: 0 6px; margin: 1px 0; font: 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); }
+#milkdown-mount .am-anchor-dim { opacity: .3; font-size: .78em; font-weight: 400; }
 
 .view-source {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -3264,7 +3265,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         import(base + '/preset/gfm'),
         import(base + '/utils'),
         import('https://esm.sh/@milkdown/plugin-math@7'),
-      ]).then(([core, cm, gfm, utils, mathMod]) => ({ core, cm, gfm, utils, mathMod }));
+        import(base + '/prose/state'),
+        import(base + '/prose/view'),
+      ]).then(([core, cm, gfm, utils, mathMod, pstate, pview]) =>
+        ({ core, cm, gfm, utils, mathMod, pstate, pview }));
     }
     return _milkdownMod;
   }
@@ -3326,6 +3330,31 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const el = document.getElementById('edit-status');
     if (el) el.textContent = msg;
   }
+  // Dim Pandoc-style heading anchors ({#id}) so they read as quiet metadata,
+  // not noise. Display-only ProseMirror decoration -- the {#id} stays in the
+  // document text and round-trips byte-exact.
+  function makeAnchorDimPlugin(utils, pstate, pview) {
+    if (!(utils && utils.$prose && pstate && pstate.Plugin && pview)) return null;
+    return utils.$prose(() => new pstate.Plugin({
+      props: {
+        decorations: function (state) {
+          const decos = [];
+          state.doc.descendants((node, pos) => {
+            if (node.type.name !== 'heading') return;
+            const text = node.textContent;
+            const m = text.match(/(\s*\{#[\w-]+\})\s*$/);
+            if (m) {
+              decos.push(pview.Decoration.inline(
+                pos + 1 + (text.length - m[1].length),
+                pos + 1 + text.length,
+                { class: 'am-anchor-dim' }));
+            }
+          });
+          return pview.DecorationSet.create(state.doc, decos);
+        },
+      },
+    }));
+  }
   async function renderEditView() {
     await destroyMilkdown();
     body.className = 'view-edit';
@@ -3342,7 +3371,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     try { mod = await loadMilkdown(); }
     catch (e) { editStatus('failed to load editor: ' + (e.message || e)); return; }
     if (currentView !== 'edit') return;   // user navigated away while loading
-    const { core, cm, gfm, utils, mathMod } = mod;
+    const { core, cm, gfm, utils, mathMod, pstate, pview } = mod;
     ensureKatexCss();
     try {
       let make = core.Editor.make()
@@ -3361,6 +3390,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         .use(cm.commonmark)
         .use(gfm.gfm);
       if (mathMod && mathMod.math) make = make.use(mathMod.math);  // $...$ via KaTeX
+      const anchorDim = makeAnchorDimPlugin(utils, pstate, pview);
+      if (anchorDim) make = make.use(anchorDim);
       milkdownEditor = await make.create();
       milkdownEditor.__getMd = () => milkdownEditor.action(utils.getMarkdown());
       editStatus('ready');
