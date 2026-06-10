@@ -533,8 +533,13 @@ body {
 .edit-status { font-size: 0.82rem; color: var(--muted, #888); }
 .edit-note { font-size: 0.76rem; color: var(--muted, #888); margin-left: auto; }
 #milkdown-mount .milkdown { outline: none; }
-#milkdown-mount .ProseMirror { outline: none; min-height: 320px; line-height: 1.6; }
+/* white-space: pre-wrap + position: relative are REQUIRED by ProseMirror:
+   without them its click->caret coordinate mapping breaks, so you can only
+   click at the end of a line, not in the middle (the prosemirror-view base CSS
+   we don't otherwise load). */
+#milkdown-mount .ProseMirror { outline: none; min-height: 320px; line-height: 1.6; position: relative; white-space: pre-wrap; word-wrap: break-word; font-variant-ligatures: none; }
 #milkdown-mount .ProseMirror:focus { outline: none; }
+#milkdown-mount .ProseMirror pre { white-space: pre-wrap; }
 #milkdown-mount .ProseMirror :is(h1,h2,h3,h4,h5,h6) { line-height: 1.25; }
 #milkdown-mount .ProseMirror pre { background: var(--pre-bg, #f5f5f5); padding: .7em; border-radius: 6px; overflow: auto; }
 #milkdown-mount .ProseMirror code { font-family: ui-monospace, Consolas, monospace; }
