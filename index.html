@@ -575,6 +575,21 @@ body {
   padding: .12em .55em; margin-left: .55em;
   vertical-align: middle; white-space: nowrap; opacity: .75;
 }
+/* Structural containers (details/section/div/aside): the wrapper tags live
+   verbatim in node attrs; the box + label are uneditable chrome (generated
+   content), only the inner blocks are in the text plane. */
+#milkdown-mount .ProseMirror [data-am-container] {
+  border-left: 3px solid var(--border, #c9d2dc);
+  padding: 4px 0 4px 14px; margin: 12px 0; border-radius: 2px;
+}
+#milkdown-mount .ProseMirror [data-am-container]::before {
+  content: attr(data-am-label); display: block; user-select: none;
+  font: 500 11px ui-monospace, Consolas, monospace;
+  color: var(--muted, #888); opacity: .8; margin-bottom: 4px;
+}
+#milkdown-mount .ProseMirror [data-am-class~="agent-skill"] {
+  border-left-color: var(--accent, #2a4d7a);
+}
 .am-embed-actions { margin-top: 8px; }
 .am-embed-btn { font-size: 12px; padding: 2px 9px; margin-right: 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; }
 .am-embed-btn:hover { background: var(--accent); color: var(--accent-text, #fff); border-color: var(--accent); }
@@ -3404,11 +3419,19 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   function editorBlockInfo(target) {
     const root = document.querySelector('#milkdown-mount .ProseMirror');
     if (!root || !(target instanceof Element) || !root.contains(target)) return null;
+    // Climb to the nearest block boundary: a direct child of the editor
+    // root OR of a structural container (so blocks inside a <details> week
+    // are individually selectable, matching Doc-view granularity).
+    const atBoundary = (n) => n.parentElement === root
+      || (n.parentElement && n.parentElement.hasAttribute('data-am-container'));
     let el = target;
-    while (el && el.parentElement && el.parentElement !== root) el = el.parentElement;
-    if (!el || el.parentElement !== root) return null;
+    while (el && el.parentElement && !atBoundary(el)) el = el.parentElement;
+    if (!el || !el.parentElement || !atBoundary(el)) return null;
     let anchorId = null, label, excerpt;
-    const embed = el.matches('[data-am-embed]') ? el : el.querySelector('[data-am-embed]');
+    // A container is never an "embed" even though it may contain chips.
+    const isContainer = el.hasAttribute('data-am-container');
+    const embed = isContainer ? null
+      : (el.matches('[data-am-embed]') ? el : el.querySelector('[data-am-embed]'));
     if (embed) {
       excerpt = embed.getAttribute('data-am-src')
         || embed.textContent.replace(/\s+/g, ' ').trim().slice(0, 300);
@@ -3486,7 +3509,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       const pos = view.posAtDOM(el, 0);
       const $p = view.state.doc.resolve(pos);
       let from, to;
-      if ($p.depth >= 1) { from = $p.before(1); to = $p.after(1); }
+      // $p.depth (not literal 1): blocks nested inside structural containers
+      // outline themselves, not their whole container.
+      if ($p.depth >= 1) { from = $p.before($p.depth); to = $p.after($p.depth); }
       else {
         const n = view.state.doc.nodeAt(pos);
         if (!n) return;
@@ -3578,6 +3603,142 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
           },
         };
       });
+    } catch (e) { return null; }
+  }
+  // ---- Structural-container layer (Edit-view unification, step 2) --------
+  // Blank-line-wrapped wrapper tags arrive from remark as isolated html
+  // chunks with their inner markdown floating flat between them (a real
+  // notes doc renders as ~75 chips). Pair a pure OPEN chunk (open tag alone
+  // on its first line, optionally followed by one-line elements such as
+  // <summary>…</summary>) with its matching close tag into ONE am-container
+  // node: verbatim chunks in attrs (byte-exact round-trip), inner blocks as
+  // ordinary editable children. Conservative by construction — mismatched,
+  // empty, or content-bearing chunks stay opaque chips exactly as before.
+  const AM_CONTAINER_TAGS = { details: 1, section: 1, div: 1, aside: 1 };
+  function amOpenChunkTag(node) {
+    if (!node || node.type !== 'html' || typeof node.value !== 'string') return null;
+    const lines = node.value.split(/\r?\n/);
+    const m = /^<([A-Za-z][\w-]*)(\s[^<>]*)?>\s*$/.exec(lines[0]);
+    if (!m || !AM_CONTAINER_TAGS[m[1].toLowerCase()]) return null;
+    for (let k = 1; k < lines.length; k++) {
+      const t = lines[k].trim();
+      if (t && !/^<([A-Za-z][\w-]*)(\s[^<>]*)?>[^<>]*<\/\1>$/.test(t)) return null;
+    }
+    return m[1].toLowerCase();
+  }
+  function amCloseChunkTag(node) {
+    if (!node || node.type !== 'html' || typeof node.value !== 'string') return null;
+    const m = /^<\/([A-Za-z][\w-]*)>$/.exec(node.value.trim());
+    return (m && AM_CONTAINER_TAGS[m[1].toLowerCase()]) ? m[1].toLowerCase() : null;
+  }
+  // Inside a container, leftover block-html chunks (self-contained
+  // <div>text</div> blocks, unpaired tags) must be pre-wrapped the way the
+  // commonmark preset wraps top-level block html: paragraph + INLINE html
+  // node. The preset's own flattener does not descend into am-container
+  // children, and Milkdown's html schema is inline-only — an unwrapped block
+  // 'html' child makes the parser fail "Cannot create node" and silently
+  // DROP the whole container (5 of 7 weeks vanished on the real notes doc).
+  function amWrapBlockHtml(nodes) {
+    return nodes.map((n) => {
+      if (!n || typeof n !== 'object') return n;
+      if (n.type === 'html') return { type: 'paragraph', children: [n] };
+      if (Array.isArray(n.children) && n.type !== 'paragraph'
+          && n.type !== 'heading' && n.type !== 'amContainer') {
+        n.children = amWrapBlockHtml(n.children);
+      }
+      return n;
+    });
+  }
+  function amPairContainers(children) {
+    const out = [];
+    let i = 0;
+    while (i < children.length) {
+      const tag = amOpenChunkTag(children[i]);
+      if (tag) {
+        let depth = 1, j = i + 1;
+        for (; j < children.length; j++) {
+          if (amOpenChunkTag(children[j]) === tag) depth++;
+          else if (amCloseChunkTag(children[j]) === tag && --depth === 0) break;
+        }
+        if (j < children.length && j > i + 1) {  // matched and non-empty
+          out.push({
+            type: 'amContainer',
+            containerTag: tag,
+            openChunk: children[i].value,
+            closeChunk: children[j].value,
+            children: amWrapBlockHtml(amPairContainers(children.slice(i + 1, j))),
+          });
+          i = j + 1;
+          continue;
+        }
+      }
+      out.push(children[i]);
+      i++;
+    }
+    return out;
+  }
+  function makeContainerLayer(utils) {
+    if (!(utils && typeof utils.$remark === 'function'
+          && typeof utils.$nodeSchema === 'function')) return null;
+    try {
+      const remarkPair = utils.$remark('amContainers', () => () => (tree) => {
+        if (tree && Array.isArray(tree.children))
+          tree.children = amPairContainers(tree.children);
+      });
+      const schema = utils.$nodeSchema('am-container', () => ({
+        content: 'block+',
+        group: 'block',
+        defining: true,
+        attrs: {
+          containerTag: { default: 'div' },
+          openChunk: { default: '' },
+          closeChunk: { default: '' },
+        },
+        parseDOM: [{
+          tag: 'div[data-am-container]',
+          getAttrs: (dom) => ({
+            containerTag: dom.getAttribute('data-am-container') || 'div',
+            openChunk: dom.getAttribute('data-am-open') || '',
+            closeChunk: dom.getAttribute('data-am-close') || '',
+          }),
+        }],
+        toDOM: (node) => {
+          const open = node.attrs.openChunk;
+          const cls = (/class="([^"]*)"/.exec(open) || [, ''])[1];
+          const summary = (/<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(open) || [, ''])[1];
+          const label = node.attrs.containerTag
+            + (cls ? '.' + cls.trim().split(/\s+/).join('.') : '')
+            + (summary ? ' — ' + summary.replace(/<[^>]+>/g, '').trim() : '');
+          return ['div', {
+            'data-am-container': node.attrs.containerTag,
+            'data-am-class': cls,
+            'data-am-label': label,
+            'data-am-open': open,
+            'data-am-close': node.attrs.closeChunk,
+          }, 0];
+        },
+        parseMarkdown: {
+          match: (n) => n.type === 'amContainer',
+          runner: (state, node, type) => {
+            state.openNode(type, {
+              containerTag: node.containerTag,
+              openChunk: node.openChunk,
+              closeChunk: node.closeChunk,
+            });
+            state.next(node.children);
+            state.closeNode();
+          },
+        },
+        toMarkdown: {
+          match: (n) => n.type.name === 'am-container',
+          runner: (state, node) => {
+            state.addNode('html', undefined, node.attrs.openChunk);
+            state.next(node.content);
+            state.addNode('html', undefined, node.attrs.closeChunk);
+          },
+        },
+      }));
+      return { remark: remarkPair, schema: schema };
     } catch (e) { return null; }
   }
   // FALLBACK ONLY (CDN API drift: headingSchema.extendSchema unavailable):
@@ -3675,9 +3836,15 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
               html: (node, view, getPos) => buildEmbedCard(node, view, getPos),
             },
           }));
-        })
-        .use(cm.commonmark)
-        .use(gfm.gfm);
+        });
+      // The container layer must register BEFORE the commonmark preset: the
+      // preset's own remark plugins flatten block html into paragraph-wrapped
+      // INLINE html nodes, so the pairing transform has to see the raw
+      // block-html mdast first (registered after, it sees zero html nodes).
+      const containerLayer = makeContainerLayer(utils);
+      if (containerLayer)
+        make = make.use(containerLayer.remark).use(containerLayer.schema);
+      make = make.use(cm.commonmark).use(gfm.gfm);
       if (mathMod && mathMod.math) make = make.use(mathMod.math);  // $...$ via KaTeX
       const headingMarker = makeHeadingMarkerExt(cm);
       if (headingMarker) make = make.use(headingMarker);

@@ -16,6 +16,9 @@ Spawns its own backend on a free port, then verifies, against the shipped docs:
   - heading markers ({#id}) are lifted out of the editable text into
     data-am-marker pills, survive heading edits, and round-trip byte-exact,
   - a whole-doc save round-trips (math preserved on disk),
+  - structural wrappers pair into editable containers (structure-test):
+    nesting, summary labels, wrapper lines byte-exact through save,
+    normalize-once idempotence, typed text lands inside the wrapper,
   - embed figures render as cards, not raw <figure> source (plot-test),
   - editing a card's source (Edit source -> Apply -> Save) lands in current.md.
 
@@ -222,6 +225,81 @@ def run(base: str) -> int:
         page.wait_for_selector("#milkdown-mount .ProseMirror", timeout=45000)
         r.check("reload while editing returns to the Edit view",
                 page.evaluate("() => !!document.querySelector('#milkdown-mount .ProseMirror')"))
+
+        print("[scenario] structural containers (structure-test)")
+        _open_editor(page, base, "structure-test")
+        ncont = page.evaluate(
+            "() => document.querySelectorAll('#milkdown-mount [data-am-container]').length")
+        r.check("wrapper tags pair into container nodes", ncont == 5,
+                f"containers={ncont} expected=5")
+        r.check("nested wrapper pairs inside its parent container",
+                page.evaluate("() => !!document.querySelector("
+                              "'#milkdown-mount [data-am-container] [data-am-container]')"))
+        r.check("no dangling close-tag chips for paired wrappers",
+                page.evaluate("() => ![...document.querySelectorAll("
+                              "'#milkdown-mount .am-embed-chip')]"
+                              ".some(c => /^<\\//.test((c.textContent||'').trim()))"))
+        r.check("details label carries its summary text",
+                page.evaluate("() => ((document.querySelector('#milkdown-mount"
+                              " [data-am-container=\"details\"]')||{getAttribute:()=>''})"
+                              ".getAttribute('data-am-label')||'').includes('Week One')"))
+        r.check("heading-marker pill still works inside a container",
+                page.evaluate("() => !!document.querySelector("
+                              "'#milkdown-mount [data-am-container] [data-am-marker]')"))
+        # Wrapper/summary lines must survive the first (normalizing) save
+        # byte-exact — this is the corruption guard for the serialize path.
+        wrap_re = re.compile(r"^[ \t]*</?(?:details|div|aside|section|summary)\b.*$", re.M)
+        base0 = page.evaluate(
+            "async () => (await fetch('/docs/structure-test/baseline.md', {cache:'no-store'})).text()")
+        page.click("#edit-save")
+        page.wait_for_function("() => /saved|failed|error/.test(document.getElementById('edit-status')?.textContent||'')", timeout=15000)
+        cur_a = page.evaluate(
+            "async () => (await fetch('/docs/structure-test/current.md', {cache:'no-store'})).text()")
+        r.check("wrapper/summary lines byte-exact through first save",
+                wrap_re.findall(base0) == wrap_re.findall(cur_a),
+                f"base={wrap_re.findall(base0)} cur={wrap_re.findall(cur_a)}")
+        # Normalize-once idempotence: remount on the saved doc, save again,
+        # bytes must be identical (modulo re-stamped tracking ids).
+        page.click(".view-tab:has-text('Doc')")
+        page.wait_for_timeout(600)
+        page.click("button.view-tab-dropdown:has-text('View')")
+        page.click(".view-dropdown-menu .overflow-item:has-text('Edit (beta)')")
+        page.wait_for_selector("#milkdown-mount .ProseMirror", timeout=45000)
+        page.wait_for_function(
+            "() => document.getElementById('edit-status')?.textContent === 'ready'", timeout=20000)
+        page.wait_for_timeout(600)
+        page.click("#edit-save")
+        page.wait_for_function("() => /saved|failed|error/.test(document.getElementById('edit-status')?.textContent||'')", timeout=15000)
+        cur_b = page.evaluate(
+            "async () => (await fetch('/docs/structure-test/current.md', {cache:'no-store'})).text()")
+        strip_ids = lambda t: re.sub(
+            r"^[ \t]*<!-- id:b-[A-Z0-9-]+ -->[ \t]*\r?\n", "", t, flags=re.M)
+        r.check("second save is byte-identical (modulo tracking ids)",
+                strip_ids(cur_a) == strip_ids(cur_b))
+        # Typing into a block inside a details container must land BETWEEN
+        # the wrapper tags on disk, not outside them.
+        pt = page.evaluate(
+            "() => { const p = document.querySelector("
+            "'#milkdown-mount [data-am-container=\"details\"] p');"
+            "if (!p) return null; const r = p.getBoundingClientRect();"
+            "return { x: r.left + Math.min(60, r.width / 2), y: r.top + r.height / 2 }; }")
+        r.check("found an editable paragraph inside a details container", bool(pt))
+        if pt:
+            page.mouse.click(pt["x"], pt["y"])
+            page.wait_for_timeout(150)
+            page.keyboard.type("Qz7")
+            page.wait_for_timeout(150)
+            page.click("#edit-save")
+            page.wait_for_function("() => /saved|failed|error/.test(document.getElementById('edit-status')?.textContent||'')", timeout=15000)
+            cur_c = page.evaluate(
+                "async () => (await fetch('/docs/structure-test/current.md', {cache:'no-store'})).text()")
+            i_open = cur_c.find("<details")
+            i_text = cur_c.find("Qz7")
+            i_close = cur_c.find("</details>")
+            r.check("typed text lands inside the details block",
+                    0 <= i_open < i_text < i_close,
+                    f"open={i_open} text={i_text} close={i_close}")
+        _reset(page, "structure-test")
 
         print("[scenario] embed cards + card-source edit (plot-test)")
         _open_editor(page, base, "plot-test")

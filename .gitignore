@@ -39,6 +39,7 @@ docs/*
 !docs/help/
 !docs/plot-test/
 !docs/csv-test/
+!docs/structure-test/
 docs/*/current.md
 docs/*/snaps/
 docs/*/patches/
