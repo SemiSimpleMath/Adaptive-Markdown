@@ -1157,7 +1157,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentText = '';            // raw .md source for current doc
   let currentFm = {};              // parsed frontmatter
   let currentBody = '';            // raw body after frontmatter strip
-  let currentView = 'doc';
+  // ?edit starts in (and reloads back into) the WYSIWYG editor, so a refresh
+  // doesn't drop you back to the Doc view with the old inline toolbar.
+  let currentView = new URLSearchParams(location.search).has('edit') ? 'edit' : 'doc';
   // Pending-changes substrate (phase 4): the most recent pending.json
   // contents for the current doc, refreshed when the doc loads and when
   // pending_changed broadcasts. Empty array means no Review tab.
