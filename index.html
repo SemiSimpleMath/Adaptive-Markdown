@@ -582,13 +582,26 @@ body {
   border-left: 3px solid var(--border, #c9d2dc);
   padding: 4px 0 4px 14px; margin: 12px 0; border-radius: 2px;
 }
-#milkdown-mount .ProseMirror [data-am-container]::before {
+#milkdown-mount .ProseMirror [data-am-container][data-am-label]::before {
   content: attr(data-am-label); display: block; user-select: none;
   font: 500 11px ui-monospace, Consolas, monospace;
   color: var(--muted, #888); opacity: .8; margin-bottom: 4px;
 }
 #milkdown-mount .ProseMirror [data-am-class~="agent-skill"] {
   border-left-color: var(--accent, #2a4d7a);
+}
+/* Collapsible container header (details weeks, agent-skill cards). */
+#milkdown-mount .ProseMirror .am-container-header {
+  display: flex; align-items: baseline; gap: 7px;
+  cursor: pointer; user-select: none; margin: 2px 0 4px;
+}
+#milkdown-mount .ProseMirror .am-container-arrow { color: var(--muted, #888); font-size: .8em; }
+#milkdown-mount .ProseMirror .am-container-title { font-weight: 600; }
+#milkdown-mount .ProseMirror .am-container-hint {
+  color: var(--muted, #888); font-size: .75em; font-style: italic;
+}
+#milkdown-mount .ProseMirror [data-am-class~="agent-skill"] .am-container-title {
+  color: var(--accent, #2a4d7a);
 }
 .am-embed-actions { margin-top: 8px; }
 .am-embed-btn { font-size: 12px; padding: 2px 9px; margin-right: 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; }
@@ -3420,13 +3433,19 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const root = document.querySelector('#milkdown-mount .ProseMirror');
     if (!root || !(target instanceof Element) || !root.contains(target)) return null;
     // Climb to the nearest block boundary: a direct child of the editor
-    // root OR of a structural container (so blocks inside a <details> week
-    // are individually selectable, matching Doc-view granularity).
+    // root OR of a structural container's content (so blocks inside a
+    // <details> week are individually selectable, matching Doc-view
+    // granularity). Container header chrome maps to the container itself.
     const atBoundary = (n) => n.parentElement === root
-      || (n.parentElement && n.parentElement.hasAttribute('data-am-container'));
+      || (n.parentElement
+          && (n.parentElement.hasAttribute('data-am-container')
+              || n.parentElement.hasAttribute('data-am-container-content')));
     let el = target;
     while (el && el.parentElement && !atBoundary(el)) el = el.parentElement;
     if (!el || !el.parentElement || !atBoundary(el)) return null;
+    if (el.classList && el.classList.contains('am-container-header'))
+      el = el.parentElement;
+    if (el.hasAttribute('data-am-container-content')) el = el.parentElement;
     let anchorId = null, label, excerpt;
     // A container is never an "embed" even though it may contain chips.
     const isContainer = el.hasAttribute('data-am-container');
@@ -3741,6 +3760,120 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       return { remark: remarkPair, schema: schema };
     } catch (e) { return null; }
   }
+  // Per-class container chrome (step 3): details containers get a working
+  // collapse toggle (display-only — seeded from the verbatim open-attr, never
+  // written back to source, so toggling can't dirty the doc); agent-skill
+  // sections render as an opaque "hidden from readers" card, collapsed by
+  // default. Other containers keep the plain CSS-label chrome.
+  function buildContainerView(node, view, getPos) {
+    const tag = node.attrs.containerTag;
+    const open = node.attrs.openChunk;
+    const cls = (/class="([^"]*)"/.exec(open) || [, ''])[1] || '';
+    const isSkill = tag === 'section' && /(^|\s)agent-skill(\s|$)/.test(cls);
+    const collapsible = tag === 'details' || isSkill;
+    const dom = document.createElement('div');
+    dom.setAttribute('data-am-container', tag);
+    if (cls) dom.setAttribute('data-am-class', cls);
+    dom.setAttribute('data-am-open', open);
+    dom.setAttribute('data-am-close', node.attrs.closeChunk);
+    const contentDOM = document.createElement('div');
+    contentDOM.setAttribute('data-am-container-content', '');
+    if (!collapsible) {
+      dom.setAttribute('data-am-label',
+        tag + (cls ? '.' + cls.trim().split(/\s+/).join('.') : ''));
+      dom.appendChild(contentDOM);
+      return { dom: dom, contentDOM: contentDOM };
+    }
+    const summary = (/<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(open) || [, ''])[1];
+    let collapsed = isSkill || !/<details[^<>]*\sopen[\s>]/i.test(open);
+    let curNode = node;
+    const header = document.createElement('div');
+    header.className = 'am-container-header';
+    header.contentEditable = 'false';
+    const arrow = document.createElement('span');
+    arrow.className = 'am-container-arrow';
+    const title = document.createElement('span');
+    title.className = 'am-container-title';
+    const hint = document.createElement('span');
+    hint.className = 'am-container-hint';
+    header.appendChild(arrow); header.appendChild(title); header.appendChild(hint);
+    dom.appendChild(header); dom.appendChild(contentDOM);
+    function refresh() {
+      if (isSkill) {
+        let name = '';
+        for (let i = 0; i < curNode.childCount && i < 3; i++) {
+          const ch = curNode.child(i);
+          if (ch.type.name === 'heading') {
+            name = ch.textContent.replace(/^SKILL:\s*/i, '').trim();
+            break;
+          }
+        }
+        title.textContent = '⬚ Skill' + (name ? ': ' + name : '');
+        hint.textContent = 'hidden from readers · click to '
+          + (collapsed ? 'edit' : 'collapse');
+      } else {
+        title.textContent = summary
+          ? summary.replace(/<[^>]+>/g, '').trim()
+          : tag + (cls ? '.' + cls : '');
+        hint.textContent = '';
+      }
+      arrow.textContent = collapsed ? '▸' : '▾';
+    }
+    function setCollapsed(v) {
+      collapsed = v;
+      contentDOM.style.display = v ? 'none' : '';
+      dom.setAttribute('data-am-collapsed', v ? '1' : '0');
+      refresh();
+    }
+    dom.__amExpand = () => { if (collapsed) setCollapsed(false); };
+    header.addEventListener('mousedown', (e) => {
+      // Ctrl/Cmd+click is agent focus; the capture handler owns it.
+      if (e.ctrlKey || e.metaKey) return;
+      e.preventDefault(); e.stopPropagation();
+      setCollapsed(!collapsed);
+    });
+    setCollapsed(collapsed);
+    return {
+      dom: dom,
+      contentDOM: contentDOM,
+      update: (n) => {
+        if (n.type !== node.type || n.attrs.containerTag !== tag
+            || n.attrs.openChunk !== open) return false;
+        curNode = n;
+        refresh();
+        return true;
+      },
+      // Header/chrome mutations are ours, not the document's — without this
+      // ProseMirror's observer re-parses the nodeview on every toggle.
+      ignoreMutation: (m) => header.contains(m.target) || m.target === header
+        || (m.type === 'attributes'
+            && (m.target === dom || m.target === contentDOM)),
+    };
+  }
+  // Selection moved into a collapsed container (arrow keys can reach hidden
+  // positions) → expand it, so the caret is never editing invisible text.
+  function makeAutoExpandPlugin(utils, pstate) {
+    if (!(utils && utils.$prose && pstate && pstate.Plugin)) return null;
+    return utils.$prose(() => new pstate.Plugin({
+      view: function () {
+        return {
+          update: function (view, prev) {
+            if (prev && prev.selection.eq(view.state.selection)) return;
+            try {
+              const dp = view.domAtPos(view.state.selection.from);
+              let el = dp.node.nodeType === 3 ? dp.node.parentElement : dp.node;
+              let c = el && el.closest ? el.closest('[data-am-collapsed="1"]') : null;
+              while (c) {
+                if (c.__amExpand) c.__amExpand();
+                c = c.parentElement
+                  ? c.parentElement.closest('[data-am-collapsed="1"]') : null;
+              }
+            } catch (e) { /* display-only best effort */ }
+          },
+        };
+      },
+    }));
+  }
   // FALLBACK ONLY (CDN API drift: headingSchema.extendSchema unavailable):
   // dim the in-text {#id} markers so they read as quiet metadata. The primary
   // path lifts markers out of the text plane entirely — makeHeadingMarkerExt.
@@ -3824,16 +3957,22 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const { core, cm, gfm, utils, mathMod, pstate, pview } = mod;
     ensureKatexCss();
     try {
+      const containerLayer = makeContainerLayer(utils);
       let make = core.Editor.make()
         .config((ctx) => {
           ctx.set(core.rootCtx, document.getElementById('milkdown-mount'));
           ctx.set(core.defaultValueCtx, stripTrackingIds(currentBody));
-          // Opaque embed cards for html-block nodes (Phase 2).
+          // Opaque embed cards for html-block nodes (Phase 2) + per-class
+          // container chrome (collapsible details, agent-skill cards).
           ctx.update(core.editorViewOptionsCtx, (prev) => ({
             ...prev,
             nodeViews: {
               ...((prev && prev.nodeViews) || {}),
               html: (node, view, getPos) => buildEmbedCard(node, view, getPos),
+              ...(containerLayer ? {
+                'am-container': (node, view, getPos) =>
+                  buildContainerView(node, view, getPos),
+              } : {}),
             },
           }));
         });
@@ -3841,7 +3980,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // preset's own remark plugins flatten block html into paragraph-wrapped
       // INLINE html nodes, so the pairing transform has to see the raw
       // block-html mdast first (registered after, it sees zero html nodes).
-      const containerLayer = makeContainerLayer(utils);
       if (containerLayer)
         make = make.use(containerLayer.remark).use(containerLayer.schema);
       make = make.use(cm.commonmark).use(gfm.gfm);
@@ -3856,6 +3994,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       if (focusSel) make = make.use(focusSel.plugin);
       const dirtyPlugin = makeDirtyPlugin(utils, pstate);
       if (dirtyPlugin) make = make.use(dirtyPlugin);
+      if (containerLayer) {
+        const autoExpand = makeAutoExpandPlugin(utils, pstate);
+        if (autoExpand) make = make.use(autoExpand);
+      }
       _editorDirty = false;
       _suppressDirty = true;   // ignore mount-time settling transactions
       const ed = await make.create();

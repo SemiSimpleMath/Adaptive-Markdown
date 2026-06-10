@@ -239,13 +239,55 @@ def run(base: str) -> int:
                 page.evaluate("() => ![...document.querySelectorAll("
                               "'#milkdown-mount .am-embed-chip')]"
                               ".some(c => /^<\\//.test((c.textContent||'').trim()))"))
-        r.check("details label carries its summary text",
+        r.check("details header shows its summary text",
                 page.evaluate("() => ((document.querySelector('#milkdown-mount"
-                              " [data-am-container=\"details\"]')||{getAttribute:()=>''})"
-                              ".getAttribute('data-am-label')||'').includes('Week One')"))
+                              " [data-am-container=\"details\"] .am-container-title')"
+                              "||{}).textContent||'').includes('Week One')"))
         r.check("heading-marker pill still works inside a container",
                 page.evaluate("() => !!document.querySelector("
                               "'#milkdown-mount [data-am-container] [data-am-marker]')"))
+        # Collapse state: seeded from the verbatim open attr, display-only.
+        states = page.evaluate(
+            "() => [...document.querySelectorAll('#milkdown-mount"
+            " [data-am-container=\"details\"]')]"
+            ".map(d => d.getAttribute('data-am-collapsed'))")
+        r.check("open week expanded, attr-less week collapsed",
+                states == ["0", "1"], f"states={states}")
+        page.click("#milkdown-mount [data-am-container='details']"
+                   " .am-container-header >> nth=1")
+        page.wait_for_timeout(150)
+        n_open = page.evaluate(
+            "() => document.querySelectorAll('#milkdown-mount"
+            " [data-am-container=\"details\"][data-am-collapsed=\"0\"]').length")
+        r.check("clicking a collapsed week header expands it", n_open == 2,
+                f"open={n_open}")
+        page.click("#milkdown-mount [data-am-container='details']"
+                   " .am-container-header >> nth=1")
+        page.wait_for_timeout(150)
+        # Agent-skill: opaque card, collapsed by default, content hidden.
+        skill = page.evaluate(
+            "() => { const s = document.querySelector('#milkdown-mount"
+            " [data-am-class~=\"agent-skill\"]'); if (!s) return null;"
+            "const t = document.querySelector('#milkdown-mount .ProseMirror').innerText || '';"
+            "return { collapsed: s.getAttribute('data-am-collapsed'),"
+            "  title: (s.querySelector('.am-container-title')||{}).textContent || '',"
+            "  visible: t.includes('never see') }; }")
+        r.check("agent-skill card collapsed by default, instructions hidden",
+                bool(skill) and skill["collapsed"] == "1" and not skill["visible"],
+                f"skill={skill}")
+        r.check("agent-skill card titled from its first heading",
+                bool(skill) and "Test Skill" in skill["title"],
+                f"title={skill and skill['title']}")
+        page.click("#milkdown-mount [data-am-class~='agent-skill'] .am-container-header")
+        page.wait_for_timeout(150)
+        r.check("clicking the skill card reveals its content for editing",
+                page.evaluate("() => (document.querySelector('#milkdown-mount"
+                              " .ProseMirror').innerText||'').includes('never see')"))
+        page.click("#milkdown-mount [data-am-class~='agent-skill'] .am-container-header")
+        page.wait_for_timeout(150)
+        r.check("collapse toggles are display-only (editor not dirty)",
+                page.evaluate("() => document.getElementById('edit-status')"
+                              ".textContent") == "ready")
         # Wrapper/summary lines must survive the first (normalizing) save
         # byte-exact — this is the corruption guard for the serialize path.
         wrap_re = re.compile(r"^[ \t]*</?(?:details|div|aside|section|summary)\b.*$", re.M)
