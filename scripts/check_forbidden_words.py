@@ -60,6 +60,12 @@ def main() -> int:
             ["git", "diff", "--cached", "--no-color", "-U0"],
             capture_output=True,
             text=True,
+            # git emits UTF-8; without this Windows decodes as cp1252 and
+            # crashes on any non-Latin-1 byte (e.g. a U+25CF bullet in the
+            # diff), which would both abort the commit AND silently skip the
+            # guard. errors='replace' keeps the (ASCII) forbidden words matchable.
+            encoding="utf-8",
+            errors="replace",
             check=True,
         ).stdout
     except FileNotFoundError:
