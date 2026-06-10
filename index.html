@@ -538,6 +538,10 @@ body {
 #milkdown-mount .ProseMirror :is(h1,h2,h3,h4,h5,h6) { line-height: 1.25; }
 #milkdown-mount .ProseMirror pre { background: var(--pre-bg, #f5f5f5); padding: .7em; border-radius: 6px; overflow: auto; }
 #milkdown-mount .ProseMirror code { font-family: ui-monospace, Consolas, monospace; }
+.am-embed-card { display: block; border: 1px solid var(--border, #c9d2dc); border-radius: 8px; background: var(--surface, #f6f8fb); padding: 10px 12px; margin: 10px 0; font-size: 0.85rem; }
+.am-embed-label { font-weight: 600; color: var(--accent, #2a4d7a); }
+.am-embed-cap { color: var(--muted, #555); margin-top: 3px; font-style: italic; }
+.am-embed-chip { display: inline-block; border: 1px dashed var(--border, #c9d2dc); border-radius: 5px; background: var(--surface, #f2f4f7); padding: 0 6px; margin: 1px 0; font: 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); }
 
 .view-source {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -3244,6 +3248,42 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return (md || '').replace(
       /^[ \t]*<!-- id:b-[A-Z0-9-]+ -->[ \t]*\r?\n/gm, '');
   }
+  // Phase 2: render an html-block node as an opaque CARD instead of raw
+  // source. Content-bearing embeds (figure/script/svg/…) get a labelled card
+  // with their caption; bare structural wrapper tags (a <details>/<div> open
+  // or close) get an unobtrusive chip. Display only — the node's verbatim
+  // value (node.attrs.value) is untouched, so serialization round-trips
+  // byte-exact and nothing executes in the editor.
+  function buildEmbedCard(value) {
+    const v = value || '';
+    const tagM = v.match(/^\s*<\/?([a-zA-Z][\w-]*)/);
+    const tag = tagM ? tagM[1].toLowerCase() : 'html';
+    const heavy = /<(script|canvas|svg|style|iframe|figure|video|audio|table)\b/i.test(v);
+    const dom = document.createElement(heavy ? 'div' : 'span');
+    dom.contentEditable = 'false';
+    dom.setAttribute('data-am-embed', tag);
+    if (!heavy) {
+      dom.className = 'am-embed-chip';
+      dom.textContent = v.replace(/\s+/g, ' ').slice(0, 48);
+      return { dom: dom };
+    }
+    dom.className = 'am-embed-card';
+    const hasScript = /<script\b/i.test(v);
+    const kind = tag === 'figure' ? (hasScript ? 'Interactive figure' : 'Figure')
+      : (tag.charAt(0).toUpperCase() + tag.slice(1));
+    const label = document.createElement('div');
+    label.className = 'am-embed-label';
+    label.textContent = '⬚ ' + kind + (hasScript ? '  ·  runs in View mode' : '');
+    dom.appendChild(label);
+    const capM = v.match(/<figcaption[^>]*>([\s\S]*?)<\/figcaption>/i);
+    if (capM) {
+      const cap = document.createElement('div');
+      cap.className = 'am-embed-cap';
+      cap.textContent = capM[1].replace(/<[^>]+>/g, '').trim();
+      dom.appendChild(cap);
+    }
+    return { dom: dom };
+  }
   async function destroyMilkdown() {
     if (milkdownEditor) {
       const ed = milkdownEditor; milkdownEditor = null;
@@ -3276,6 +3316,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         .config((ctx) => {
           ctx.set(core.rootCtx, document.getElementById('milkdown-mount'));
           ctx.set(core.defaultValueCtx, stripTrackingIds(currentBody));
+          // Opaque embed cards for html-block nodes (Phase 2).
+          ctx.update(core.editorViewOptionsCtx, (prev) => ({
+            ...prev,
+            nodeViews: {
+              ...((prev && prev.nodeViews) || {}),
+              html: (node) => buildEmbedCard(node.attrs.value),
+            },
+          }));
         })
         .use(cm.commonmark)
         .use(gfm.gfm)
