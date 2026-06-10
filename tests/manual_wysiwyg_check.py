@@ -218,6 +218,36 @@ def run(base: str) -> int:
         r.check("untouched heading markers byte-exact on disk",
                 untouched0 == untouched1,
                 f"before={len(untouched0)} after={len(untouched1)}")
+        # Staleness guard: dirty editor + out-of-band change → warn (no silent
+        # remount), then 409 on save → confirm dialog → forced overwrite.
+        page.click("#milkdown-mount .ProseMirror p")
+        page.keyboard.type("St9")
+        page.wait_for_timeout(300)
+        page.evaluate(
+            "async () => { const t = await (await fetch('/docs/intro/current.md',"
+            " {cache:'no-store'})).text();"
+            "const body = t.replace(/^---\\r?\\n[\\s\\S]*?\\r?\\n---\\r?\\n/, '')"
+            " + '\\nOUT-OF-BAND-7\\n';"
+            "await fetch('/save-doc', {method:'POST',"
+            " headers:{'Content-Type':'application/json'},"
+            " body: JSON.stringify({doc:'intro', body: body})}); }")
+        page.wait_for_timeout(900)  # let the doc_changed broadcast land
+        r.check("dirty editor survives an external change (no remount)",
+                page.evaluate("() => (document.querySelector('#milkdown-mount"
+                              " .ProseMirror').innerText||'').includes('St9')"))
+        r.check("editor warns that the doc changed underneath",
+                "changed outside" in (page.evaluate(
+                    "() => document.getElementById('edit-status').textContent") or ""))
+        page.once("dialog", lambda d: d.accept())
+        page.click("#edit-save")
+        page.wait_for_function(
+            "() => /saved|failed|error|cancelled/.test("
+            "document.getElementById('edit-status')?.textContent||'')", timeout=15000)
+        cur_s = page.evaluate(
+            "async () => (await fetch('/docs/intro/current.md', {cache:'no-store'})).text()")
+        r.check("confirmed save overwrites the external change",
+                "St9" in cur_s and "OUT-OF-BAND-7" not in cur_s,
+                f"st9={'St9' in cur_s} oob={'OUT-OF-BAND-7' in cur_s}")
         _reset(page, "intro")
         # Mid-edit refresh returns to the editor (per-tab sessionStorage),
         # even though a fresh navigation lands on Doc.

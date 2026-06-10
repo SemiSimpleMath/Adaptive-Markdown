@@ -12,6 +12,7 @@ share the same imports and look identical at the top.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -270,13 +271,29 @@ async def set_block_source(request: web.Request) -> web.Response:
     return await _commit_doc(doc_path, slug, full, "block-source")
 
 
+def stale_doc_check(disk_bytes: bytes, base_hash, force: bool) -> bool:
+    """True when the client's base hash no longer matches the disk bytes.
+
+    A whole-doc save replaces everything, so a save built on a stale read
+    silently destroys whatever moved the doc in between (agent edit, another
+    tab). The client sends the sha256 of the current.md it loaded; no hash
+    (older clients / non-editor callers) or an explicit force skips the check."""
+    if not base_hash or not isinstance(base_hash, str) or force:
+        return False
+    return hashlib.sha256(disk_bytes).hexdigest() != base_hash
+
+
 async def save_doc(request: web.Request) -> web.Response:
-    """POST /save-doc { doc, body } — replace the WHOLE body of current.md.
+    """POST /save-doc { doc, body, base_sha256?, force? } — replace the WHOLE
+    body of current.md.
 
     The WYSIWYG editor serialized the entire doc back to markdown; frontmatter
     is preserved verbatim from disk and tracking ids are re-stamped (the editor
     strips them on load). Validated / snapshotted / broadcast through the shared
-    commit path, exactly like a block edit."""
+    commit path, exactly like a block edit. If base_sha256 is supplied and the
+    disk content has moved on, refuses with 409 {error: stale_doc} unless
+    force is set; the response carries the sha256 of what was written so the
+    client can refresh its base."""
     _require_localhost_origin(request)
     try:
         data = await request.json()
@@ -291,9 +308,18 @@ async def save_doc(request: web.Request) -> web.Response:
     doc_path = DOCS_ROOT / slug / "current.md"
     if not doc_path.exists():
         return web.json_response({"error": "doc not found"}, status=404)
-    existing = doc_path.read_text(encoding="utf-8")
+    disk_bytes = doc_path.read_bytes()
+    if stale_doc_check(disk_bytes, data.get("base_sha256"), bool(data.get("force"))):
+        return web.json_response(
+            {"error": "stale_doc",
+             "current_hash": hashlib.sha256(disk_bytes).hexdigest()},
+            status=409)
+    existing = disk_bytes.decode("utf-8")
     full = combine_doc(existing, body)
-    return await _commit_doc(doc_path, slug, full, "save-doc")
+    # The file is written with newline='' so its bytes are exactly this.
+    new_hash = hashlib.sha256(full.encode("utf-8")).hexdigest()
+    return await _commit_doc(doc_path, slug, full, "save-doc",
+                             extra={"hash": new_hash})
 
 
 async def delete_block(request: web.Request) -> web.Response:

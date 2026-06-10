@@ -2579,6 +2579,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       const prevScriptsKey = (iframeDoc === currentDoc && currentBody)
         ? extractScriptTagsKey(currentBody) : null;
       currentText = await resp.text();
+      // Base for the editor's optimistic-concurrency check on /save-doc.
+      sha256Hex(currentText).then(h => { _editorBaseHash = h; });
       // No iframe rebuild on prose edits — morphdom diffs the DOM in
       // place, the cleanup registry tears down removed-script resources,
       // and unchanged scripts keep their state.
@@ -3315,6 +3317,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let _editorSelfSave = false;  // suppress the doc_changed reload after our own save
   let _editorDirty = false;     // unsaved changes in the editor
   let _suppressDirty = false;   // ignore the settling transactions right after mount
+  let _editorBaseHash = null;   // sha256 of the current.md this tab last loaded
+  async function sha256Hex(text) {
+    try {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+      return Array.from(new Uint8Array(buf))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) { return null; }  // no SubtleCrypto → staleness check disabled
+  }
   function loadMilkdown() {
     if (!_milkdownMod) {
       const base = 'https://esm.sh/@milkdown/kit@7';
@@ -4085,7 +4095,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       editStatus('editor init failed: ' + (e.message || e));
     }
   }
-  async function saveEditView() {
+  async function saveEditView(force) {
+    const isForce = force === true;  // click handlers pass the MouseEvent here
     if (!milkdownEditor || !currentDoc) return;
     editStatus('saving…');
     let md;
@@ -4097,15 +4108,30 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       const resp = await fetch('/save-doc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc: currentDoc, body: md }),
+        body: JSON.stringify({
+          doc: currentDoc, body: md,
+          base_sha256: _editorBaseHash || undefined,
+          force: isForce,
+        }),
       });
       const j = await resp.json().catch(() => ({}));
+      if (resp.status === 409 && j.error === 'stale_doc') {
+        _editorSelfSave = false;
+        if (window.confirm('This document changed outside the editor while '
+            + 'you were editing. Overwrite those changes?')) {
+          return saveEditView(true);
+        }
+        editStatus('save cancelled — doc changed underneath '
+          + '(switch to the Doc view to see it; your edits are still here)');
+        return;
+      }
       if (!resp.ok) {
         _editorSelfSave = false;
         editStatus('save failed: ' + (j.error || resp.status)
           + (j.details ? ' — ' + JSON.stringify(j.details).slice(0, 200) : ''));
         return;
       }
+      if (j.hash) _editorBaseHash = j.hash;
       _editorDirty = false;
       editStatus('saved ✓');
     } catch (e) {
@@ -4941,11 +4967,17 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
             .then(r => r.text())
             .then(t => {
               currentText = t;
+              sha256Hex(t).then(h => { _editorBaseHash = h; });
               const sp = splitFrontmatter(t);
               currentFm = sp.frontmatter;
               currentBody = sp.body;
             })
             .catch(() => {});
+        } else if (currentView === 'edit' && _editorDirty) {
+          // The doc moved underneath UNSAVED editor work. Reloading here
+          // would silently discard the user's edits — keep them, warn, and
+          // let the save-time staleness check (409 + confirm) arbitrate.
+          editStatus('⚠ doc changed outside the editor — Save will ask before overwriting');
         } else {
           loadDoc(docUrl(data.doc));
         }

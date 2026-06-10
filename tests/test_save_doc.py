@@ -79,6 +79,41 @@ def test_no_frontmatter_doc():
     assert "<!-- id:b-" in out  # still stamped
 
 
+# ---- /save-doc staleness guard (am_routes.stale_doc_check) -----------------
+# Whole-doc saves built on a stale read silently destroy concurrent edits;
+# the route 409s when the client's base hash no longer matches disk.
+# am_routes is imported lazily — it pulls in the full backend module graph.
+
+_DISK = "---\ntitle: T\n---\n\nbody\n".encode("utf-8")
+
+
+def _disk_hash() -> str:
+    import hashlib
+    return hashlib.sha256(_DISK).hexdigest()
+
+
+def test_stale_fresh_hash_passes():
+    from am_routes import stale_doc_check
+    assert not stale_doc_check(_DISK, _disk_hash(), False)
+
+
+def test_stale_mismatched_hash_blocks():
+    from am_routes import stale_doc_check
+    assert stale_doc_check(_DISK, "0" * 64, False)
+
+
+def test_stale_missing_hash_skips_check():
+    from am_routes import stale_doc_check
+    assert not stale_doc_check(_DISK, None, False)
+    assert not stale_doc_check(_DISK, "", False)
+    assert not stale_doc_check(_DISK, 123, False)  # non-string → skip
+
+
+def test_stale_force_overrides():
+    from am_routes import stale_doc_check
+    assert not stale_doc_check(_DISK, "0" * 64, True)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
