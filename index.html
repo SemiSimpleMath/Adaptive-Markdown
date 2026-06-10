@@ -3256,6 +3256,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   // first use. See ADR-001 (internal) for the full plan.
   let _milkdownMod = null;
   let milkdownEditor = null;
+  let _editorSelfSave = false;  // suppress the doc_changed reload after our own save
   function loadMilkdown() {
     if (!_milkdownMod) {
       const base = 'https://esm.sh/@milkdown/kit@7';
@@ -3405,6 +3406,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     let md;
     try { md = milkdownEditor.__getMd(); }
     catch (e) { editStatus('serialize failed: ' + (e.message || e)); return; }
+    _editorSelfSave = true;                               // suppress reload re-mount
+    setTimeout(() => { _editorSelfSave = false; }, 4000); // safety self-clear
     try {
       const resp = await fetch('/save-doc', {
         method: 'POST',
@@ -3413,12 +3416,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       });
       const j = await resp.json().catch(() => ({}));
       if (!resp.ok) {
+        _editorSelfSave = false;
         editStatus('save failed: ' + (j.error || resp.status)
           + (j.details ? ' — ' + JSON.stringify(j.details).slice(0, 200) : ''));
         return;
       }
       editStatus('saved ✓');
     } catch (e) {
+      _editorSelfSave = false;
       editStatus('save error: ' + (e.message || e));
     }
   }
@@ -4214,7 +4219,25 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     if (data.type === 'doc_changed') {
       // Insertion is one-shot; once the doc has changed, the gap is stale.
       if (currentInsertion) clearInsertion();
-      if (data.doc === currentDoc) loadDoc(docUrl(data.doc));
+      if (data.doc === currentDoc) {
+        if (_editorSelfSave && currentView === 'edit') {
+          // We just saved FROM the WYSIWYG editor; it already holds the
+          // content. Refresh the cached source for the other views, but do
+          // NOT loadDoc() -- that re-mounts Milkdown and loses the cursor.
+          _editorSelfSave = false;
+          fetch(docUrl(currentDoc), { cache: 'no-store' })
+            .then(r => r.text())
+            .then(t => {
+              currentText = t;
+              const sp = splitFrontmatter(t);
+              currentFm = sp.frontmatter;
+              currentBody = sp.body;
+            })
+            .catch(() => {});
+        } else {
+          loadDoc(docUrl(data.doc));
+        }
+      }
       return;
     }
     if (data.type === 'pending_changed') {
