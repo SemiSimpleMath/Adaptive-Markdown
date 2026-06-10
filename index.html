@@ -564,9 +564,15 @@ body {
 .am-embed-cap { color: var(--muted, #555); margin-top: 3px; font-style: italic; }
 .am-embed-chip { display: inline-block; border: 1px dashed var(--border, #c9d2dc); border-radius: 5px; background: var(--surface, #f2f4f7); padding: 0 6px; margin: 1px 0; font: 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); }
 /* Full-text card for self-contained content chunks: the text is doc content,
-   so it reads at body size; only the wrapper label is chrome. */
+   so it reads at body size; only the wrapper label is chrome. Labels and
+   actions are hover-reveal (visibility keeps their layout space, so nothing
+   jumps) — with the doc skin painting the card, the text should read as
+   document, not as an annotated source object. */
 .am-text-card { border-left: 3px solid var(--border, #c9d2dc); }
-.am-text-card .am-embed-label { font: 500 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); }
+.am-text-card .am-embed-label { font: 500 11px ui-monospace, Consolas, monospace; color: var(--muted, #888); visibility: hidden; }
+.am-text-card .am-embed-actions { visibility: hidden; }
+.am-text-card:hover .am-embed-label,
+.am-text-card:hover .am-embed-actions { visibility: visible; }
 .am-text-card .am-text-body { white-space: pre-wrap; margin-top: 3px; font-size: .95rem; color: var(--text); }
 #milkdown-mount .am-anchor-dim { opacity: .3; font-size: .78em; font-weight: 400; }
 /* Heading-marker pill: the {#id} lives in a node attr (data-am-marker), so this
@@ -580,6 +586,35 @@ body {
   padding: .12em .55em; margin-left: .55em;
   vertical-align: middle; white-space: nowrap; opacity: .75;
 }
+/* The --am-* doc-theming contract, mirrored from iframe-host.html so doc CSS
+   captured by the doc skin (var(--am-pre-bg) etc.) resolves in Edit mode the
+   same way it does in the rendered Doc view. Scoped to the mount: doc vars
+   never leak into the viewer chrome. */
+#milkdown-mount {
+  --am-bg: #ffffff; --am-surface: #ffffff; --am-text: #18181b;
+  --am-muted: #71717a; --am-link: #4f46e5; --am-code-bg: #f4f4f5;
+  --am-pre-bg: #f4f4f5; --am-blockquote-border: #e4e4e7;
+  --am-blockquote-text: #52525b; --am-theorem-color: #4f46e5;
+  --am-definition-color: #d97706; --am-example-color: #16a34a;
+  --am-figure-placeholder-border: #e4e4e7; --am-figure-caption: #71717a;
+  --am-note-bg: #f4f4f5; --am-note-border: #a1a1aa;
+  --am-pinned-bg: #fef3c7; --am-pinned-border: #d97706;
+  --am-error-bg: #fef2f2; --am-error-border: #fecaca;
+  --am-error-text: #991b1b; --am-widget-bg: #ffffff;
+}
+:root[data-theme="dark"] #milkdown-mount {
+  --am-bg: #0b0b10; --am-surface: #15151c; --am-text: #e8e8ed;
+  --am-muted: #8b8b95; --am-link: #818cf8; --am-code-bg: #1c1c24;
+  --am-pre-bg: #1c1c24; --am-blockquote-border: #2a2a32;
+  --am-blockquote-text: #a1a1aa; --am-theorem-color: #818cf8;
+  --am-definition-color: #fbbf24; --am-example-color: #4ade80;
+  --am-figure-placeholder-border: #2a2a32; --am-figure-caption: #8b8b95;
+  --am-note-bg: rgba(255, 255, 255, 0.04); --am-note-border: #52525b;
+  --am-pinned-bg: rgba(251, 191, 36, 0.08); --am-pinned-border: #fbbf24;
+  --am-error-bg: rgba(248, 113, 113, 0.09);
+  --am-error-border: rgba(248, 113, 113, 0.3);
+  --am-error-text: #fca5a5; --am-widget-bg: #ffffff;
+}
 /* Structural containers (details/section/div/aside): the wrapper tags live
    verbatim in node attrs; the box + label are uneditable chrome (generated
    content), only the inner blocks are in the text plane. */
@@ -591,6 +626,10 @@ body {
   content: attr(data-am-label); display: block; user-select: none;
   font: 500 11px ui-monospace, Consolas, monospace;
   color: var(--muted, #888); opacity: .8; margin-bottom: 4px;
+  visibility: hidden;  /* hover-reveal; the border is the standing affordance */
+}
+#milkdown-mount .ProseMirror [data-am-container][data-am-label]:hover::before {
+  visibility: visible;
 }
 #milkdown-mount .ProseMirror [data-am-class~="agent-skill"] {
   border-left-color: var(--accent, #2a4d7a);
@@ -3341,6 +3380,76 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return (md || '').replace(
       /^[ \t]*<!-- id:b-[A-Z0-9-]+ -->[ \t]*\r?\n/gm, '');
   }
+  // Doc skin: apply a sanitized, scoped subset of the doc's own <style>
+  // blocks to the editor's container/card chrome, so Edit mode reads like a
+  // calmer version of the rendered doc instead of an annotated source view.
+  // Two hard lines: (1) paint-only property whitelist — nothing that can
+  // move layout, hide content, or fight ProseMirror (position / display /
+  // white-space are exactly how a doc could break the tool editing it);
+  // (2) only simple `.class` / `tag.class` selectors translate, rewritten to
+  // [data-am-class~=…] attribute selectors scoped under the editor mount —
+  // doc CSS can never reach the editor's own UI.
+  const AM_SKIN_PROP_RE = /^(color|background(-color|-image)?|border(-[a-z-]+)?|border-radius|box-shadow|font-style|font-weight|font-variant|font-family|text-decoration(-[a-z]+)?|letter-spacing)$/;
+  function buildDocSkin(body) {
+    const out = [];
+    const styleRe = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+    let sm;
+    while ((sm = styleRe.exec(body || ''))) {
+      let sheet;
+      try {
+        sheet = new CSSStyleSheet();   // browser parses; we only filter
+        sheet.replaceSync(sm[1]);
+      } catch (e) { continue; }        // no constructable sheets → no skin
+      for (const rule of sheet.cssRules) {
+        if (!(rule.style && rule.selectorText)) continue;  // skips @media etc.
+        const scoped = rule.selectorText.split(',')
+          .map((s) => {
+            const m = /^([a-z][a-z0-9]*)?\.([A-Za-z][\w-]*)$/i.exec(s.trim());
+            if (!m) return null;
+            const attr = '[data-am-class~="' + m[2] + '"]';
+            return '#milkdown-mount .ProseMirror '
+              + (m[1] ? '[data-am-container="' + m[1].toLowerCase() + '"]' + attr
+                      : attr);
+          })
+          .filter(Boolean);
+        if (!scoped.length) continue;
+        const seen = new Set();
+        const decls = [];
+        const push = (prop, val) => {
+          if (seen.has(prop) || !val || /url\s*\(|expression\s*\(/i.test(val)) return;
+          seen.add(prop);
+          decls.push(prop + ': ' + val + ';');
+        };
+        // var()-containing declarations are stored as pending-substitution
+        // SHORTHANDS in CSSOM and never appear in index enumeration — probe
+        // the whitelist shorthands explicitly or `background: var(--x)`
+        // silently vanishes.
+        for (const prop of ['color', 'background', 'background-color',
+          'background-image', 'border', 'border-top', 'border-right',
+          'border-bottom', 'border-left', 'border-color', 'border-width',
+          'border-style', 'border-radius', 'box-shadow', 'font-style',
+          'font-weight', 'font-variant', 'font-family', 'text-decoration',
+          'letter-spacing']) {
+          push(prop, rule.style.getPropertyValue(prop));
+        }
+        for (let i = 0; i < rule.style.length; i++) {
+          const prop = rule.style[i];
+          if (AM_SKIN_PROP_RE.test(prop)) push(prop, rule.style.getPropertyValue(prop));
+        }
+        if (decls.length) out.push(scoped.join(', ') + ' { ' + decls.join(' ') + ' }');
+      }
+    }
+    return out.join('\n');
+  }
+  function applyDocSkin(body) {
+    let el = document.getElementById('am-doc-skin');
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'am-doc-skin';
+      document.head.appendChild(el);
+    }
+    el.textContent = buildDocSkin(body);
+  }
   function ensureKatexCss() {
     if (document.getElementById('am-katex-css')) return;
     const l = document.createElement('link');
@@ -3385,6 +3494,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         dom.setAttribute('data-am-src',
           (node.attrs.value || '').replace(/\s+/g, ' ').trim().slice(0, 300));
         const cls = (/class="([^"]*)"/.exec(m[1]) || [, ''])[1];
+        if (cls) dom.setAttribute('data-am-class', cls);  // doc-skin hook
         const label = document.createElement('div');
         label.className = 'am-embed-label';
         label.textContent = m[2] + (cls ? '.' + cls.trim().split(/\s+/).join('.') : '');
@@ -3441,6 +3551,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // Source excerpt for Ctrl+click agent-focus selections (the card's
       // visible text is chrome, not content).
       dom.setAttribute('data-am-src', v.replace(/\s+/g, ' ').trim().slice(0, 300));
+      const cls0 = (/^\s*<[a-zA-Z][\w-]*[^>]*class="([^"]*)"/.exec(v) || [, ''])[1];
+      if (cls0) dom.setAttribute('data-am-class', cls0);  // doc-skin hook
       const tg = (v.match(/^\s*<\/?([a-zA-Z][\w-]*)/) || [, 'html'])[1].toLowerCase();
       const hasScript = /<script\b/i.test(v);
       const kind = tg === 'figure' ? (hasScript ? 'Interactive figure' : 'Figure')
@@ -4006,6 +4118,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       + 'frontmatter and tracking-ids are handled on save.</span>'
       + '</div><div id="milkdown-mount"></div>';
     document.getElementById('edit-save').addEventListener('click', saveEditView);
+    applyDocSkin(currentBody);  // doc paint on chrome, before nodeviews render
     // Capture phase: ProseMirror must never see the Ctrl/Cmd+click (it would
     // node-select or move the caret); toggle the agent-focus selection instead.
     document.getElementById('milkdown-mount').addEventListener('mousedown', (e) => {
@@ -4967,6 +5080,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
               const sp = splitFrontmatter(t);
               currentFm = sp.frontmatter;
               currentBody = sp.body;
+              if (currentView === 'edit') applyDocSkin(currentBody);
             })
             .catch(() => {});
         } else if (currentView === 'edit' && _editorDirty) {

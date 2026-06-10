@@ -351,6 +351,61 @@ def run(base: str) -> int:
                       "[...c.querySelectorAll('.am-embed-btn')]"
                       ".find(b => b.textContent === 'Apply').click(); }")
         page.wait_for_timeout(400)
+        # Doc skin: the doc's own <style> paints the chrome — scoped to
+        # [data-am-class] under the mount, paint-only properties.
+        skin = page.evaluate(
+            "() => { const c = document.querySelector('#milkdown-mount"
+            " [data-am-container=\"div\"][data-am-class~=\"narrative\"]');"
+            "if (!c) return null; const cs = getComputedStyle(c);"
+            "return { bg: cs.backgroundColor, bcol: cs.borderLeftColor,"
+            " pos: cs.position }; }")
+        r.check("doc CSS paints structural containers (scoped skin)",
+                bool(skin) and skin["bg"] == "rgb(11, 22, 33)"
+                and skin["bcol"] == "rgb(44, 55, 66)", f"skin={skin}")
+        r.check("layout-dangerous properties sanitized out (position)",
+                bool(skin) and skin["pos"] != "fixed",
+                f"pos={skin and skin['pos']}")
+        tc_bg = page.evaluate(
+            "() => { const c = document.querySelector('#milkdown-mount"
+            " .am-text-card[data-am-class~=\"narrative\"]');"
+            "return c ? getComputedStyle(c).backgroundColor : null; }")
+        r.check("doc CSS paints text cards too", tc_bg == "rgb(11, 22, 33)",
+                f"bg={tc_bg}")
+        wk_b = page.evaluate(
+            "() => { const c = document.querySelector('#milkdown-mount"
+            " [data-am-container=\"details\"][data-am-class~=\"week\"]');"
+            "return c ? getComputedStyle(c).borderLeftColor : null; }")
+        r.check("tag.class selectors apply (details.week border)",
+                wk_b == "rgb(10, 120, 200)", f"border={wk_b}")
+        note_c = page.evaluate(
+            "() => { const c = document.querySelector('#milkdown-mount"
+            " [data-am-class~=\"note\"]'); if (!c) return null;"
+            "const cs = getComputedStyle(c);"
+            "return { color: cs.color, b: cs.borderLeftColor }; }")
+        r.check("bare .class selectors apply (aside.note color)",
+                bool(note_c) and note_c["color"] == "rgb(77, 88, 99)",
+                f"note={note_c}")
+        # var()-pending shorthands must be captured, and the --am-* doc
+        # theming contract must resolve in Edit mode (light: #4f46e5).
+        r.check("var(--am-*) declarations survive and resolve",
+                bool(note_c) and note_c["b"] == "rgb(79, 70, 229)",
+                f"note={note_c}")
+        r.check("editor toolbar untouched by doc CSS",
+                page.evaluate("() => getComputedStyle(document.querySelector("
+                              "'.edit-toolbar')).backgroundColor")
+                != "rgb(11, 22, 33)")
+        # Quieter chrome: text-card label reveals on hover only.
+        vis0 = page.evaluate(
+            "() => getComputedStyle(document.querySelector('#milkdown-mount"
+            " .am-text-card .am-embed-label')).visibility")
+        page.hover("#milkdown-mount .am-text-card")
+        page.wait_for_timeout(150)
+        vis1 = page.evaluate(
+            "() => getComputedStyle(document.querySelector('#milkdown-mount"
+            " .am-text-card .am-embed-label')).visibility")
+        r.check("text-card chrome is hover-reveal",
+                vis0 == "hidden" and vis1 == "visible",
+                f"before={vis0} after={vis1}")
         # Wrapper/summary lines must survive the first (normalizing) save
         # byte-exact — this is the corruption guard for the serialize path.
         wrap_re = re.compile(r"^[ \t]*</?(?:details|div|aside|section|summary)\b.*$", re.M)

@@ -6,6 +6,16 @@ title: Structure Test
 
 Intro paragraph outside any wrapper. Math survives: $e^{i\pi}+1=0$.
 
+<style>
+.narrative {
+  background: rgb(11, 22, 33);
+  border-left: 4px solid rgb(44, 55, 66);
+  position: fixed;
+}
+.note { color: rgb(77, 88, 99); border-left: 5px solid var(--am-link); }
+details.week { border-left: 6px solid rgb(10, 120, 200); }
+</style>
+
 <details class="week" open>
 <summary>Week One</summary>
 
