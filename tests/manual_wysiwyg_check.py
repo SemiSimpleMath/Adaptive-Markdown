@@ -255,6 +255,24 @@ def run(base: str) -> int:
         r.check("confirmed save overwrites the external change",
                 "St9" in cur_s and "OUT-OF-BAND-7" not in cur_s,
                 f"st9={'St9' in cur_s} oob={'OUT-OF-BAND-7' in cur_s}")
+        # Doc|Edit is a mode toggle: leaving Edit with unsaved work must
+        # auto-save it (regression: edits vanished on a Doc/Edit round trip).
+        page.click("#milkdown-mount .ProseMirror p")
+        page.keyboard.type("Vw5")
+        page.wait_for_timeout(250)
+        page.click(".view-tab:has-text('Doc')")
+        page.wait_for_timeout(1500)  # flush save + doc_changed reload
+        cur_f = page.evaluate(
+            "async () => (await fetch('/docs/intro/current.md', {cache:'no-store'})).text()")
+        r.check("leaving Edit auto-saves unsaved changes", "Vw5" in cur_f)
+        page.click(".view-tab:has-text('Edit')")
+        page.wait_for_selector("#milkdown-mount .ProseMirror", timeout=45000)
+        page.wait_for_function(
+            "() => /ready|unsaved/.test(document.getElementById('edit-status')"
+            "?.textContent||'')", timeout=20000)
+        r.check("returning to Edit shows the flushed changes",
+                page.evaluate("() => (document.querySelector('#milkdown-mount"
+                              " .ProseMirror').innerText||'').includes('Vw5')"))
         _reset(page, "intro")
         # Mid-edit refresh returns to the editor (per-tab sessionStorage),
         # even though a fresh navigation lands on Doc.

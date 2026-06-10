@@ -3353,6 +3353,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let _editorDirty = false;     // unsaved changes in the editor
   let _suppressDirty = false;   // ignore the settling transactions right after mount
   let _editorBaseHash = null;   // sha256 of the current.md this tab last loaded
+  let _editorStash = null;      // {doc, md} — unsaved body rescued from a teardown
   async function sha256Hex(text) {
     try {
       const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -3608,6 +3609,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return { dom: dom };
   }
   async function destroyMilkdown() {
+    flushDirtyEditor();  // auto-save unsaved work; captures synchronously
     if (milkdownEditor) {
       const ed = milkdownEditor; milkdownEditor = null;
       try { await ed.destroy(); } catch (e) { /* already gone */ }
@@ -4147,10 +4149,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     ensureKatexCss();
     try {
       const containerLayer = makeContainerLayer(utils);
+      // A failed/declined flush parks the unsaved body; restore it here so
+      // teardown can never lose bytes.
+      const stash = (_editorStash && _editorStash.doc === currentDoc)
+        ? _editorStash : null;
+      if (stash) _editorStash = null;
       let make = core.Editor.make()
         .config((ctx) => {
           ctx.set(core.rootCtx, document.getElementById('milkdown-mount'));
-          ctx.set(core.defaultValueCtx, stripTrackingIds(currentBody));
+          ctx.set(core.defaultValueCtx,
+            stash ? stash.md : stripTrackingIds(currentBody));
           // Opaque embed cards for html-block nodes (Phase 2) + per-class
           // container chrome (collapsible details, agent-skill cards).
           ctx.update(core.editorViewOptionsCtx, (prev) => ({
@@ -4198,19 +4206,23 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       milkdownEditor.__getMd = () => milkdownEditor.action(utils.getMarkdown());
       milkdownEditor.__getView = () => milkdownEditor.action((ctx) => ctx.get(core.editorViewCtx));
       milkdownEditor.__focusSelKey = focusSel ? focusSel.key : null;
-      editStatus('ready');
+      // Doc identity pinned at mount: the flush save must target the doc the
+      // editor actually holds, not whatever currentDoc moved on to.
+      milkdownEditor.__doc = currentDoc;
+      if (stash) {
+        _editorDirty = true;
+        editStatus('● unsaved changes (recovered)');
+      } else {
+        editStatus('ready');
+      }
       setTimeout(() => { _suppressDirty = false; }, 250);
     } catch (e) {
       editStatus('editor init failed: ' + (e.message || e));
     }
   }
-  async function saveEditView(force) {
-    const isForce = force === true;  // click handlers pass the MouseEvent here
-    if (!milkdownEditor || !currentDoc) return;
-    editStatus('saving…');
-    let md;
-    try { md = milkdownEditor.__getMd(); }
-    catch (e) { editStatus('serialize failed: ' + (e.message || e)); return; }
+  // Shared save core for the explicit Save button and the leave-Edit flush.
+  // 409 → confirm-overwrite → forced retry. Returns {ok, cancelled?, error?}.
+  async function postDocBody(doc, md, isForce) {
     _editorSelfSave = true;                               // suppress reload re-mount
     setTimeout(() => { _editorSelfSave = false; }, 4000); // safety self-clear
     try {
@@ -4218,9 +4230,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          doc: currentDoc, body: md,
+          doc: doc, body: md,
           base_sha256: _editorBaseHash || undefined,
-          force: isForce,
+          force: isForce === true,
         }),
       });
       const j = await resp.json().catch(() => ({}));
@@ -4228,25 +4240,59 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
         _editorSelfSave = false;
         if (window.confirm('This document changed outside the editor while '
             + 'you were editing. Overwrite those changes?')) {
-          return saveEditView(true);
+          return postDocBody(doc, md, true);
         }
-        editStatus('save cancelled — doc changed underneath '
-          + '(switch to the Doc view to see it; your edits are still here)');
-        return;
+        return { ok: false, cancelled: true };
       }
       if (!resp.ok) {
         _editorSelfSave = false;
-        editStatus('save failed: ' + (j.error || resp.status)
-          + (j.details ? ' — ' + JSON.stringify(j.details).slice(0, 200) : ''));
-        return;
+        return { ok: false, error: (j.error || resp.status)
+          + (j.details ? ' — ' + JSON.stringify(j.details).slice(0, 200) : '') };
       }
       if (j.hash) _editorBaseHash = j.hash;
-      _editorDirty = false;
-      editStatus('saved ✓');
+      return { ok: true };
     } catch (e) {
       _editorSelfSave = false;
-      editStatus('save error: ' + (e.message || e));
+      return { ok: false, error: String((e && e.message) || e) };
     }
+  }
+  async function saveEditView() {
+    if (!milkdownEditor || !currentDoc) return;
+    editStatus('saving…');
+    let md;
+    try { md = milkdownEditor.__getMd(); }
+    catch (e) { editStatus('serialize failed: ' + (e.message || e)); return; }
+    const res = await postDocBody(milkdownEditor.__doc || currentDoc, md, false);
+    if (res.cancelled) {
+      editStatus('save cancelled — doc changed underneath '
+        + '(switch to the Doc view to see it; your edits are still here)');
+      return;
+    }
+    if (!res.ok) { editStatus('save failed: ' + res.error); return; }
+    _editorDirty = false;
+    editStatus('saved ✓');
+  }
+  // The editor is about to be torn down (view switch, doc switch, remount).
+  // Doc|Edit is a mode toggle now — flipping to Doc to see your edits
+  // rendered must not discard them, so unsaved work auto-saves. Everything
+  // is captured synchronously; the POST runs on after the teardown. If the
+  // save fails or the user declines an overwrite, the bytes are parked in
+  // _editorStash and restored as unsaved changes on the next Edit mount.
+  function flushDirtyEditor() {
+    if (!milkdownEditor || !_editorDirty) return;
+    const doc = milkdownEditor.__doc;
+    let md = null;
+    try { md = milkdownEditor.__getMd(); } catch (e) { /* md stays null */ }
+    if (!doc || typeof md !== 'string') return;
+    _editorDirty = false;
+    postDocBody(doc, md, false).then((res) => {
+      if (res.ok) return;
+      _editorStash = { doc: doc, md: md };
+      if (!res.cancelled) {
+        window.alert('Auto-save of your edits failed (' + res.error
+          + '). They are kept — switch back to Edit to save them.');
+      }
+    });
   }
 
   // Ctrl/Cmd+S saves the WYSIWYG editor (and suppresses the browser's
