@@ -1,4 +1,4 @@
-"""On-demand end-to-end check for the WYSIWYG (Milkdown) editor behind ?edit.
+"""On-demand end-to-end check for the WYSIWYG (Milkdown) editor (Edit tab).
 
 NOT part of browser_smoke (it loads Milkdown + KaTeX from CDN, which would add
 network flakiness to the smoke suite). Run it by hand when touching the editor:
@@ -9,8 +9,8 @@ Any python works as the launcher: if it can't import the dep set, the harness
 re-execs itself under one that can — see tests/harness_env.py (AM_PYTHON pins).
 
 Spawns its own backend on a free port, then verifies, against the shipped docs:
-  - ?edit is flag-only: fresh navigation lands on the Doc view, the editor
-    mounts via the View dropdown, and a mid-edit reload returns to Edit
+  - Edit is a first-class tab: fresh navigation lands on the Doc view,
+    legacy ?edit URLs are no-ops, and a mid-edit reload returns to Edit
     (per-tab sessionStorage),
   - KaTeX math renders (intro),
   - heading markers ({#id}) are lifted out of the editable text into
@@ -82,15 +82,13 @@ def _reset(page, slug):
 
 
 def _open_editor(page, base, slug):
-    page.goto(f"{base}/?edit")
+    page.goto(f"{base}/")
     page.wait_for_function("() => document.getElementById('doc-select')?.value", timeout=15000)
     _reset(page, slug)
     page.select_option("#doc-select", slug)
     page.wait_for_timeout(1000)
-    # ?edit is flag-only (fresh navigation lands on the Doc view); enter the
-    # editor through the View ▾ dropdown the way a user does.
-    page.click("button.view-tab-dropdown:has-text('View')")
-    page.click(".view-dropdown-menu .overflow-item:has-text('Edit (beta)')")
+    # Edit is a first-class tab next to Doc (no URL flag).
+    page.click(".view-tab:has-text('Edit')")
     page.wait_for_selector("#milkdown-mount .ProseMirror", timeout=45000)
     page.wait_for_function(
         "() => document.getElementById('edit-status')?.textContent === 'ready'", timeout=20000)
@@ -106,17 +104,26 @@ def run(base: str) -> int:
         page.on("pageerror", lambda e: print(f"    [pageerror] {str(e)[:200]}"))
 
         print("[scenario] editor mount + math + save round-trip (intro)")
-        # ?edit is a feature flag, not a view switch: a fresh navigation must
-        # land on the Doc view (regression: time-notes bookmark booted into
-        # the editor, losing collapsible details + hidden skill sections).
+        # Edit is a first-class tab. A fresh navigation lands on the Doc view
+        # and the tab needs no URL flag; legacy ?edit URLs are harmless
+        # no-ops (regression: time-notes bookmark booted into the editor,
+        # losing collapsible details + hidden skill sections).
+        page.goto(f"{base}/")
+        page.wait_for_function("() => document.getElementById('doc-select')?.value", timeout=15000)
+        page.wait_for_timeout(800)
+        r.check("Edit tab present without any URL flag",
+                page.evaluate("() => [...document.querySelectorAll('.view-tab')]"
+                              ".some(t => t.textContent === 'Edit')"))
+        r.check("fresh navigation lands on the Doc view",
+                page.evaluate("() => !document.querySelector('#milkdown-mount .ProseMirror')"
+                              " && document.getElementById('doc-frame') !== null"))
         page.goto(f"{base}/?edit")
         page.wait_for_function("() => document.getElementById('doc-select')?.value", timeout=15000)
         page.wait_for_timeout(800)
-        r.check("fresh ?edit navigation lands on the Doc view",
-                page.evaluate("() => !document.querySelector('#milkdown-mount .ProseMirror')"
-                              " && document.getElementById('doc-frame') !== null"))
+        r.check("legacy ?edit URL is a no-op (still lands on Doc)",
+                page.evaluate("() => !document.querySelector('#milkdown-mount .ProseMirror')"))
         _open_editor(page, base, "intro")
-        r.check("Edit entry in View dropdown mounts the editor",
+        r.check("Edit tab mounts the editor",
                 page.evaluate("() => !!document.querySelector('#milkdown-mount .ProseMirror')"))
         # Exactly one editor: a superseded mount racing the CDN load used to
         # mount a SECOND ProseMirror into the new mount div.
@@ -364,8 +371,7 @@ def run(base: str) -> int:
         # bytes must be identical (modulo re-stamped tracking ids).
         page.click(".view-tab:has-text('Doc')")
         page.wait_for_timeout(600)
-        page.click("button.view-tab-dropdown:has-text('View')")
-        page.click(".view-dropdown-menu .overflow-item:has-text('Edit (beta)')")
+        page.click(".view-tab:has-text('Edit')")
         page.wait_for_selector("#milkdown-mount .ProseMirror", timeout=45000)
         page.wait_for_function(
             "() => document.getElementById('edit-status')?.textContent === 'ready'", timeout=20000)

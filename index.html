@@ -1222,16 +1222,13 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentText = '';            // raw .md source for current doc
   let currentFm = {};              // parsed frontmatter
   let currentBody = '';            // raw body after frontmatter strip
-  // ?edit starts in (and reloads back into) the WYSIWYG editor, so a refresh
-  // doesn't drop you back to the Doc view with the old inline toolbar.
-  // ?edit is a feature FLAG (it unlocks the experimental Edit view in the
-  // View dropdown), not a view switch: a fresh navigation always lands on
-  // the Doc view. The chosen view persists per-tab (sessionStorage, written
-  // in renderCurrentView), so a mid-edit refresh returns to the editor.
+  // A fresh navigation always lands on the Doc view. The chosen view
+  // persists per-tab (sessionStorage, written in renderCurrentView), so a
+  // mid-edit refresh returns to the editor. Edit is a first-class tab;
+  // legacy ?edit URLs are harmless no-ops.
   let currentView = 'doc';
   try {
-    if (new URLSearchParams(location.search).has('edit')
-        && sessionStorage.getItem('am-view') === 'edit') currentView = 'edit';
+    if (sessionStorage.getItem('am-view') === 'edit') currentView = 'edit';
   } catch (e) { /* storage disabled → Doc view */ }
   // Pending-changes substrate (phase 4): the most recent pending.json
   // contents for the current doc, refreshed when the doc loads and when
@@ -1248,9 +1245,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   let currentInsertion = null;
 
   // ---- View tabs ----------------------------------------------------------
-  // Plain views: always visible as top-level tabs.
+  // Plain views: always visible as top-level tabs. Doc|Edit is the
+  // read/write mode toggle (ADR phase 4 — Edit graduated from the
+  // ?edit-flagged View-dropdown entry).
   const VIEW_TYPES = [
     { id: 'doc',        label: 'Doc'        },
+    { id: 'edit',       label: 'Edit'       },
     { id: 'history',    label: 'History'    },
     { id: 'skills',     label: 'Skills'     },
     { id: 'components', label: 'Components' },
@@ -1263,10 +1263,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   const VIEW_ALT_UNIVERSAL = [
     { id: 'source', label: 'Source' },
   ];
-  // Phase 1 WYSIWYG editor (Milkdown), gated behind the ?edit URL flag.
-  // Off by default — the dropdown item only appears when the flag is set.
-  const WYSIWYG_ENABLED = new URLSearchParams(location.search).has('edit');
-  const VIEW_EDIT = WYSIWYG_ENABLED ? [{ id: 'edit', label: 'Edit (beta)' }] : [];
   const VIEW_MATH_TOOLS = [
     { id: 'graph', label: 'Graph' },
     { id: 'latex', label: 'LaTeX' },
@@ -1337,13 +1333,14 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
 
     viewTabs.innerHTML = '';
-    // Splice in a Review tab AFTER Doc when this doc has pending entries
-    // — review-mode docs that haven't accumulated any pending yet keep
-    // the same chrome as a plain doc.
+    // Splice in a Review tab AFTER Doc|Edit when this doc has pending
+    // entries — review-mode docs that haven't accumulated any pending yet
+    // keep the same chrome as a plain doc. (After Edit, not Doc: Doc|Edit
+    // is the read/write toggle and stays adjacent.)
     const tabs = [...VIEW_TYPES];
     if (Array.isArray(currentPending) && currentPending.length > 0) {
       tabs.splice(
-        1, 0,
+        2, 0,
         { id: 'review', label: `Review (${currentPending.length})` },
       );
     }
@@ -1364,7 +1361,6 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     // Graph + LaTeX appear only when the doc has math content. Active
     // highlight when the currently-selected view is one of its items.
     const altItems = [
-      ...VIEW_EDIT,
       ...VIEW_ALT_UNIVERSAL,
       ...(hasMath ? VIEW_MATH_TOOLS : []),
     ];
@@ -3307,8 +3303,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     input.focus();
   }
 
-  // ---- Phase 1 WYSIWYG editor (Milkdown) ---------------------------------
-  // Behind ?edit. Mounts Milkdown with the doc BODY (tracking-id comments
+  // ---- WYSIWYG editor (Milkdown) -----------------------------------------
+  // The Edit tab. Mounts Milkdown with the doc BODY (tracking-id comments
   // stripped — the backend re-stamps them on save), serializes back to
   // markdown, and POSTs the whole body to /save-doc. Lazy-loaded from CDN on
   // first use. See ADR-001 (internal) for the full plan.
@@ -4006,8 +4002,8 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       '<div class="edit-toolbar">'
       + '<button id="edit-save" class="btn">Save</button>'
       + '<span id="edit-status" class="edit-status"></span>'
-      + '<span class="edit-note">Experimental WYSIWYG. Ctrl+click a block to '
-      + 'focus the agent on it; frontmatter and tracking-ids are handled on save.</span>'
+      + '<span class="edit-note">Ctrl+click a block to focus the agent on it; '
+      + 'frontmatter and tracking-ids are handled on save.</span>'
       + '</div><div id="milkdown-mount"></div>';
     document.getElementById('edit-save').addEventListener('click', saveEditView);
     // Capture phase: ProseMirror must never see the Ctrl/Cmd+click (it would
