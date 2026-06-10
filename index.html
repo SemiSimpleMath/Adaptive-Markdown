@@ -3428,6 +3428,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     }
   }
 
+  // Ctrl/Cmd+S saves the WYSIWYG editor (and suppresses the browser's
+  // save-page dialog). Inert outside the Edit view. Registered once.
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')
+        && currentView === 'edit' && milkdownEditor) {
+      e.preventDefault();
+      saveEditView();
+    }
+  });
+
   function renderCurrentView() {
     if (currentView !== 'edit') destroyMilkdown();
     if (currentView === 'doc') {
