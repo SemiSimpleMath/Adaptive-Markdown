@@ -1490,6 +1490,22 @@ figure.vega script[type="application/json"] { display: none; }
     toParent({ type: 'selection', block: null, additive: add });
   });
 
+  // Esc clears the agent-focus selection even when key focus lives inside
+  // the doc iframe (the parent's document listener can't see keys here —
+  // separate document). Forward to the parent, which owns selection state.
+  // The inline source editor's textarea handles its own Escape (cancel
+  // edit) and preventDefaults first — defer to it.
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || ev.defaultPrevented) return;
+    const t = ev.target;
+    if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT'
+              || t.isContentEditable)) return;
+    selectedKeys.clear();
+    clearInsertionMarker();
+    applySelection();
+    toParent({ type: 'escape' });
+  });
+
   body.addEventListener('mouseover', e => {
     const b = findBlock(e.target);
     if (b && !selectedKeys.has(keyOf(b))) b.classList.add('hover-block');

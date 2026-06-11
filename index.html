@@ -2242,6 +2242,10 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     } else if (data.type === 'insert_click') {
       closeAllViewDropdowns();
       handleFrameInsert(data.before || null, data.after || null);
+    } else if (data.type === 'escape') {
+      // Esc pressed with key focus inside the iframe.
+      closeAllViewDropdowns();
+      clearAllSelections();
     } else if (data.type === 'fileDropped') {
       handleFrameDrop(data.files);
     } else if (data.type === 'dragenter') {
@@ -4989,10 +4993,23 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     setSelections(newList);
   });
 
-  selectionClear.addEventListener('click', () => {
+  // One routine for every way out of a selection: the × button, Esc in the
+  // parent (chat input included), and Esc inside the doc iframe (forwarded
+  // as an 'escape' message — focus no longer has to be inside the selected
+  // box for the key to work).
+  function clearAllSelections() {
     clearInsertion({ updateChip: false });
     setSelections([]);
     if (currentView === 'edit') clearEditorFocusOutlines();
+  }
+  selectionClear.addEventListener('click', clearAllSelections);
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    // Overlays/dialogs own their Esc — closing one shouldn't also drop
+    // the user's selection.
+    if (!newDocOverlay.hidden || !newAssetOverlay.hidden) return;
+    if (document.querySelector('dialog[open]')) return;
+    if (currentSelections.length || currentInsertion) clearAllSelections();
   });
 
   // Save-as-component button on the selection bar. Visible whenever 1+

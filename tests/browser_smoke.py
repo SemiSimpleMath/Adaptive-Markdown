@@ -2188,6 +2188,47 @@ def scenario_nested_selection_dedup(page, base: str, r: Results) -> None:
     )
 
 
+def scenario_escape_clears_selection(page, base: str, r: Results) -> None:
+    """Esc drops the agent-focus selection from ANYWHERE — with key focus
+    inside the doc iframe, or in the parent (e.g. the chat input). It used
+    to require focus inside the selected block; the iframe now forwards
+    Escape to the parent as an 'escape' message."""
+    print("\n[scenario] Esc clears selection from anywhere")
+
+    page.goto(base + "/")
+    frame = _wait_for_doc_iframe(page)
+    frame.wait_for_selector("article#body p", timeout=10000)
+    _wait_for_initial_doc(frame)
+    page.wait_for_timeout(300)
+
+    def bar_visible():
+        return page.evaluate(
+            "() => document.getElementById('selection-bar')"
+            ".classList.contains('visible')")
+
+    # Case 1: select a block — key focus lands in the iframe — Esc there.
+    frame.click("article#body p")
+    page.wait_for_timeout(300)
+    r.assert_("clicking a block selects it (bar visible)", bar_visible())
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(300)
+    r.assert_("Esc with iframe focus clears the selection", not bar_visible())
+    outlines = frame.evaluate(
+        "() => document.querySelectorAll('.selected-block').length")
+    r.assert_("iframe outlines cleared too", outlines == 0,
+              detail=f"outlines={outlines}")
+
+    # Case 2: select again, move focus to the parent chat input, Esc there.
+    frame.click("article#body p")
+    page.wait_for_timeout(300)
+    r.assert_("re-selected for the parent-focus case", bar_visible())
+    page.evaluate("() => document.getElementById('input').focus()")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(300)
+    r.assert_("Esc from the chat input clears the selection",
+              not bar_visible())
+
+
 def scenario_asset_drop(page, base: str, r: Results) -> None:
     """POST /upload-asset with a fake PNG, verify it lands at
     docs/<slug>/assets/, is served back from /docs/<slug>/assets/<name>,
@@ -3359,6 +3400,7 @@ def main() -> int:
                 run_scenario(scenario_text_selection)
                 run_scenario(scenario_insertion_point)
                 run_scenario(scenario_nested_selection_dedup)
+                run_scenario(scenario_escape_clears_selection)
                 run_scenario(scenario_asset_drop)
                 run_scenario(scenario_pdf_import)
                 run_scenario(scenario_tex_skip_preview)
