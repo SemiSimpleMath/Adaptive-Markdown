@@ -81,6 +81,78 @@ def list_all_components() -> list[str]:
     return sorted(slugs)
 
 
+# ---- Per-doc sidecar skills (ADR-002) --------------------------------------
+# docs/<slug>/skills/<skill-slug>.md — one file per skill. Frontmatter
+# carries name/description; the rest of the file is the instruction body.
+# The legacy in-body <section class="agent-skill"> form stays recognized
+# (read-only convention); these helpers cover the file form only.
+
+_SKILL_FM_NAME_RE = re.compile(r"^name\s*:\s*(.+?)\s*$", re.MULTILINE)
+_SKILL_HEADING_RE = re.compile(  # any heading level — H1 `# SKILL:` is common
+    r"^\s*#+\s+SKILL\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def skills_dir(slug: str) -> Path:
+    return DOCS_ROOT / slug / "skills"
+
+
+def list_doc_skill_files(slug: str) -> list[Path]:
+    """Sidecar skill files for a doc, sorted by filename. Tolerates a
+    missing skills/ dir (the common case) and ignores non-.md / bad-slug
+    strays."""
+    d = skills_dir(slug)
+    if not d.is_dir():
+        return []
+    out = []
+    for p in sorted(d.iterdir()):
+        if p.is_file() and p.suffix.lower() == ".md" and DOC_SLUG_RE.match(p.stem):
+            out.append(p)
+    return out
+
+
+def parse_skill_file(raw: str, stem: str) -> dict:
+    """{name, body} from a sidecar skill file's raw text. Name resolution:
+    frontmatter `name:`, else a `## SKILL: <name>` heading (the legacy
+    in-body idiom, so migrated files keep their labels), else the file
+    stem. `body` is the text after the frontmatter, edge-trimmed."""
+    name = None
+    m = FRONTMATTER_RE.match(raw)
+    body = raw[m.end():] if m else raw
+    if m:
+        nm = _SKILL_FM_NAME_RE.search(m.group(1))
+        if nm:
+            name = nm.group(1).strip().strip("\"'")
+    if not name:
+        hm = _SKILL_HEADING_RE.search(raw)
+        name = hm.group(1).strip() if hm else stem
+    return {"name": name, "body": body.strip("\n")}
+
+
+def free_skill_slug(slug: str, name: str) -> str:
+    """Derive an unused skill-file slug from a human name. Lowercased,
+    non-alphanumerics collapsed to '-', truncated to the slug limit;
+    collisions get -2, -3, …"""
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "skill").lower()).strip("-")
+    base = (base or "skill")[:64].strip("-") or "skill"
+    d = skills_dir(slug)
+    cand, n = base, 2
+    while (d / f"{cand}.md").exists():
+        suffix = f"-{n}"
+        cand = base[: 64 - len(suffix)].strip("-") + suffix
+        n += 1
+    return cand
+
+
+def render_skill_file(name: str, body: str, description: str = "") -> str:
+    """Canonical sidecar skill file: name/description frontmatter + body."""
+    safe_name = " ".join((name or "untitled").split())
+    lines = ["---", f"name: {safe_name}"]
+    if description:
+        lines.append("description: " + " ".join(description.split()))
+    lines.append("---")
+    return "\n".join(lines) + "\n\n" + (body or "").strip("\n") + "\n"
+
+
 def _doc_path_for(doc_param: str) -> Path | None:
     """Resolve a doc slug (e.g. 'intro') to its current.md absolute Path.
 

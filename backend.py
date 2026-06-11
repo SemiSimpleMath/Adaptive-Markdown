@@ -98,7 +98,7 @@ from am_routes import (  # noqa: E402
     get_block_source, set_block_source, save_doc, delete_block, insert_block,
     list_pending, accept_pending, reject_pending,
     list_doc_skills, update_doc_skill, delete_doc_skill,
-    add_doc_skill, reset_doc, save_baseline, set_api_key,
+    add_doc_skill, migrate_doc_skill, reset_doc, save_baseline, set_api_key,
     list_components, save_component, delete_component,
 )
 from am_state import state  # noqa: E402
@@ -423,6 +423,7 @@ def make_app() -> web.Application:
     app.router.add_get("/doc-skills", list_doc_skills)
     app.router.add_post("/update-doc-skill", update_doc_skill)
     app.router.add_post("/delete-doc-skill", delete_doc_skill)
+    app.router.add_post("/migrate-doc-skill", migrate_doc_skill)
     app.router.add_get("/pending", list_pending)
     app.router.add_post("/accept-pending", accept_pending)
     app.router.add_post("/reject-pending", reject_pending)

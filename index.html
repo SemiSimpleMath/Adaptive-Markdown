@@ -466,6 +466,8 @@ body {
 .view-skills .skills-empty { color: var(--muted); font-style: italic; padding: 1.5rem; text-align: center; }
 .view-skills .skill-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 0.9rem; background: var(--surface); }
 .view-skills .skill-card-name { font-weight: 600; color: var(--accent); margin-bottom: 0.3rem; font-size: 0.95rem; }
+.skill-card-badge { margin-left: 0.5rem; font: 500 10px ui-monospace, Consolas, monospace; color: var(--muted, #888); background: var(--surface, #f2f4f7); border: 1px solid var(--border, #c9d2dc); border-radius: 999px; padding: 0.1em 0.6em; vertical-align: middle; }
+.skill-card-badge-file { color: var(--accent, #2a4d7a); }
 .view-skills .skill-card-preview { font-family: ui-monospace, monospace; font-size: 0.78rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 4.2em; overflow: hidden; line-height: 1.4; margin-bottom: 0.6rem; }
 .view-skills .skill-card-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
 .view-skills .skill-card-editor { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -2953,30 +2955,75 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   function makeSkillCard(skill) {
     const card = document.createElement('div');
     card.className = 'skill-card';
+    const isLegacy = skill.kind === 'section';
     const name = document.createElement('div');
     name.className = 'skill-card-name';
     name.textContent = skill.name;
+    if (isLegacy) {
+      const badge = document.createElement('span');
+      badge.className = 'skill-card-badge';
+      badge.textContent = 'in document — legacy';
+      badge.title = 'This skill lives inside the doc body (old form). '
+        + 'Move it to a file under docs/<slug>/skills/.';
+      name.appendChild(badge);
+    } else {
+      const badge = document.createElement('span');
+      badge.className = 'skill-card-badge skill-card-badge-file';
+      badge.textContent = 'skills/' + skill.skill + '.md';
+      name.appendChild(badge);
+    }
     const preview = document.createElement('div');
     preview.className = 'skill-card-preview';
-    preview.textContent =
-      (skill.content || '').replace(/^##+\s+SKILL\s*:.*$/im, '').trim().slice(0, 240)
-      + ((skill.content || '').length > 240 ? '…' : '');
+    const previewSrc = (skill.content || '')
+      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '')      // file frontmatter
+      .replace(/^##+\s+SKILL\s*:.*$/im, '')                // legacy heading
+      .trim();
+    preview.textContent = previewSrc.slice(0, 240)
+      + (previewSrc.length > 240 ? '…' : '');
     const actions = document.createElement('div');
     actions.className = 'skill-card-actions';
     const editBtn = document.createElement('button');
     editBtn.className = 'btn-tiny';
     editBtn.textContent = 'Edit';
     editBtn.addEventListener('click', () => swapCardToEditor(card, skill));
+    actions.appendChild(editBtn);
+    if (isLegacy) {
+      const moveBtn = document.createElement('button');
+      moveBtn.className = 'btn-tiny';
+      moveBtn.textContent = 'Move to file';
+      moveBtn.title = 'Extract this section into docs/<slug>/skills/ and '
+        + 'remove it from the doc body';
+      moveBtn.addEventListener('click', () => migrateSkillInline(skill));
+      actions.appendChild(moveBtn);
+    }
     const delBtn = document.createElement('button');
     delBtn.className = 'btn-tiny';
     delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', () => deleteSkillInline(skill));
-    actions.appendChild(editBtn);
     actions.appendChild(delBtn);
     card.appendChild(name);
     card.appendChild(preview);
     card.appendChild(actions);
     return card;
+  }
+
+  async function migrateSkillInline(skill) {
+    try {
+      const resp = await fetch(
+        '/migrate-doc-skill?doc=' + encodeURIComponent(currentDoc)
+        + '&index=' + skill.index,
+        { method: 'POST' },
+      );
+      if (!resp.ok) {
+        let msg = `migrate failed: ${resp.status}`;
+        try { const j = await resp.json(); if (j.error) msg = j.error; } catch (_) {}
+        appendMessage('error', msg);
+        return;
+      }
+      await refreshSkillsList();
+    } catch (err) {
+      appendMessage('error', 'migrate-doc-skill error: ' + (err.message || err));
+    }
   }
 
   function swapCardToEditor(card, skill) {
@@ -2989,7 +3036,9 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const ta = document.createElement('textarea');
     ta.value = skill ? (skill.content || '') : '';
     ta.placeholder = skill ? '' :
-      '## SKILL: <name>\n\n(write the agent-skill content here as markdown)';
+      '---\nname: <name>\ndescription: <one line>\n---\n\n'
+      + '(write the skill instructions here as markdown — saved to '
+      + 'docs/<slug>/skills/)';
     const acts = document.createElement('div');
     acts.className = 'skill-card-editor-actions';
     const cancelBtn = document.createElement('button');
@@ -3027,10 +3076,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const url = isNew
       ? '/add-doc-skill?doc=' + encodeURIComponent(currentDoc)
       : '/update-doc-skill?doc=' + encodeURIComponent(currentDoc)
-        + '&index=' + skill.index;
+        + (skill.kind === 'file'
+            ? '&skill=' + encodeURIComponent(skill.skill)
+            : '&index=' + skill.index);
+    // Name for new skills: frontmatter name: line, or the legacy
+    // `## SKILL:` heading, whichever the author wrote.
+    const fmMatch = content.match(/^---\r?\n[\s\S]*?^name\s*:\s*(.+?)\s*$[\s\S]*?\r?\n---/m);
     const headingMatch = content.match(/^##+\s+SKILL\s*:\s*(.+?)\s*$/im);
     const payload = { content };
-    if (isNew && headingMatch) payload.name = headingMatch[1].trim();
+    if (isNew && (fmMatch || headingMatch))
+      payload.name = (fmMatch ? fmMatch[1] : headingMatch[1]).trim();
     try {
       const resp = await fetch(url, {
         method: 'POST',
@@ -3056,11 +3111,16 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   }
 
   async function deleteSkillInline(skill) {
-    if (!confirm(`Delete skill "${skill.name}"? This removes the section from the doc.`)) return;
+    const what = skill.kind === 'file'
+      ? `the file skills/${skill.skill}.md`
+      : 'the section from the doc';
+    if (!confirm(`Delete skill "${skill.name}"? This removes ${what}.`)) return;
     try {
       const resp = await fetch(
         '/delete-doc-skill?doc=' + encodeURIComponent(currentDoc)
-        + '&index=' + skill.index,
+        + (skill.kind === 'file'
+            ? '&skill=' + encodeURIComponent(skill.skill)
+            : '&index=' + skill.index),
         { method: 'POST' },
       );
       if (!resp.ok) {
@@ -4479,6 +4539,17 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     return html.replace(/<!--\s*id:b-[A-Z0-9-]+\s*-->/gi, '');
   }
 
+  // Exports are shared artifacts: agent-skill sections (legacy in-body
+  // skills) are agent configuration, not reader content, and must not ship
+  // hidden-but-present in the HTML (ADR-002: exports exclude skills,
+  // permanently). Sidecar skills never enter the render path at all.
+  // <template> keeps the doc's <script> blocks inert while we prune.
+  function stripAgentSkillSections(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    t.content.querySelectorAll('section.agent-skill').forEach(s => s.remove());
+    return t.innerHTML;
+  }
   async function exportDoc() {
     if (!currentText) {
       appendMessage('error', 'No doc loaded to export');
@@ -4490,7 +4561,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
     const inlinedBody = await inlineAssets(currentBody);
 
     // 2. Run the same rendering pipeline as the viewer.
-    let html = stripIdComments(renderDoc(inlinedBody));
+    let html = stripAgentSkillSections(stripIdComments(renderDoc(inlinedBody)));
 
     // 3. Meta line mirrors what the viewer shows.
     const metaBits = [];
@@ -4521,7 +4592,7 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
   async function previewExport() {
     if (!currentText) throw new Error('no doc loaded');
     const inlinedBody = await inlineAssets(currentBody);
-    let html = stripIdComments(renderDoc(inlinedBody));
+    let html = stripAgentSkillSections(stripIdComments(renderDoc(inlinedBody)));
     const metaBits = [];
     const a = currentFm.authors || currentFm.author;
     if (a) metaBits.push(Array.isArray(a) ? a.join(', ') : a);
@@ -5144,6 +5215,12 @@ pre code { display: block; padding: .75rem; overflow-x: auto; }
       // Bytes didn't move (we'd get doc_changed for that too) — just the
       // pending sidecar changed for this doc. Refresh the Review tab.
       if (data.doc === currentDoc) refreshPending();
+      return;
+    }
+    if (data.type === 'skills_changed') {
+      // Sidecar skill files changed (no doc bytes moved). Refresh the
+      // Skills view if it's showing this doc.
+      if (data.doc === currentDoc && currentView === 'skills') refreshSkillsList();
       return;
     }
     if (data.type === 'chat_reset') {

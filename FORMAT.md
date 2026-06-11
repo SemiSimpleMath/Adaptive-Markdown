@@ -226,6 +226,8 @@ docs/
     ├── original.<ext>    # optional provenance (the .tex, .pdf, etc. the doc came from)
     ├── snaps/            # pre-edit snapshots (gitignored)
     │   └── snap-{id}.md
+    ├── skills/           # per-doc agent skills — one file per skill
+    │   └── <skill-slug>.md
     └── assets/           # materials the doc embeds — figures, audio, data files
 ```
 
@@ -239,6 +241,7 @@ Each folder is the unit of sharing — zip `docs/<slug>/` and you have a portabl
 |---|---|
 | `docs/<slug>/baseline.md` | Immutable history-0. Tracked in git for ship-with docs. The Reset button restores from here. |
 | `docs/<slug>/snaps/snap-{id}.md` | Pre-edit snapshots. Captured automatically by the pre-tool-use hook before any agent `Edit`/`Write`, plus history-0 mint at startup if a doc has none. Browse-and-restore via the History panel. |
+| `docs/<slug>/skills/<skill-slug>.md` | Per-doc agent skills — the doc's working contract (voice, formatting rules, structural conventions). One file per skill: `name:`/`description:` frontmatter, then markdown instructions. Agent configuration, not reader content: the body of `current.md` is reader-facing only, and exports never include skills. (Legacy form: older docs may carry `<section class="agent-skill">` blocks in the body — still honored, hidden from the rendered view, stripped from exports; tooling should migrate them to files.) |
 | `<doc>.id-aliases.json` | Union-find map of dropped/merged tracking IDs → their current surviving ID. Maintained on block merge/delete. Format: `{ "b-OLD": "b-NEW" }`. Path-compressed on traversal. |
 
 ## File-level invariants the system enforces
@@ -248,7 +251,7 @@ A few invariants the backend hooks maintain. Worth knowing if you're building to
 - Every `docs/<slug>/current.md` has a `doc_id` in its frontmatter (minted at first sight if missing).
 - Every doc folder has a `baseline.md` (the Reset target). On fresh clones, the backend copies `baseline.md` → `current.md` if `current.md` is missing.
 - Every agent `Edit`/`Write` to `current.md` is preceded by a snapshot to `snaps/`.
-- The only path the agent may write to is `docs/<slug>/current.md`. `baseline.md`, `snaps/`, and everything outside `docs/` are off-limits; the PreToolUse hook rejects attempts with a clear error.
+- The agent may write only `docs/<slug>/current.md` and `docs/<slug>/skills/<skill-slug>.md`. `baseline.md`, `snaps/`, and everything outside `docs/` are off-limits; the PreToolUse hook rejects attempts with a clear error.
 - Tracking IDs that disappear from a doc are recorded as tombstones in the alias map.
 
 ## Skill — the agent's contract

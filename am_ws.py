@@ -33,10 +33,12 @@ from am_docs import (
     DATA_ROOT,
     _doc_path_for,
     list_all_docs,
+    list_doc_skill_files,
+    parse_skill_file,
 )
 from am_hooks import _summarize_tool, reset_runtime_session
 from am_origin import _require_localhost_origin
-from am_preamble import build_doc_context
+from am_preamble import build_doc_context, build_skills_context
 from am_state import state
 from am_tracking import mint_track_id_for
 
@@ -346,15 +348,39 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         preamble.append(
                             "This doc carries one or more "
                             "`<section class=\"agent-skill\">…</section>` "
-                            "blocks in its body. Those sections are the "
-                            "doc's working contract — voice, formatting, "
-                            "structural conventions specific to this doc. "
-                            "They override generic guidance in the global "
-                            "adaptive-markdown skill when they conflict. "
-                            "Treat them as authoritative; preserve them "
-                            "across edits unless the reader explicitly "
-                            "asks you to change them."
+                            "blocks in its body (LEGACY form — new doc "
+                            "skills live as files under "
+                            f"`docs/{doc}/skills/`). Those sections are "
+                            "the doc's working contract — voice, "
+                            "formatting, structural conventions specific "
+                            "to this doc. They override generic guidance "
+                            "in the global adaptive-markdown skill when "
+                            "they conflict. Treat them as authoritative; "
+                            "preserve them across edits unless the reader "
+                            "explicitly asks you to change them."
                         )
+                    # Sidecar skills (ADR-002): docs/<slug>/skills/*.md.
+                    # Inlined regardless of whether the doc body itself
+                    # was inlined (skills are small and steer every turn);
+                    # same sig-skip discipline as the doc body.
+                    sk = []
+                    for sp in list_doc_skill_files(doc):
+                        try:
+                            raw = sp.read_text(encoding="utf-8")
+                        except (OSError, UnicodeDecodeError):
+                            continue
+                        meta = parse_skill_file(raw, sp.stem)
+                        sk.append({
+                            "rel": sp.relative_to(DATA_ROOT).as_posix(),
+                            "name": meta["name"],
+                            "raw": raw,
+                        })
+                    sk_lines, sk_sig = build_skills_context(
+                        doc, sk, state.inlined_skills_sig.get(doc),
+                    )
+                    preamble.extend(sk_lines)
+                    if sk_sig is not None:
+                        state.inlined_skills_sig[doc] = sk_sig
                 if len(selections) == 1:
                     s = selections[0]
                     info = []

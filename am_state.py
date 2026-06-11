@@ -43,6 +43,10 @@ class State:
         # always implies the content is genuinely present earlier in
         # context. Keyed by doc slug.
         self.inlined_doc_sig: dict[str, str] = {}
+        # Same idea for the doc's sidecar skills (docs/<slug>/skills/*.md,
+        # ADR-002): combined content signature per doc, cleared alongside
+        # the doc sig on every runtime init.
+        self.inlined_skills_sig: dict[str, str] = {}
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg)

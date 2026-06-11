@@ -29,7 +29,12 @@ from am_docs import (
     FRONTMATTER_RE as _FRONTMATTER_RE,
     _doc_path_for,
     _doc_slug_from_path,
+    free_skill_slug,
     list_all_components,
+    list_doc_skill_files,
+    parse_skill_file,
+    render_skill_file,
+    skills_dir,
 )
 from am_hooks import init_runtime, shutdown_runtime
 from am_origin import _require_localhost_origin
@@ -480,7 +485,8 @@ async def reject_pending(request: web.Request) -> web.Response:
 import am_html
 
 _SKILL_NAME_RE = re.compile(
-    r'^\s*##+\s+SKILL\s*:\s*(.+?)\s*$', re.IGNORECASE | re.MULTILINE,
+    # Any heading level — real docs use `# SKILL:` (H1) as well as `##`.
+    r'^\s*#+\s+SKILL\s*:\s*(.+?)\s*$', re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -532,9 +538,10 @@ def _render_agent_skill_block(content: str) -> str:
 
 
 async def list_doc_skills(request: web.Request) -> web.Response:
-    """GET /doc-skills?doc=<slug> — list every agent-skill section in
-    the doc with its label + content + position. Drives the Skills
-    manager modal."""
+    """GET /doc-skills?doc=<slug> — list the doc's skills. Sidecar files
+    (docs/<slug>/skills/*.md, ADR-002) come first with kind="file" and
+    their slug as the handle; legacy in-body agent-skill sections follow
+    with kind="section" and their index. Drives the Skills manager."""
     _require_localhost_origin(request)
     slug = (request.query.get("doc") or "").strip()
     if not slug or not _DOC_SLUG_RE.match(slug):
@@ -542,31 +549,41 @@ async def list_doc_skills(request: web.Request) -> web.Response:
     doc_path = DOCS_ROOT / slug / "current.md"
     if not doc_path.exists():
         return web.json_response({"error": "doc not found"}, status=404)
+    out = []
+    for p in list_doc_skill_files(slug):
+        try:
+            raw = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        meta = parse_skill_file(raw, p.stem)
+        # content = the raw FILE, verbatim — the manager edits the file.
+        out.append({"kind": "file", "skill": p.stem,
+                    "name": meta["name"], "content": raw})
     source = doc_path.read_text(encoding="utf-8")
-    skills = _find_agent_skill_blocks(source)
-    # Drop the byte offsets from the response — those are server-side
-    # only; the index is the stable handle for update/delete.
-    return web.json_response({
-        "skills": [
-            {"index": s["index"], "name": s["name"], "content": s["content"]}
-            for s in skills
-        ],
-    })
+    for s in _find_agent_skill_blocks(source):
+        out.append({"kind": "section", "index": s["index"],
+                    "name": s["name"], "content": s["content"]})
+    return web.json_response({"skills": out})
+
+
+def _skill_file_for(slug: str, skill: str):
+    """Validate + resolve a sidecar skill handle to its Path (or None)."""
+    if not skill or not _DOC_SLUG_RE.match(skill):
+        return None
+    return skills_dir(slug) / f"{skill}.md"
 
 
 async def update_doc_skill(request: web.Request) -> web.Response:
-    """POST /update-doc-skill?doc=<slug>&index=N — replace the Nth
-    agent-skill section's inner content with the body's `content`
-    field. The wrapping `<section class="agent-skill">…</section>`
-    is preserved."""
+    """POST /update-doc-skill?doc=<slug>&skill=<slug> (sidecar file) or
+    &index=N (legacy in-body section). Body JSON: { content }.
+
+    File form: `content` is the whole file, written verbatim (no doc
+    snapshot — skills have no history per ADR-002). Legacy form: replaces
+    the Nth section's inner content, wrapper preserved, doc snapshotted."""
     _require_localhost_origin(request)
     slug = (request.query.get("doc") or "").strip()
     if not slug or not _DOC_SLUG_RE.match(slug):
         return web.json_response({"error": "bad doc slug"}, status=400)
-    try:
-        idx = int(request.query.get("index", "-1"))
-    except (TypeError, ValueError):
-        return web.json_response({"error": "index must be an integer"}, status=400)
     try:
         body = await request.json()
     except Exception:
@@ -576,6 +593,25 @@ async def update_doc_skill(request: web.Request) -> web.Response:
     new_content = body.get("content")
     if not isinstance(new_content, str):
         return web.json_response({"error": "missing 'content'"}, status=400)
+
+    skill = (request.query.get("skill") or "").strip()
+    if skill:
+        path = _skill_file_for(slug, skill)
+        if path is None or not path.exists():
+            return web.json_response(
+                {"error": f"no skill file {skill!r} for doc {slug!r}"},
+                status=404)
+        with path.open("w", encoding="utf-8", newline="") as f:
+            f.write(new_content if new_content.endswith("\n")
+                    else new_content + "\n")
+        print(f"[update-doc-skill] docs/{slug}/skills/{skill}.md", flush=True)
+        await state.broadcast({"type": "skills_changed", "doc": slug})
+        return web.json_response({"ok": True, "skill": skill})
+
+    try:
+        idx = int(request.query.get("index", "-1"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "index must be an integer"}, status=400)
 
     doc_path = DOCS_ROOT / slug / "current.md"
     if not doc_path.exists():
@@ -613,12 +649,25 @@ async def update_doc_skill(request: web.Request) -> web.Response:
 
 
 async def delete_doc_skill(request: web.Request) -> web.Response:
-    """POST /delete-doc-skill?doc=<slug>&index=N — remove the Nth
-    agent-skill section entirely."""
+    """POST /delete-doc-skill?doc=<slug>&skill=<slug> (sidecar file) or
+    &index=N (legacy in-body section)."""
     _require_localhost_origin(request)
     slug = (request.query.get("doc") or "").strip()
     if not slug or not _DOC_SLUG_RE.match(slug):
         return web.json_response({"error": "bad doc slug"}, status=400)
+
+    skill = (request.query.get("skill") or "").strip()
+    if skill:
+        path = _skill_file_for(slug, skill)
+        if path is None or not path.exists():
+            return web.json_response(
+                {"error": f"no skill file {skill!r} for doc {slug!r}"},
+                status=404)
+        path.unlink()
+        print(f"[delete-doc-skill] docs/{slug}/skills/{skill}.md", flush=True)
+        await state.broadcast({"type": "skills_changed", "doc": slug})
+        return web.json_response({"ok": True, "skill": skill})
+
     try:
         idx = int(request.query.get("index", "-1"))
     except (TypeError, ValueError):
@@ -647,12 +696,14 @@ async def delete_doc_skill(request: web.Request) -> web.Response:
 
 
 async def add_doc_skill(request: web.Request) -> web.Response:
-    """POST /add-doc-skill?doc=<slug> — append an empty agent-skill section
-    to the doc body so the author has somewhere to write working-contract
-    text without learning the `<section class="agent-skill">` wrapper by
-    hand. Body JSON `{ "name": "<short label>" }` is optional; defaults
-    to "untitled". The viewer typically follows up by switching to Source
-    view so the author can fill in the placeholder."""
+    """POST /add-doc-skill?doc=<slug> — create a new sidecar skill file at
+    docs/<slug>/skills/<skill-slug>.md (ADR-002). Body JSON
+    `{ name?, content?, description? }`; the file slug derives from the
+    name (collisions get -2/-3/…). If `content` is already a whole skill
+    file (starts with frontmatter), it is written verbatim; otherwise it
+    becomes the body under canonical name/description frontmatter. New
+    skills are never written into the doc body — the in-body section form
+    is legacy, kept readable/editable for existing docs only."""
     _require_localhost_origin(request)
     slug = (request.query.get("doc") or "").strip()
     if not slug or not _DOC_SLUG_RE.match(slug):
@@ -670,55 +721,74 @@ async def add_doc_skill(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         body = {}
     name = (body.get("name") or "").strip() or "untitled"
-    # Optional pre-filled content from the Skills manager modal. If the
-    # caller didn't supply any, we fall back to the placeholder body so
-    # an empty + Skill click still gets a useful stub.
     raw_content = body.get("content")
     custom_content = raw_content.strip() if isinstance(raw_content, str) else ""
+    description = (body.get("description") or "").strip() \
+        if isinstance(body.get("description"), str) else ""
 
-    source = doc_path.read_text(encoding="utf-8")
-    if custom_content:
-        skill_inner = custom_content
+    d = skills_dir(slug)
+    d.mkdir(parents=True, exist_ok=True)
+    skill = free_skill_slug(slug, name)
+    path = d / f"{skill}.md"
+    if custom_content.startswith("---"):
+        raw = custom_content + ("" if custom_content.endswith("\n") else "\n")
     else:
-        # Just a heading line — the manager's editor is the place to
-        # write the actual content. No verbose placeholder cluttering
-        # the source / preview.
-        skill_inner = f"## SKILL: {name}"
-    skill_block = _render_agent_skill_block(skill_inner) + "\n\n"
-    # Insert right after the frontmatter (or at the very top if there's
-    # none). The agent reads the doc top-down via the inlined preamble,
-    # so placing the contract near the top means the agent absorbs the
-    # contract before processing body content — putting it at the bottom
-    # forces the agent to read the body first under generic guidance,
-    # then learn the contract too late to influence anything. Also makes
-    # the skill discoverable in Source view without scrolling. Doc view
-    # is unchanged (display:none either way).
-    m = _FRONTMATTER_RE.match(source)
-    if m:
-        head = source[: m.end()]
-        tail = source[m.end():].lstrip("\n")
-        new_source = head + "\n" + skill_block + tail
-    else:
-        new_source = skill_block + source.lstrip("\n")
-
-    errors = validators.validate_doc(new_source) if new_source.strip() else []
-    if errors:
-        return web.json_response(
-            {"error": "validation failed",
-             "details": [
-                 {"kind": e.get("kind"), "line": e.get("line"),
-                  "message": e.get("message")}
-                 for e in errors[:3]
-             ]},
-            status=422,
+        raw = render_skill_file(
+            name,
+            custom_content or "(write this doc's working contract here)",
+            description,
         )
+    with path.open("w", encoding="utf-8", newline="") as f:
+        f.write(raw)
+    print(f"[add-doc-skill] docs/{slug}/skills/{skill}.md (name={name!r})",
+          flush=True)
+    await state.broadcast({"type": "skills_changed", "doc": slug})
+    return web.json_response({"ok": True, "name": name, "skill": skill})
 
+
+async def migrate_doc_skill(request: web.Request) -> web.Response:
+    """POST /migrate-doc-skill?doc=<slug>&index=N — move the Nth legacy
+    in-body agent-skill section to a sidecar file (ADR-002): write
+    docs/<slug>/skills/<slug>.md with the section's inner content, then
+    remove the section from the body (the body edit snapshots normally;
+    the skill file itself has no history)."""
+    _require_localhost_origin(request)
+    slug = (request.query.get("doc") or "").strip()
+    if not slug or not _DOC_SLUG_RE.match(slug):
+        return web.json_response({"error": "bad doc slug"}, status=400)
+    try:
+        idx = int(request.query.get("index", "-1"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "index must be an integer"}, status=400)
+    doc_path = DOCS_ROOT / slug / "current.md"
+    if not doc_path.exists():
+        return web.json_response({"error": "doc not found"}, status=404)
+    source = doc_path.read_text(encoding="utf-8")
+    blocks = _find_agent_skill_blocks(source)
+    if idx < 0 or idx >= len(blocks):
+        return web.json_response(
+            {"error": f"no agent-skill section at index {idx}"}, status=404)
+    block = blocks[idx]
+    d = skills_dir(slug)
+    d.mkdir(parents=True, exist_ok=True)
+    skill = free_skill_slug(slug, block["name"])
+    # Tracking-id comments are doc-body bookkeeping; they mean nothing in a
+    # sidecar skill file (which has no history and is never block-tracked).
+    content = re.sub(r"^[ \t]*<!-- id:b-[A-Z0-9-]+ -->[ \t]*\r?\n", "",
+                     block["content"], flags=re.MULTILINE)
+    raw = render_skill_file(block["name"], content)
+    with (d / f"{skill}.md").open("w", encoding="utf-8", newline="") as f:
+        f.write(raw)
+    new_source = source[: block["start"]] + source[block["end"]:]
+    new_source = re.sub(r"\n{3,}", "\n\n", new_source)
     _snapshot_if_changed(doc_path)
     with doc_path.open("w", encoding="utf-8", newline="") as f:
         f.write(new_source)
-    print(f"[add-doc-skill] docs/{slug}/current.md (name={name!r})", flush=True)
+    print(f"[migrate-doc-skill] docs/{slug}/current.md index={idx} -> "
+          f"skills/{skill}.md", flush=True)
     await state.broadcast({"type": "doc_changed", "doc": slug})
-    return web.json_response({"ok": True, "name": name})
+    await state.broadcast({"type": "skills_changed", "doc": slug})
+    return web.json_response({"ok": True, "skill": skill, "name": block["name"]})
 
 
 async def save_baseline(request: web.Request) -> web.Response:

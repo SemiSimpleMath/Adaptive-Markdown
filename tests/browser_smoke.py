@@ -172,6 +172,22 @@ def _wait_for_doc_iframe(page, timeout_ms: int = 10000):
     raise TimeoutError("doc iframe never loaded")
 
 
+def _wait_for_initial_doc(frame, timeout_ms: int = 15000) -> None:
+    """Block until the page's own initial doc setContent has landed in the
+    iframe. Scenarios that push SYNTHETIC content must call this first:
+    runtime-ready precedes content, and the initial doc render can lag by
+    seconds (the doc list and agent-runtime startup grow with real use).
+    A late-landing initial setContent silently REPLACES whatever the
+    scenario pushed — the marker/row checks then fail on content that
+    isn't there anymore. After the initial doc lands, nothing else
+    setContents on its own."""
+    frame.wait_for_function(
+        "() => document.getElementById('body') && "
+        "document.getElementById('body').children.length > 0",
+        timeout=timeout_ms,
+    )
+
+
 def scenario_iframe_isolation(page, base: str, r: Results) -> None:
     """The iframe is loaded from a DIFFERENT origin than the viewer. The
     sandbox grants `allow-same-origin` so the iframe can store its own
@@ -424,16 +440,7 @@ def scenario_iframe_runtime(page, base: str, r: Results) -> None:
             html,
         )
 
-    # The page's own initial doc setContent may still be in flight at this
-    # point (runtime-ready precedes content). If it lands between our
-    # synthetic pushes it wipes the tagged node and the marker check fails
-    # intermittently (marker=None). Wait for the real doc to land first —
-    # after that, nothing else in this scenario setContents.
-    frame.wait_for_function(
-        "() => document.getElementById('body') && "
-        "document.getElementById('body').children.length > 0",
-        timeout=10000,
-    )
+    _wait_for_initial_doc(frame)
 
     # ---- DOM stability: morphdom keeps unchanged nodes in place ----------
     push('<p id="keep">unchanged</p><p id="change">first</p>')
@@ -590,6 +597,7 @@ def scenario_data_figure_renders(page, base: str, r: Results) -> None:
         )
         return
     r.assert_("iframe runtime exposes __doc.rerender (script body intact)", True)
+    _wait_for_initial_doc(frame)
 
     def push(html: str) -> None:
         page.evaluate(
@@ -632,12 +640,22 @@ def scenario_data_figure_renders(page, base: str, r: Results) -> None:
         detail="error banner is present — likely 'CSV is empty' or render fail",
     )
 
-    # Row count: 3 data rows (excluding header). Tabulator renders rows
-    # as .tabulator-row elements in the .tabulator-tableholder.
-    row_count = frame.evaluate(
-        "() => document.querySelectorAll('figure.data "
-        ".tabulator-tableholder .tabulator-row').length"
-    )
+    # Row count: 3 data rows (excluding header). Tabulator builds its DOM
+    # shell first and fills rows asynchronously — WAIT for the rows rather
+    # than sampling right after the shell appears (sampled, this check
+    # flakes to 0 under machine load).
+    try:
+        frame.wait_for_function(
+            "() => document.querySelectorAll('figure.data "
+            ".tabulator-tableholder .tabulator-row').length === 3",
+            timeout=10000,
+        )
+        row_count = 3
+    except Exception:
+        row_count = frame.evaluate(
+            "() => document.querySelectorAll('figure.data "
+            ".tabulator-tableholder .tabulator-row').length"
+        )
     r.assert_(
         "Tabulator renders 3 data rows (Alice / Bob / Carol)",
         row_count == 3,
@@ -645,12 +663,22 @@ def scenario_data_figure_renders(page, base: str, r: Results) -> None:
     )
 
     # Renderer registration: __doc.getRenderer(fig) should return
-    # {kind: 'csv', instance: <tabulator>}. Widgets rely on this.
-    kind = frame.evaluate(
-        "() => { const fig = document.querySelector('figure.data'); "
-        "const r = window.__doc.getRenderer(fig); "
-        "return r ? r.kind : null; }"
-    )
+    # {kind: 'csv', instance: <tabulator>}. Registration lands after the
+    # table builds — same wait-not-sample treatment.
+    try:
+        frame.wait_for_function(
+            "() => { const fig = document.querySelector('figure.data'); "
+            "const r = fig && window.__doc.getRenderer(fig); "
+            "return !!(r && r.kind === 'csv'); }",
+            timeout=10000,
+        )
+        kind = "csv"
+    except Exception:
+        kind = frame.evaluate(
+            "() => { const fig = document.querySelector('figure.data'); "
+            "const r = fig && window.__doc.getRenderer(fig); "
+            "return r ? r.kind : null; }"
+        )
     r.assert_(
         "FIGURE_RENDERERS registers the data figure with kind='csv'",
         kind == "csv",
@@ -680,6 +708,7 @@ def scenario_diagram_renders(page, base: str, r: Results) -> None:
         )
         return
     r.assert_("iframe runtime exposes __doc.rerender (script body intact)", True)
+    _wait_for_initial_doc(frame)
 
     def push(html: str) -> None:
         page.evaluate(
@@ -1383,11 +1412,11 @@ def scenario_music_upload(page, base: str, r: Results) -> None:
 
 
 def scenario_doc_skill_crud(page, base: str, r: Results) -> None:
-    """Skills manager backend: GET /doc-skills lists; POST /update-doc-skill
-    rewrites the Nth section's inner content; POST /delete-doc-skill
-    removes it. Together with /add-doc-skill these power the Skills
-    manager modal — author can view, edit, delete, and add skills."""
-    print("\n[scenario] doc-skill CRUD (list / update / delete)")
+    """Skills manager backend (ADR-002): sidecar files are the primary
+    form (add/update/delete by skill slug), legacy in-body sections stay
+    readable/editable by index, and /migrate-doc-skill moves a section
+    into a file."""
+    print("\n[scenario] doc-skill CRUD (files + legacy sections + migrate)")
 
     import shutil
     slug = "smoke-skill-crud"
@@ -1466,7 +1495,7 @@ def scenario_doc_skill_crud(page, base: str, r: Results) -> None:
         "Content here." in disk and "# Body" in disk,
     )
 
-    # POST /add-doc-skill with custom content lands a second skill.
+    # POST /add-doc-skill with custom content → sidecar FILE, body untouched.
     added = page.evaluate(
         """async (slug) => {
             const r = await fetch('/add-doc-skill?doc=' + encodeURIComponent(slug), {
@@ -1474,25 +1503,28 @@ def scenario_doc_skill_crud(page, base: str, r: Results) -> None:
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: 'math conventions',
-                    content: '## SKILL: math conventions\\n\\nUse $...$ for inline math.',
+                    content: 'Use $...$ for inline math.',
                 }),
             });
-            return r.status;
+            return { status: r.status, body: await r.json() };
         }""",
         slug,
     )
     r.assert_(
-        "POST /add-doc-skill with content adds a section",
-        added == 200,
+        "POST /add-doc-skill creates a sidecar file",
+        added.get("status") == 200
+        and (added.get("body") or {}).get("skill") == "math-conventions"
+        and (doc_dir / "skills" / "math-conventions.md").exists(),
+        detail=str(added),
     )
     disk2 = (doc_dir / "current.md").read_text(encoding="utf-8")
     r.assert_(
-        "second skill carries the custom content",
-        "Use $...$ for inline math." in disk2,
+        "new skill content stays OUT of the doc body",
+        "Use $...$ for inline math." not in disk2,
         detail=disk2[:600],
     )
 
-    # GET /doc-skills now returns two entries.
+    # GET /doc-skills lists the file first, then the legacy section.
     listed2 = page.evaluate(
         """async (slug) => {
             const r = await fetch('/doc-skills?doc=' + encodeURIComponent(slug));
@@ -1500,37 +1532,85 @@ def scenario_doc_skill_crud(page, base: str, r: Results) -> None:
         }""",
         slug,
     )
+    entries = (listed2 or {}).get("skills") or []
     r.assert_(
-        "GET /doc-skills returns both entries after add",
-        len((listed2 or {}).get("skills") or []) == 2,
-        detail=str(listed2)[:300],
+        "GET /doc-skills returns file + legacy entries with kinds",
+        len(entries) == 2
+        and entries[0].get("kind") == "file"
+        and entries[0].get("skill") == "math-conventions"
+        and entries[1].get("kind") == "section"
+        and entries[1].get("index") == 0,
+        detail=str(listed2)[:400],
     )
 
-    # POST /delete-doc-skill removes the newly-added skill (which landed
-    # at index=0 because /add-doc-skill inserts after the frontmatter,
-    # pushing the older skill down to index=1).
-    deleted = page.evaluate(
+    # POST /update-doc-skill?skill=… rewrites the file verbatim.
+    upd_file = page.evaluate(
         """async (slug) => {
-            const r = await fetch('/delete-doc-skill?doc=' + encodeURIComponent(slug) + '&index=0', {
+            const content = '---\\nname: math conventions\\n---\\n\\nUse $...$ inline; $$...$$ display.\\n';
+            const r = await fetch('/update-doc-skill?doc=' + encodeURIComponent(slug)
+                + '&skill=math-conventions', {
                 method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content }),
             });
             return r.status;
         }""",
         slug,
     )
+    skill_raw = (doc_dir / "skills" / "math-conventions.md").read_text(encoding="utf-8")
     r.assert_(
-        "POST /delete-doc-skill returns 200",
-        deleted == 200,
+        "file update writes the new content verbatim",
+        upd_file == 200 and "$$...$$ display." in skill_raw,
+        detail=skill_raw[:200],
     )
+
+    # POST /delete-doc-skill?skill=… removes the file; legacy untouched.
+    deleted = page.evaluate(
+        """async (slug) => {
+            const r = await fetch('/delete-doc-skill?doc=' + encodeURIComponent(slug)
+                + '&skill=math-conventions', { method: 'POST' });
+            return r.status;
+        }""",
+        slug,
+    )
+    r.assert_(
+        "POST /delete-doc-skill removes the file",
+        deleted == 200
+        and not (doc_dir / "skills" / "math-conventions.md").exists(),
+    )
+    r.assert_(
+        "legacy section untouched by file delete",
+        "Keep it terse AND specific."
+        in (doc_dir / "current.md").read_text(encoding="utf-8"),
+    )
+
+    # POST /migrate-doc-skill moves the legacy section to a file.
+    migrated = page.evaluate(
+        """async (slug) => {
+            const r = await fetch('/migrate-doc-skill?doc=' + encodeURIComponent(slug)
+                + '&index=0', { method: 'POST' });
+            return { status: r.status, body: await r.json() };
+        }""",
+        slug,
+    )
+    mig_slug = (migrated.get("body") or {}).get("skill") or ""
+    mig_path = doc_dir / "skills" / f"{mig_slug}.md"
     disk3 = (doc_dir / "current.md").read_text(encoding="utf-8")
     r.assert_(
-        "deleted skill no longer in source",
-        "Use $...$ for inline math." not in disk3,
+        "migrate writes the section into a sidecar file",
+        migrated.get("status") == 200 and mig_slug and mig_path.exists()
+        and "Keep it terse AND specific." in mig_path.read_text(encoding="utf-8"),
+        detail=str(migrated),
+    )
+    r.assert_(
+        "migrate removes the section from the doc body",
+        '<section class="agent-skill">' not in disk3
+        and "Keep it terse AND specific." not in disk3,
         detail=disk3[:400],
     )
     r.assert_(
-        "remaining skill still in source",
-        "Keep it terse AND specific." in disk3,
+        "body content survives the migration",
+        "Content here." in disk3 and "# Body" in disk3,
     )
 
     shutil.rmtree(doc_dir, ignore_errors=True)
@@ -1629,11 +1709,10 @@ def scenario_pending_cleared_on_restore(page, base: str, r: Results) -> None:
 
 
 def scenario_add_doc_skill(page, base: str, r: Results) -> None:
-    """+ Skill button appends an agent-skill section to current.md. The
-    rendered Doc view hides it; the source ledger has it. Backend
-    endpoint validates input and runs the same snapshot + validator
-    pipeline as any other edit."""
-    print("\n[scenario] + Skill button / /add-doc-skill")
+    """+ Skill creates a sidecar file at docs/<slug>/skills/<slug>.md
+    (ADR-002). The doc body is untouched — skills are agent configuration,
+    not reader content, so nothing needs hiding anywhere."""
+    print("\n[scenario] + Skill button / /add-doc-skill (sidecar file)")
 
     import shutil
     slug = "smoke-add-skill"
@@ -1654,8 +1733,6 @@ def scenario_add_doc_skill(page, base: str, r: Results) -> None:
         timeout=10000,
     )
 
-    # POST /add-doc-skill directly — same call the button makes (avoids
-    # driving the native prompt() dialog in Playwright).
     add = page.evaluate(
         """async (slug) => {
             const r = await fetch('/add-doc-skill?doc=' + encodeURIComponent(slug), {
@@ -1673,57 +1750,37 @@ def scenario_add_doc_skill(page, base: str, r: Results) -> None:
         detail=str(add),
     )
     r.assert_(
-        "response carries the skill name back",
-        (add.get("body") or {}).get("name") == "voice rules",
+        "response carries name + derived file slug",
+        (add.get("body") or {}).get("name") == "voice rules"
+        and (add.get("body") or {}).get("skill") == "voice-rules",
         detail=str(add),
     )
 
-    # On-disk: source has the new section.
-    disk = (doc_dir / "current.md").read_text(encoding="utf-8")
+    skill_path = doc_dir / "skills" / "voice-rules.md"
     r.assert_(
-        "current.md gained the agent-skill section",
-        '<section class="agent-skill">' in disk and "voice rules" in disk,
-        detail=disk[-400:],
+        "sidecar file created at docs/<slug>/skills/<slug>.md",
+        skill_path.exists(),
     )
+    if skill_path.exists():
+        raw = skill_path.read_text(encoding="utf-8")
+        r.assert_(
+            "skill file carries name frontmatter",
+            raw.startswith("---") and "name: voice rules" in raw,
+            detail=raw[:200],
+        )
+    # Serving the doc stamps tracking ids into current.md (normal); modulo
+    # those, skill creation must not have touched the body.
+    import re as _re
+    disk_after = _re.sub(
+        r"^[ \t]*<!-- id:b-[A-Z0-9-]+ -->[ \t]*\r?\n", "",
+        (doc_dir / "current.md").read_text(encoding="utf-8"), flags=_re.M)
     r.assert_(
-        "original content is preserved",
-        "First paragraph." in disk and "# Sample doc" in disk,
-        detail=disk[:200],
-    )
-    # Placement: the skill section should be inserted ABOVE the body
-    # heading so the agent absorbs the contract before processing
-    # content. Source-view discoverability also benefits.
-    skill_pos = disk.find('<section class="agent-skill">')
-    body_pos = disk.find("# Sample doc")
-    r.assert_(
-        "agent-skill section is inserted before the body content",
-        skill_pos >= 0 and body_pos >= 0 and skill_pos < body_pos,
-        detail=f"skill_pos={skill_pos} body_pos={body_pos}",
+        "doc body is untouched by skill creation (modulo id stamping)",
+        disk_after == initial and "agent-skill" not in disk_after,
+        detail=disk_after[:300],
     )
 
-    # In the iframe, the new section should be in the DOM AND hidden.
-    frame = _wait_for_doc_iframe(page)
-    page.wait_for_timeout(800)
-    info = frame.evaluate(
-        "() => {"
-        "  const sec = document.querySelector('article#body section.agent-skill');"
-        "  if (!sec) return { present: false };"
-        "  return { present: true, display: getComputedStyle(sec).display };"
-        "}"
-    )
-    r.assert_(
-        "appended agent-skill section reaches the iframe DOM",
-        info.get("present") is True,
-        detail=str(info),
-    )
-    r.assert_(
-        "appended agent-skill section is hidden (display: none)",
-        info.get("display") == "none",
-        detail=str(info),
-    )
-
-    # Skills tab is present in the view chrome (replaces the legacy + Skill
-    # button under the overflow menu).
+    # Skills tab is present in the view chrome.
     skills_tab_present = page.evaluate(
         "() => Array.from(document.querySelectorAll('.view-tab'))"
         ".some(b => b.textContent.trim() === 'Skills')"
@@ -1734,11 +1791,11 @@ def scenario_add_doc_skill(page, base: str, r: Results) -> None:
 
 
 def scenario_agent_skill_hidden(page, base: str, r: Results) -> None:
-    """`<section class="agent-skill">` is the per-doc agent contract. It
-    lives in the doc body (so it ships with the file, survives Reset and
-    export) but is hidden in the rendered Doc view via CSS so the reader
-    sees clean content. Source view shows it as-is."""
-    print("\n[scenario] agent-skill section hidden in Doc view")
+    """LEGACY guard: `<section class="agent-skill">` in the doc body (the
+    pre-ADR-002 form) stays hidden in the rendered Doc view via CSS,
+    visible in Source view, and is STRIPPED from exports. New skills are
+    sidecar files and never enter the body at all."""
+    print("\n[scenario] legacy in-body agent-skill: hidden / source / export")
 
     import shutil
     slug = "smoke-agent-skill"
@@ -1829,6 +1886,24 @@ def scenario_agent_skill_hidden(page, base: str, r: Results) -> None:
         '<section class="agent-skill">' in (source_text or "")
         and "Never use the word" in (source_text or ""),
         detail=(source_text or "")[:300],
+    )
+
+    # Export is a shared artifact: the legacy section must be STRIPPED,
+    # not shipped hidden-but-present (ADR-002 — exports exclude skills).
+    exported = page.evaluate(
+        "async () => await window.__amExport.previewExport()"
+    )
+    # (The bundled viewer CSS legitimately contains the `.agent-skill`
+    # hiding rule — assert on the ELEMENT and the instruction text.)
+    r.assert_(
+        "export strips the agent-skill section entirely",
+        '<section class="agent-skill"' not in (exported or "")
+        and "Never use the word" not in (exported or ""),
+        detail=(exported or "")[:200],
+    )
+    r.assert_(
+        "export keeps the reader content",
+        "Visible reader paragraph" in (exported or ""),
     )
 
     # Cleanup

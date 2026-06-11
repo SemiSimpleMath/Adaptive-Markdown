@@ -102,11 +102,24 @@ def _validate_agent_write_path(file_path: str) -> tuple[bool, str]:
             f"({file_path!r}). The agent may only modify "
             "docs/<slug>/current.md or components/<slug>.md."
         )
+    # Lane 1b: docs/<slug>/skills/<skill-slug>.md — sidecar skills
+    # (ADR-002). The agent may author/maintain a doc's working contract
+    # as files, same slug rules as docs.
+    if (p.parent.name == "skills"
+            and p.parent.parent.parent == DOCS_ROOT
+            and _DOC_SLUG_RE.match(p.parent.parent.name)):
+        if p.suffix.lower() != ".md" or not _DOC_SLUG_RE.match(p.stem):
+            return False, (
+                f"doc skills are .md files with slug names "
+                f"(docs/<slug>/skills/<skill-slug>.md), got {p.name!r}."
+            )
+        return True, ""
     if p.name != "current.md":
         return False, (
-            f"only current.md is writable by the agent ({p.name!r}). "
-            "baseline.md is immutable (history-0); snaps/ is managed "
-            "by the backend; project files are off-limits."
+            f"only current.md (and skills/<slug>.md) is writable by the "
+            f"agent ({p.name!r}). baseline.md is immutable (history-0); "
+            "snaps/ is managed by the backend; project files are "
+            "off-limits."
         )
     if p.parent.parent != DOCS_ROOT:
         return False, (
@@ -435,6 +448,7 @@ async def init_runtime(model: str | None = None):
     # chokepoint: reset_runtime_session, /new, /clear, and model switches
     # all route through here.
     state.inlined_doc_sig.clear()
+    state.inlined_skills_sig.clear()
     # The runtime's `root` becomes the agent's cwd. Agents reach docs at
     # `docs/<slug>/current.md` (relative path; we tell them so in
     # am_ws's preamble), so cwd needs to point at the data root, not the
